@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="A minimal, no-build static blog that renders Markdown posts in the browser."
+    />
+    <title>k1he blog</title>
+    <link rel="icon" href="assets/logo.svg" />
+    <link rel="stylesheet" href="css/style.css" />
+    <link rel="stylesheet" href="css/prism-theme.css" />
+  </head>
+  <body>
+    <div class="layout">
+      <aside class="sidebar" aria-label="Sidebar navigation">
+        <a class="sidebar__section profile profile--clickable" href="index.html" aria-label="Go to homepage">
+          <div class="profile__header">
+            <img class="profile__avatar" src="assets/profile.jpg" alt="Avatar of k1he" width="54" height="54" decoding="async" />
+            <div class="profile__headline">
+              <div class="profile__nickname">k1he</div>
+              <div class="profile__profession muted">Software Engineer</div>
+            </div>
+          </div>
+
+          <div class="profile-info" aria-label="Profile details">
+            <div class="profile-row">
+              <span class="profile-row__icon" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M12 22s7-4.6 7-12a7 7 0 1 0-14 0c0 7.4 7 12 7 12Z" stroke="currentColor" stroke-width="1.6"/>
+                  <path d="M12 13.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z" stroke="currentColor" stroke-width="1.6"/>
+                </svg>
+              </span>
+              <span>Shenzhen, Guangdong</span>
+            </div>
+
+            <div class="profile-row">
+              <span class="profile-row__icon" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M4 6.5 12 12l8-5.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                  <path d="M4 6.5V18h16V6.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <a class="link" href="mailto:k1he@bupt.edu.cn">k1he@bupt.edu.cn</a>
+            </div>
+
+            <div class="profile-row">
+              <span class="profile-row__icon" aria-hidden="true">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M9 19c-4 1.2-4-2-5-2m10 4v-3.1c0-.9.3-1.4.8-1.9-2.7-.3-5.5-1.3-5.5-5.8 0-1.3.5-2.4 1.2-3.2-.1-.3-.5-1.6.1-3.3 0 0 1-.3 3.4 1.2a11.6 11.6 0 0 1 6.2 0C18.7 3.9 19.7 4.2 19.7 4.2c.6 1.7.2 3 .1 3.3.8.8 1.2 1.9 1.2 3.2 0 4.5-2.8 5.5-5.6 5.8.5.4.9 1.2.9 2.4V21" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+              </span>
+              <a class="link" href="https://github.com/k1he" target="_blank" rel="noopener noreferrer">github.com/k1he</a>
+            </div>
+          </div>
+
+          <div class="experience" aria-label="Experience">
+            <div class="sidebar__section-title">Experience</div>
+            <div class="experience__section">
+              <div class="experience__logos">
+                <img class="company-logo" src="assets/logos/tencent.svg" alt="Tencent" title="Tencent" width="28" height="28" loading="lazy" decoding="async" />
+              </div>
+            </div>
+            <div class="experience__section">
+              <div class="experience__label">Intern</div>
+              <div class="experience__logos">
+                <img class="company-logo intern" src="assets/logos/bytedance.svg" alt="ByteDance" title="ByteDance (Intern)" width="28" height="28" loading="lazy" decoding="async" />
+                <img class="company-logo intern" src="assets/logos/baidu.svg" alt="Baidu" title="Baidu (Intern)" width="28" height="28" loading="lazy" decoding="async" />
+                <img class="company-logo intern" src="assets/logos/meituan.svg" alt="Meituan" title="Meituan (Intern)" width="28" height="28" loading="lazy" decoding="async" />
+              </div>
+            </div>
+          </div>
+        </a>
+
+        <nav class="nav" aria-label="Primary">
+          <a class="nav__link" data-nav="home" href="index.html">Home</a>
+          <a class="nav__link" data-nav="archive" href="index.html?view=archive">Archive</a>
+          <a class="nav__link" data-nav="about" href="about.html">About</a>
+        </nav>
+
+        <section class="sidebar__section" aria-label="Tags">
+          <div class="sidebar__section-title">Tags</div>
+          <div id="tagList" class="tag-list">
+            <span class="muted">Loading…</span>
+          </div>
+        </section>
+
+        <footer class="sidebar__footer">
+          <div class="muted">No-build • GitHub Pages</div>
+        </footer>
+      </aside>
+
+      <main class="main" aria-label="Main content">
+        <header class="page-header">
+          <h1 id="pageTitle" class="page-title">Posts</h1>
+          <p id="pageSubtitle" class="page-subtitle">Latest notes, experiments, and snippets.</p>
+        </header>
+
+        <!-- MVP_4: Home page search (No-Build, client-side in-memory filtering) -->
+        <section id="search" class="search" aria-label="Search posts">
+          <div class="search-box">
+            <div class="search-bar" role="search">
+              <span class="search-bar__icon" aria-hidden="true">
+                <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                  <path d="M10.5 18a7.5 7.5 0 1 1 0-15 7.5 7.5 0 0 1 0 15Z" stroke="currentColor" stroke-width="1.6"/>
+                  <path d="M16.2 16.2 21 21" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/>
+                </svg>
+              </span>
+
+              <input
+                id="searchInput"
+                class="search-bar__input"
+                type="search"
+                inputmode="search"
+                placeholder="搜索文章标题或标签…"
+                aria-label="搜索文章标题或标签"
+                aria-autocomplete="list"
+                aria-controls="searchSuggestions"
+                aria-expanded="false"
+                autocomplete="off"
+                spellcheck="false"
+              />
+
+              <button id="searchClear" class="search-bar__clear" type="button" aria-label="清空搜索" hidden>
+                ×
+              </button>
+            </div>
+
+            <div id="searchSuggestions" class="search-suggestions" role="listbox" aria-label="Search suggestions" hidden></div>
+          </div>
+
+          <div id="searchStats" class="search-stats muted" aria-live="polite"></div>
+        </section>
+
+        <section id="postList" class="post-list" aria-label="Post list">
+          <div class="card">
+            <div class="muted">Loading posts…</div>
+          </div>
+        </section>
+
+        <nav id="pagination" class="pagination" aria-label="Pagination" hidden>
+          <button id="paginationPrev" class="pagination__btn" type="button" aria-label="上一页">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M15 18l-6-6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+            上一页
+          </button>
+          <div id="paginationInfo" class="pagination__info">1 / 1</div>
+          <button id="paginationNext" class="pagination__btn" type="button" aria-label="下一页">
+            下一页
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+              <path d="M9 18l6-6-6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+            </svg>
+          </button>
+        </nav>
+      </main>
+    </div>
+
+    <script src="js/marked.min.js" defer></script>
+    <script src="js/particles-bg.js" defer></script>
+    <script src="js/app.js" defer></script>
+  </body>
+</html>

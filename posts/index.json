@@ -1,0 +1,23 @@
+[
+  {
+    "id": "test-rich-content",
+    "title": "Rich Content Test",
+    "date": "2025-12-27",
+    "file": "test-rich-content.md",
+    "excerpt": "Verifying code highlighting and math rendering capabilities."
+  },
+  {
+    "id": "hello-world",
+    "title": "Hello World",
+    "date": "2025-12-26",
+    "file": "hello-world.md",
+    "excerpt": "This is the first post for the minimal static blog MVP."
+  },
+  {
+    "id": "second-post",
+    "title": "Second Post",
+    "date": "2025-12-25",
+    "file": "second-post.md",
+    "excerpt": "A smaller post to verify date sorting and navigation."
+  }
+]

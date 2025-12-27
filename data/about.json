@@ -1,0 +1,79 @@
+{
+  "profile": {
+    "name": "k1he",
+    "title": "Software Engineer",
+    "location": "Shenzhen, Guangdong",
+    "focus": ["Backend engineering", "Inference optimization", "System design", "Web Security"],
+    "languages": ["Chinese", "English"],
+    "education": "BUPT-CyberSecurity"
+  },
+  "skills": [
+    {
+      "category": "AI",
+      "items": ["Inference", "SGLang", "vLLM", "Quanitization"]
+    },
+    {
+      "category": "Backend",
+      "items": ["Java", "Go","Python", "MySQL", "Redis", "K8S"]
+    },
+    {
+      "category": "Infra",
+      "items": ["Linux", "Docker", "CI/CD", "Git", "Nginx"]
+    }
+  ],
+  "timeline": [
+    {
+      "period": "2025 — Present",
+      "role": "Software Engineer",
+      "company": "Tencent",
+      "location": "Shenzhen",
+      "logo": "assets/logos/tencent.svg",
+      "highlights": [
+        "参与高性能计算集群的性能优化与稳定性建设",
+        "参与推理引擎性能优化"
+      ]
+    },
+    {
+      "period": "2025",
+      "role": "Intern",
+      "company": "ByteDance",
+      "location": "Beijing",
+      "logo": "assets/logos/bytedance.svg",
+      "highlights": [
+        "参与广告投放链路特征引擎开发"
+      ]
+    },
+    {
+      "period": "2024-2025",
+      "role": "Intern",
+      "company": "Baidu",
+      "location": "Beijing",
+      "logo": "assets/logos/baidu.svg",
+      "highlights": [
+        "参与CI/CD平台建设"
+      ]
+    },
+    {
+      "period": "2024",
+      "role": "Intern",
+      "company": "Meituan",
+      "location": "Beijing",
+      "logo": "assets/logos/meituan.svg",
+      "highlights": [
+        "参与业务大模型测评系统功能迭代"
+      ]
+    }
+  ],
+  "contacts": [
+    {
+      "label": "Email",
+      "value": "k1he@bupt.edu.cn",
+      "href": "mailto:k1he@bupt.edu.cn"
+    },
+    {
+      "label": "GitHub",
+      "value": "github.com/k1he",
+      "href": "https://github.com/k1he"
+    }
+  ]
+}
