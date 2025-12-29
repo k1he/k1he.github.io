@@ -908,6 +908,35 @@ button.link:hover {
   margin: 22px 0;
 }
 
+/* Tables */
+.article table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0;
+  font-size: 14px;
+}
+
+.article th,
+.article td {
+  padding: 10px 14px;
+  border: 1px solid var(--border);
+  text-align: left;
+}
+
+.article th {
+  background: var(--surface);
+  font-weight: 600;
+  color: var(--text);
+}
+
+.article tr:nth-child(even) {
+  background: rgba(22, 27, 34, 0.5);
+}
+
+.article tr:hover {
+  background: rgba(88, 166, 255, 0.06);
+}
+
 /* Table of contents */
 .toc {
   font-size: 12px;
