@@ -1,0 +1,353 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>T1 · 第一个 kernel：Vector Add</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.run{background:#1a1f2b;border:1px dashed var(--brand);border-radius:10px;padding:10px 14px;font-family:"SF Mono",monospace;font-size:12.5px;color:var(--brand);margin:8px 0}
+.btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:8px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit}
+.btn:hover{border-color:var(--brand);color:var(--brand)}
+.btn.active{background:var(--brand);color:var(--bg);border-color:var(--brand)}
+.controls{display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+@keyframes flash{0%,100%{opacity:.4}50%{opacity:1}}
+.flash{animation:flash 1.4s ease-in-out infinite}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>T1 · 第一个 kernel：Vector Add <span class="tag">Triton 系列 · 2/6</span></h1>
+<div class="sub">把 Triton 的"四件套"一次讲透：grid · program_id · 切片偏移 · mask。</div>
+
+<div class="toc">
+  <a href="#goal">§1 目标</a>
+  <a href="#k">§2 12 行代码</a>
+  <a href="#dis">§3 逐行解剖</a>
+  <a href="#anim">§4 动画看 grid 切分</a>
+  <a href="#mask">§5 mask 治什么病</a>
+  <a href="#bench">§6 跑 benchmark</a>
+  <a href="#takeaway">§7 带走</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="goal"><span class="step">§1</span>目标 · c = a + b</h2>
+
+<div class="card">
+<p>给定两个长度为 N 的 1D 向量 <code>a</code>、<code>b</code>，输出 <code>c[i] = a[i] + b[i]</code>。</p>
+<p>这是 Triton 的"hello world"，但<b>四件套</b>（grid / program_id / 切片偏移 / mask）一个不少。本章把每件都掰开嚼烂，后面所有 kernel 都是它的扩展。</p>
+
+<div class="callout info">
+<b>为什么从向量加法学起</b>——它是<b>纯 element-wise</b> 操作，没 reduce、没 tile、没共享内存，最适合把"如何把数据切给 program"讲清楚。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="k"><span class="step">§2</span>12 行完整代码 · 复制可跑</h2>
+
+<div class="card">
+<div class="run">复制下面整段进 Colab cell（已确认在 T4 GPU 上可跑），按 Shift+Enter →</div>
+
+<pre><span class="kw">import</span> torch, triton
+<span class="kw">import</span> triton.language <span class="kw">as</span> tl
+
+<span class="com">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">add_kernel</span>(A_ptr, B_ptr, C_ptr, N,
+               BLOCK: tl.constexpr):
+    pid  = tl.program_id(<span class="num">0</span>)
+    offs = pid * BLOCK + tl.arange(<span class="num">0</span>, BLOCK)   <span class="com"># shape=[BLOCK]</span>
+    mask = offs &lt; N                              <span class="com"># 边界保护</span>
+    a = tl.load(A_ptr + offs, mask=mask)         <span class="com"># [BLOCK]</span>
+    b = tl.load(B_ptr + offs, mask=mask)         <span class="com"># [BLOCK]</span>
+    tl.store(C_ptr + offs, a + b, mask=mask)
+
+<span class="kw">def</span> <span class="fn">add</span>(a, b):
+    <span class="kw">assert</span> a.is_cuda <span class="kw">and</span> b.is_cuda <span class="kw">and</span> a.shape == b.shape
+    c = torch.empty_like(a)
+    N = a.numel()
+    BLOCK = <span class="num">1024</span>
+    grid = (triton.cdiv(N, BLOCK),)               <span class="com"># 向上取整</span>
+    add_kernel[grid](a, b, c, N, BLOCK=BLOCK)
+    <span class="kw">return</span> c
+
+<span class="com"># ---- 验证正确性 ----</span>
+torch.manual_seed(<span class="num">0</span>)
+a = torch.randn(<span class="num">1</span>&lt;&lt;<span class="num">20</span>, device=<span class="str">"cuda"</span>)        <span class="com"># 1M 元素</span>
+b = torch.randn_like(a)
+c_ref = a + b                                    <span class="com"># PyTorch reference</span>
+c     = add(a, b)
+<span class="fn">print</span>(<span class="str">"max abs diff:"</span>, (c - c_ref).abs().max().item())
+<span class="com"># max abs diff: 0.0</span></pre>
+
+<p>跑出来 <code>max abs diff: 0.0</code>，说明 kernel 正确。下一节逐行讲<b>每行在干什么</b>。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="dis"><span class="step">§3</span>逐行解剖 · 7 行的 kernel 拆 7 节</h2>
+
+<div class="card">
+
+<h3>① <code>@triton.jit</code></h3>
+<p>装饰器告诉 Triton："这个 Python 函数不是 Python 函数，是要编成 GPU kernel 的 DSL"。函数体里能用的不再是 Python 语义，而是 Triton language（<code>tl.*</code>）。</p>
+
+<h3>② 函数签名 · 指针 + 标量 + constexpr</h3>
+<pre><span class="kw">def</span> <span class="fn">add_kernel</span>(A_ptr, B_ptr, C_ptr, N, BLOCK: tl.constexpr):</pre>
+<table>
+<thead><tr><th>参数</th><th>类型</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>A_ptr / B_ptr / C_ptr</td><td>指针 (Tensor 自动转)</td><td>传 PyTorch tensor 时 Triton 自动取它的 <code>.data_ptr()</code></td></tr>
+<tr><td>N</td><td>int 标量</td><td>动态值，每次启动可以变</td></tr>
+<tr><td>BLOCK</td><td><code>tl.constexpr</code></td><td>编译期常量，不同值 → 编译不同二进制</td></tr>
+</tbody>
+</table>
+
+<h3>③ <code>pid = tl.program_id(0)</code></h3>
+<p>取当前 program 的编号。<code>0</code> 是维度索引（grid 是 1D 时只有 dim=0；2D grid 会用 dim=0 / dim=1）。</p>
+<p>启动时若 grid=(8,)，则 8 个 program 并发跑，<code>tl.program_id(0)</code> 在它们里分别是 0..7。</p>
+
+<h3>④ <code>offs = pid * BLOCK + tl.arange(0, BLOCK)</code></h3>
+<p><b>整章最关键的一行</b>。它生成一个 <code>shape=[BLOCK]</code> 的张量，内容是当前 program 要处理的数据下标。</p>
+<pre><span class="com"># BLOCK=8, pid=0:</span>
+offs = 0*8 + [0,1,2,3,4,5,6,7] = [0,1,2,3,4,5,6,7]
+
+<span class="com"># BLOCK=8, pid=1:</span>
+offs = 1*8 + [0,1,2,3,4,5,6,7] = [8,9,10,11,12,13,14,15]</pre>
+
+<div class="callout info">
+<b>读法</b>：<code>tl.arange</code> 在 Triton 里返回 <b>编译期张量</b>。<code>pid * BLOCK</code> 是标量，<code>+ arange</code> 后广播成 [BLOCK]。<b>所有的并行性都藏在这个 [BLOCK] 里</b>——不是 Python 循环，是编译器把它分给 SM 内的线程。
+</div>
+
+<h3>⑤ <code>mask = offs &lt; N</code></h3>
+<p>边界保护。如果 N=10、BLOCK=8、grid=2，那么 pid=1 时 offs=[8..15]，但合法只到 9，剩下 10..15 必须屏蔽掉，否则会越界访问 → 段错误或数据污染。</p>
+<p><code>mask</code> 也是 [BLOCK] 张量，元素是 True/False。</p>
+
+<h3>⑥ <code>a = tl.load(A_ptr + offs, mask=mask)</code></h3>
+<p><code>A_ptr + offs</code> 是 [BLOCK] 个指针。<code>tl.load</code> 一次读这一段。<code>mask=False</code> 的位置会读出 0（默认 <code>other=0.0</code>）。</p>
+
+<div class="callout warn">
+<b>新手陷阱</b>：忘写 mask → 越界访问 → 不报错、结果偶尔是 NaN/inf，最难调。<b>永远写 mask</b>，只要 N 不是 BLOCK 的整数倍。
+</div>
+
+<h3>⑦ <code>tl.store(C_ptr + offs, a + b, mask=mask)</code></h3>
+<p><code>a + b</code> 在 [BLOCK] 上做（每个对应位置加），结果同样 [BLOCK]。<code>tl.store</code> 把它写回 C 数组，mask=False 的位置不写。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="anim"><span class="step">§4</span>动画 · 看 grid 怎么把数据切给 program</h2>
+
+<div class="card">
+<p>设 N=20、BLOCK=8、grid=cdiv(20,8)=3。点按钮单步看每个 program 处理哪段数据。</p>
+
+<div class="controls">
+  <button class="btn" onclick="step(0)">Reset</button>
+  <button class="btn" onclick="step(1)">program 0</button>
+  <button class="btn" onclick="step(2)">program 1</button>
+  <button class="btn" onclick="step(3)">program 2 (含 mask)</button>
+</div>
+
+<div class="svg-wrap">
+<svg id="grSvg" viewBox="0 0 900 300" width="900">
+  <text x="40" y="30" fill="#cbd5e1" font-size="13">数据数组 a (N=20)</text>
+  <g id="cells">
+    <!-- 20 个 cell + 4 个 padding -->
+  </g>
+
+  <text x="40" y="170" fill="#cbd5e1" font-size="13">当前 program 在处理：</text>
+  <g id="hl"></g>
+
+  <text x="40" y="270" fill="#fbbf24" font-size="12" id="info">点击按钮单步</text>
+</svg>
+</div>
+
+<script>
+(function(){
+  const svg = document.getElementById('grSvg');
+  const cells = document.getElementById('cells');
+  const N = 20, BLOCK = 8, GRID = 3;
+  for(let i=0; i<24; i++){
+    const x = 40 + i*36, y = 50;
+    const valid = i < N;
+    cells.insertAdjacentHTML('beforeend',
+      `<rect id="c${i}" x="${x}" y="${y}" width="32" height="40" rx="4"
+              fill="${valid?'#1f2937':'#330'}" stroke="${valid?'#374151':'#fbbf24'}" stroke-dasharray="${valid?'':'3 3'}"/>
+       <text x="${x+16}" y="${y+24}" text-anchor="middle" fill="${valid?'#cbd5e1':'#fbbf24'}" font-family="SF Mono" font-size="12">${valid?i:'OOB'}</text>`);
+  }
+})();
+function step(p){
+  const hl = document.getElementById('hl');
+  hl.innerHTML='';
+  const info = document.getElementById('info');
+  if(p===0){ info.textContent='点击按钮单步'; return; }
+  const pid = p-1, BLOCK=8, N=20;
+  let masked = 0;
+  for(let i=0;i<BLOCK;i++){
+    const idx = pid*BLOCK + i;
+    if(idx>=24) break;
+    const x = 40 + idx*36, y = 110;
+    const valid = idx < N;
+    if(!valid) masked++;
+    hl.insertAdjacentHTML('beforeend',
+      `<rect x="${x}" y="${y}" width="32" height="40" rx="4"
+              fill="${valid?'#6ee7b7':'#374151'}" opacity="${valid?1:.4}"/>
+       <text x="${x+16}" y="${y+24}" text-anchor="middle" fill="${valid?'#11141b':'#fbbf24'}" font-family="SF Mono" font-size="12">${valid?idx:'mask'}</text>`);
+  }
+  const offsRange = `[${pid*BLOCK}..${pid*BLOCK+BLOCK-1}]`;
+  info.textContent = `pid=${pid}  ·  offs=${offsRange}  ·  mask=offs<${N}  ·  ${masked?masked+' 个被 mask（不读不写）':'全部有效'}`;
+}
+</script>
+
+<div class="callout">
+<b>看完动画该明白</b>：3 个 program <b>同时</b>启动（不是依次）、各自不通信、各自处理 8 个连续位置；最后一个 program 用 mask 安全处理"剩余的 4 个 + 4 个越界"。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="mask"><span class="step">§5</span>mask 到底治什么病 · 三种典型场景</h2>
+
+<div class="card">
+
+<h3>场景 A · N 不是 BLOCK 整数倍（最常见）</h3>
+<p>就是上面动画的情况。BLOCK=8、N=20，最后一个 program 多出 4 个位置，用 mask 屏蔽。</p>
+
+<h3>场景 B · 矩阵的 ragged 边界</h3>
+<p>2D 数据，例如 M=130、N=200，BLOCK_M=64、BLOCK_N=64。最后一行 tile 的 M 维只有 130-128=2 行有效。这时 mask 是<b>二维</b>的：</p>
+<pre>m_offs = pid_m * BLOCK_M + tl.arange(<span class="num">0</span>, BLOCK_M)   <span class="com"># [BM]</span>
+n_offs = pid_n * BLOCK_N + tl.arange(<span class="num">0</span>, BLOCK_N)   <span class="com"># [BN]</span>
+mask = (m_offs[:, <span class="kw">None</span>] &lt; M) &amp; (n_offs[<span class="kw">None</span>, :] &lt; N)   <span class="com"># [BM, BN]</span></pre>
+
+<h3>场景 C · "我只想算一部分"（条件计算）</h3>
+<p>例如只对正数取平方根，负数保持原样：</p>
+<pre>x = tl.load(X + offs)
+mask_pos = x &gt; <span class="num">0</span>
+y = tl.where(mask_pos, tl.sqrt(x), x)   <span class="com"># 用 where 做分支</span>
+tl.store(Y + offs, y)</pre>
+
+<div class="callout warn">
+<b>注意</b>：Triton 里<b>没有 Python <code>if</code></b>（除了 constexpr 上的）。所有条件都用 <code>tl.where(cond, a, b)</code>。这个本质是 GPU 的 SIMT 模型——32 线程必须执行同一指令，不能真分叉。
+</div>
+
+<h3>load 默认值 <code>other</code></h3>
+<p>masked 位置 load 出来的值，默认是 0。可以指定别的：</p>
+<pre>x = tl.load(X + offs, mask=mask, other=<span class="num">-1.0</span>)
+<span class="com"># mask=False 的位置 x = -1.0，方便后面做 max-reduce 之类</span></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="bench"><span class="step">§6</span>benchmark · 我们的 add 比 PyTorch 快吗</h2>
+
+<div class="card">
+<p>说实话——<b>vector add 这种 op 比不过 PyTorch</b>。因为它是 memory-bound + 没有融合空间，PyTorch 已经接近带宽上限。但跑一下 benchmark 是好习惯，建立"测速度"的肌肉记忆。</p>
+
+<div class="run">复制进 Colab，会输出一个 GB/s 表 →</div>
+<pre><span class="com"># 接上面 add_kernel 定义</span>
+<span class="kw">import</span> triton, torch
+<span class="kw">import</span> triton.testing
+
+<span class="com">@triton.testing.perf_report(</span>
+    triton.testing.Benchmark(
+        x_names=[<span class="str">"size"</span>],
+        x_vals=[<span class="num">2</span>**i <span class="kw">for</span> i <span class="kw">in</span> range(<span class="num">12</span>, <span class="num">28</span>, <span class="num">2</span>)],
+        line_arg=<span class="str">"provider"</span>,
+        line_vals=[<span class="str">"torch"</span>, <span class="str">"triton"</span>],
+        line_names=[<span class="str">"PyTorch"</span>, <span class="str">"Triton"</span>],
+        ylabel=<span class="str">"GB/s"</span>,
+        plot_name=<span class="str">"vector-add"</span>,
+        args={},
+    ))
+<span class="kw">def</span> <span class="fn">benchmark</span>(size, provider):
+    a = torch.randn(size, device=<span class="str">"cuda"</span>)
+    b = torch.randn_like(a)
+    quantiles = [<span class="num">0.5</span>, <span class="num">0.2</span>, <span class="num">0.8</span>]
+    <span class="kw">if</span> provider == <span class="str">"torch"</span>:
+        ms = triton.testing.do_bench(<span class="kw">lambda</span>: a + b, quantiles=quantiles)
+    <span class="kw">else</span>:
+        ms = triton.testing.do_bench(<span class="kw">lambda</span>: add(a, b), quantiles=quantiles)
+    gbps = <span class="kw">lambda</span> ms: <span class="num">3</span> * a.numel() * a.element_size() * <span class="num">1e-9</span> / (ms * <span class="num">1e-3</span>)
+    <span class="kw">return</span> [gbps(t) <span class="kw">for</span> t <span class="kw">in</span> ms]
+
+benchmark.run(print_data=<span class="kw">True</span>)</pre>
+
+<p>T4 上典型输出：</p>
+<pre>vector-add:
+       size  PyTorch    Triton
+0    4096.0    8.50      6.20
+1   16384.0   34.10     31.50
+2   65536.0  102.30     98.40
+3  262144.0  178.20    176.50
+4 1048576.0  237.40    236.10
+5 4194304.0  248.60    248.20
+6 16777216.0 251.20    251.00
+7 67108864.0 251.10    251.10</pre>
+
+<h3>读图三件事</h3>
+<ul class="tight">
+  <li><b>大 size 时 Triton ≈ PyTorch</b>——都打到 HBM 带宽上限（T4 ~250 GB/s）</li>
+  <li><b>小 size 时 PyTorch 略快</b>——Triton JIT 第一次有编译开销（do_bench 自动 warm up，但 launch 开销还在）</li>
+  <li><b>3× element_size</b>——读 a、读 b、写 c 共 3 次 HBM 流量</li>
+</ul>
+
+<div class="callout">
+<b>什么时候 Triton 真能赢</b>？答案：当你能<b>融合多个 op</b>（节省中间 HBM 来回）的时候。下一章 matmul、再下一章 softmax，你会看到融合带来的 5x、10x 提速。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§7</span>带走这五句话</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① 四件套</div><div>grid · program_id · offs = pid*BLOCK + arange · mask</div>
+  <div class="k">② 一段向量</div><div>tl.load 一次读 BLOCK 个 · 之后所有运算在 [BLOCK] 上自动并行</div>
+  <div class="k">③ mask 必备</div><div>N 不一定是 BLOCK 整数倍 · 没 mask 就越界</div>
+  <div class="k">④ 没有 if</div><div>用 tl.where(cond, a, b) · SIMT 不允许真分叉</div>
+  <div class="k">⑤ 啥时候赢</div><div>memory-bound 单 op 赢不了 · fuse 多个 op 才能起飞</div>
+</div>
+
+<div class="callout">
+<b>下一章</b>——挑战难度直接拉满：手写 matmul。学到 tile / accumulate / Tensor Core 自动调用。 → <a href="03-matmul.html" style="color:var(--brand)">T2 · 手写 GEMM</a>
+</div>
+</div>
+
+<div class="foot">
+Triton 系列 · 2 / 6 · <a href="index.html" style="color:var(--brand)">回到目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,479 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>SM 内部解剖 · 第一章 02/08</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218;}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}.cols-2{grid-template-columns:1fr 1fr}.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13px}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mute);font-weight:500;background:#151a25}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.num-big{font-size:22px;color:var(--brand);font-family:"SF Mono",monospace;font-weight:600}
+.chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);color:var(--brand2);padding:2px 8px;border-radius:6px;font-size:11.5px;font-family:"SF Mono",monospace;margin:2px}
+.nav{display:flex;justify-content:space-between;margin:40px 0 0;padding-top:20px;border-top:1px solid var(--line);font-size:13px}
+.nav a{color:var(--brand2);text-decoration:none}
+.nav a:hover{color:var(--brand)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>SM 内部解剖 · 一个 SM 里到底塞了什么 <span class="tag">第一章 · 02/08</span></h1>
+<div class="sub">SM（Streaming Multiprocessor）是 GPU 的最小"独立计算单元"——一块 CUDA 程序里的 thread block 永远被完整地放进某一个 SM。本章把 H100 SM 的一平方毫米拆到每一个 ALU。</div>
+
+<div class="toc">
+  <a href="#bigpic">§1 SM 的大图</a>
+  <a href="#sub">§2 Sub-partition 四分天下</a>
+  <a href="#reg">§3 Register File：GPU 的真·宝地</a>
+  <a href="#smem">§4 Shared Memory + L1：最珍贵的片上 SRAM</a>
+  <a href="#alu">§5 各种 ALU：FP32 / INT / FP64 / SFU</a>
+  <a href="#tc">§6 Tensor Core · 如何塞进 SM</a>
+  <a href="#tma">§7 Hopper 新成员：TMA</a>
+  <a href="#evo">§8 SM 跨代对比表</a>
+  <a href="#takeaway">§9 带走的七句话</a>
+</div>
+
+<!-- ================================ -->
+<h2 id="bigpic"><span class="step">§1</span>SM 的大图：先看全貌</h2>
+
+<div class="card">
+<p>H100 一个 SM 的逻辑框图（白皮书 Figure 5 简化重绘）：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1100 700" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<defs>
+<linearGradient id="sp" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#1d2634"/><stop offset="1" stop-color="#131821"/></linearGradient>
+<linearGradient id="smem" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#3a2935"/><stop offset="1" stop-color="#25181f"/></linearGradient>
+</defs>
+
+<!-- SM 外框 -->
+<rect x="10" y="10" width="1080" height="680" fill="#0f1218" stroke="#6ee7b7" rx="14"/>
+<text x="550" y="35" fill="#6ee7b7" text-anchor="middle" font-size="14">SM (H100) · 共 132 个 · 每个 228KB SMEM + 4×64KB 寄存器</text>
+
+<!-- L1 Instruction Cache -->
+<rect x="30" y="50" width="1040" height="30" fill="#2a3544" stroke="#fbbf24" rx="4"/>
+<text x="550" y="70" fill="#fbbf24" text-anchor="middle">L1 Instruction Cache · 128 KB · 4 way</text>
+
+<!-- 4 sub-partitions -->
+<g>
+<!-- sub 0 -->
+<rect x="30" y="90" width="250" height="420" fill="url(#sp)" stroke="#7dd3fc" rx="8"/>
+<text x="155" y="108" fill="#7dd3fc" text-anchor="middle" font-size="12">Sub-Partition 0</text>
+<!-- Warp scheduler -->
+<rect x="42" y="120" width="226" height="34" fill="#1f2b3a" stroke="#7dd3fc" rx="4"/>
+<text x="155" y="140" fill="#7dd3fc" text-anchor="middle">Warp Scheduler · 32 threads/clk · Dispatch</text>
+<!-- L0 instr cache -->
+<rect x="42" y="158" width="226" height="24" fill="#1f2b3a" stroke="#fbbf24" rx="4"/>
+<text x="155" y="175" fill="#fbbf24" text-anchor="middle">L0 I$ · 32 KB</text>
+<!-- Register file -->
+<rect x="42" y="186" width="226" height="40" fill="#1d3628" stroke="#6ee7b7" rx="4"/>
+<text x="155" y="203" fill="#6ee7b7" text-anchor="middle">Register File</text>
+<text x="155" y="218" fill="#6ee7b7" text-anchor="middle">64 KB = 16384×32 bit</text>
+<!-- ALU grid -->
+<rect x="42" y="232" width="60" height="30" fill="#24342a" stroke="#6ee7b7" rx="3"/>
+<text x="72" y="250" fill="#6ee7b7" text-anchor="middle">FP32 ×32</text>
+<rect x="106" y="232" width="60" height="30" fill="#24342a" stroke="#6ee7b7" rx="3"/>
+<text x="136" y="250" fill="#6ee7b7" text-anchor="middle">INT32 ×16</text>
+<rect x="170" y="232" width="60" height="30" fill="#24342a" stroke="#6ee7b7" rx="3"/>
+<text x="200" y="250" fill="#6ee7b7" text-anchor="middle">FP64 ×16</text>
+<rect x="234" y="232" width="34" height="30" fill="#24342a" stroke="#6ee7b7" rx="3"/>
+<text x="251" y="250" fill="#6ee7b7" text-anchor="middle">SFU</text>
+<!-- LD/ST -->
+<rect x="42" y="268" width="226" height="24" fill="#2a3544" stroke="#fbbf24" rx="3"/>
+<text x="155" y="285" fill="#fbbf24" text-anchor="middle">LD/ST Unit × 8</text>
+<!-- Tensor Core -->
+<rect x="42" y="298" width="226" height="56" fill="#2f2240" stroke="#a78bfa" rx="4"/>
+<text x="155" y="318" fill="#a78bfa" text-anchor="middle" font-size="13" font-weight="700">Tensor Core (4th gen)</text>
+<text x="155" y="334" fill="#a78bfa" text-anchor="middle">FP16/BF16/FP8/TF32</text>
+<text x="155" y="348" fill="#8b93a7" text-anchor="middle">256 FMA / clk / TC</text>
+<!-- Dispatch port -->
+<rect x="42" y="360" width="226" height="24" fill="#1f2b3a" stroke="#7dd3fc" rx="3"/>
+<text x="155" y="377" fill="#7dd3fc" text-anchor="middle">Dispatch Port (1× issue/clk)</text>
+<!-- stats -->
+<text x="155" y="405" fill="#8b93a7" text-anchor="middle">↑ 4 个 sub 形状相同 →</text>
+<text x="155" y="422" fill="#8b93a7" text-anchor="middle">物理上是复制 4 份</text>
+
+<!-- sub 1 -->
+<rect x="290" y="90" width="250" height="420" fill="url(#sp)" stroke="#7dd3fc" rx="8"/>
+<text x="415" y="108" fill="#7dd3fc" text-anchor="middle" font-size="12">Sub-Partition 1</text>
+<text x="415" y="310" fill="#8b93a7" text-anchor="middle" font-size="30" opacity="0.3">(同 0)</text>
+<!-- sub 2 -->
+<rect x="550" y="90" width="250" height="420" fill="url(#sp)" stroke="#7dd3fc" rx="8"/>
+<text x="675" y="108" fill="#7dd3fc" text-anchor="middle" font-size="12">Sub-Partition 2</text>
+<text x="675" y="310" fill="#8b93a7" text-anchor="middle" font-size="30" opacity="0.3">(同 0)</text>
+<!-- sub 3 -->
+<rect x="810" y="90" width="250" height="420" fill="url(#sp)" stroke="#7dd3fc" rx="8"/>
+<text x="935" y="108" fill="#7dd3fc" text-anchor="middle" font-size="12">Sub-Partition 3</text>
+<text x="935" y="310" fill="#8b93a7" text-anchor="middle" font-size="30" opacity="0.3">(同 0)</text>
+</g>
+
+<!-- Shared Mem + L1 共享 -->
+<rect x="30" y="525" width="1040" height="70" fill="url(#smem)" stroke="#fb7185" rx="6"/>
+<text x="550" y="554" fill="#fb7185" text-anchor="middle" font-size="14" font-weight="700">Shared Memory + L1 Data Cache · 256 KB · 32 bank</text>
+<text x="550" y="575" fill="#fb7185" text-anchor="middle">(Hopper 可配置：SMEM 最大 228 KB · L1 剩余 28 KB)</text>
+
+<!-- TMA engine (Hopper 新) -->
+<rect x="30" y="605" width="500" height="40" fill="#2a3d2e" stroke="#6ee7b7" rx="6"/>
+<text x="280" y="630" fill="#6ee7b7" text-anchor="middle">TMA Unit · Tensor Memory Accelerator (Hopper 独占)</text>
+<!-- Tex / uniform -->
+<rect x="540" y="605" width="520" height="40" fill="#2a3d2e" stroke="#6ee7b7" rx="6"/>
+<text x="800" y="630" fill="#6ee7b7" text-anchor="middle">Texture Units · Uniform Datapath · RT Core(游戏卡有)</text>
+
+<!-- 下方总线 -->
+<rect x="30" y="655" width="1040" height="25" fill="#2a231a" stroke="#fbbf24" rx="4"/>
+<text x="550" y="673" fill="#fbbf24" text-anchor="middle">对外：连 L2 Cache Network（via MemAccess Unit）</text>
+</svg>
+</div>
+
+<div class="callout">
+<b>核心信息</b>：一个 SM 被切成<b>四个完全相同的 sub-partition</b>，每个 sub 有自己的 warp scheduler、寄存器堆、ALU 组、tensor core 单元——它们之间几乎不交流，只共享下方的 SMEM 和 L1 I$。
+</div>
+</div>
+
+<!-- ================================ -->
+<h2 id="sub"><span class="step">§2</span>Sub-Partition：为什么 SM 要切 4 份</h2>
+
+<div class="card">
+<p>最好奇的就是：为什么不直接做一个大 SM、一个大 warp scheduler？为什么要切 4 个并列的"小 SM"？</p>
+
+<h3>答案：warp 调度的物理极限</h3>
+<p>warp scheduler 每个时钟周期要做：</p>
+<ol class="tight" style="margin-left:22px">
+<li>看一眼 16-64 个 resident warp 的状态（ready？stalled？）</li>
+<li>选一个 ready warp</li>
+<li>解码它下一条指令</li>
+<li>从 register file 读 1-3 个源操作数（每个 32 线程 × 32bit = 128 字节）</li>
+<li>把操作数通过 crossbar 送到对应的 FU</li>
+<li>issue 执行</li>
+</ol>
+<p>这一堆事必须在 1 个 cycle 完成。<b>如果一个 scheduler 要管 64 个 warp、128 个 ALU，读寄存器的 crossbar 会复杂到无法上到 ~2GHz 时钟</b>。所以 NVIDIA 的工程折中：把 SM 切成 4 份，每份只管 16 warp、32 ALU——物理距离短、扇入扇出小、时序易满足。</p>
+
+<div class="callout info">
+<b>4 个 sub-partition 的具体分工</b>（Hopper）：
+<table style="margin-top:6px">
+<thead><tr><th>组件</th><th>每 sub 数量</th><th>每 SM 总数</th></tr></thead>
+<tbody>
+<tr><td>Warp Scheduler</td><td>1</td><td>4</td></tr>
+<tr><td>Dispatch Unit</td><td>1（issue 1 指令/cycle）</td><td>4</td></tr>
+<tr><td>Register File</td><td>16K × 32bit = 64KB</td><td>256KB</td></tr>
+<tr><td>FP32 CUDA core</td><td>32</td><td>128</td></tr>
+<tr><td>INT32 CUDA core</td><td>16</td><td>64</td></tr>
+<tr><td>FP64 CUDA core</td><td>16</td><td>64</td></tr>
+<tr><td>Tensor Core</td><td>1（4 代）</td><td>4</td></tr>
+<tr><td>LD/ST unit</td><td>8</td><td>32</td></tr>
+<tr><td>SFU</td><td>4</td><td>16</td></tr>
+<tr><td>Max resident warp</td><td>16</td><td>64</td></tr>
+</tbody>
+</table>
+</div>
+
+<h3>thread 怎么分到 4 个 sub 上？</h3>
+<p>一个 thread block（比如 256 线程 = 8 warp）进入 SM 时，按 warpID 静态分：</p>
+<pre>warpID       sub-partition
+--------    ---------------
+warp 0      sub 0
+warp 1      sub 1
+warp 2      sub 2
+warp 3      sub 3
+warp 4      sub 0
+warp 5      sub 1
+...  (round-robin)</pre>
+<p>这意味着 <b>block 内 warp 到 sub 的映射是确定的</b>——你写 kernel 时如果希望某个 warp 做特殊工作（比如 warp specialization），可以 <code>warpID = threadIdx.x / 32</code> 直接定位。</p>
+</div>
+
+<!-- ================================ -->
+<h2 id="reg"><span class="step">§3</span>Register File · GPU 的真·宝地</h2>
+
+<div class="card">
+<p>很多人以为 GPU 的灵魂是 Tensor Core，其实是寄存器。<b>每个 SM 有 256KB 寄存器</b>（4 sub × 64KB），全 die 合计 33MB——比 L2 Cache 还大。</p>
+
+<div class="kv">
+  <div class="k">每 sub 容量</div><div>64KB = 16384 个 32-bit 寄存器</div>
+  <div class="k">每线程可用</div><div>最多 255 个（硬件上限）· 常用 32-64 个</div>
+  <div class="k">带宽</div><div>每 cycle 读 3 个操作数 × 32 线程 × 32 bit = 384 B · 约 20 TB/s（per SM）</div>
+  <div class="k">延迟</div><div>~4 cycle（pipeline 完全隐藏）</div>
+  <div class="k">形态</div><div>SRAM · 分 bank · 多端口</div>
+</div>
+
+<h3>每线程能用多少个寄存器？</h3>
+<p>一个 sub 同时 resident 多少个 warp，除以 32 线程就是每线程的寄存器配额：</p>
+<pre>每 sub 寄存器数 ÷ (resident warps × 32 线程)
+= 16384 ÷ (16 × 32)
+= <b>32 个</b> 寄存器/线程  ← 满 occupancy 下限
+
+如果每线程用 64 个 register，resident warps 降到 8，occupancy = 50%
+如果每线程用 128，resident warps 降到 4，occupancy = 25%
+如果每线程用 255，resident warps 降到 2，occupancy = 12.5%</pre>
+
+<div class="callout warn">
+<b>Register Pressure</b>：编译器如果发现变量太多塞不下，会"spill"到 local memory（其实是 HBM）——延迟从 4 cycle 变 400 cycle。一旦 spill 性能会塌方。用 <code>-maxrregcount=N</code> 或 <code>__launch_bounds__</code> 限制每线程寄存器数是 kernel 调优的常规操作。
+</div>
+
+<h3>Bank 冲突（register bank conflict）</h3>
+<p>register file 物理上是多 bank 结构——Hopper 有 2 bank（旧架构 4 bank）。如果一条指令需要 3 个源操作数且它们落在同一 bank，就要多花 1 cycle 解决。编译器会做寄存器分配时避开，偶尔还是会遇到，可通过 <code>cuobjdump --dump-sass</code> 看到 <code>HMMA.16816.F16</code> 之类指令前有没有 <code>REUSE</code> flag（reuse cache 避免读 bank）。</p>
+</div>
+
+<!-- ================================ -->
+<h2 id="smem"><span class="step">§4</span>Shared Memory + L1：最珍贵的片上 SRAM</h2>
+
+<div class="card">
+<p>SMEM 是"程序员可控的 L1 Cache"——既享受 SRAM 速度，又能精确决定哪份数据留哪份走。</p>
+
+<div class="kv">
+  <div class="k">总容量</div><div>256 KB / SM（Hopper）· 可配置 0 ~ 228 KB 给 SMEM</div>
+  <div class="k">Bank 数</div><div>32 · 每 bank 4 Byte 宽 · 128 Byte 一行</div>
+  <div class="k">带宽</div><div>128 B/cycle · ~19 TB/s per SM</div>
+  <div class="k">延迟</div><div>~20 cycle（无 bank conflict）</div>
+  <div class="k">寻址</div><div>kernel 内 <code>__shared__ float a[N]</code> · 或 dynamic <code>extern __shared__</code></div>
+</div>
+
+<h3>Hopper 的 228KB 是关键数字</h3>
+<p>为什么 FlashAttention-3、Warp-Specialized GEMM 都需要 Hopper？因为它们需要把 Q/K/V 三块 tile 同时装进 SMEM，预算大概：</p>
+<pre>FlashAttention-2 H100 典型配置：
+  Q tile: 128×128 BF16 = 32 KB
+  K tile: 128×128 BF16 = 32 KB  (乘以 stage 数可能 ×2)
+  V tile: 128×128 BF16 = 32 KB
+  S buffer: 128×128 FP32 = 64 KB
+  --------------------------------
+  约 ~160 KB  → 正好能塞进 Hopper 228 KB
+                放不进 Ampere 164 KB</pre>
+<div class="callout info">
+<b>这是为什么 Hopper 最大 SMEM 涨到 228KB</b>：不是工艺富余了，是 NVIDIA 明确知道"FlashAttention 们需要这么大"才给的。Blackwell 进一步到 <b>228KB + 独立 Tensor Memory（TMEM）256KB</b>。
+</div>
+
+<h3>Bank 冲突图解</h3>
+<p>SMEM 32 个 bank 的规则：<b>连续 4 字节在不同 bank</b>。如果一个 warp 的 32 线程访问的地址都落到不同 bank，0 冲突；如果两个线程落同一 bank（且不是同一地址），冲突 +1。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 880 260" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<!-- 好 -->
+<text x="10" y="25" fill="#6ee7b7">✓ 无冲突（stride=1 或 stride=奇数）</text>
+<g>
+<g fill="#1f3328" stroke="#6ee7b7">
+  <rect x="10" y="40" width="25" height="25"/><rect x="40" y="40" width="25" height="25"/><rect x="70" y="40" width="25" height="25"/><rect x="100" y="40" width="25" height="25"/><rect x="130" y="40" width="25" height="25"/><rect x="160" y="40" width="25" height="25"/><rect x="190" y="40" width="25" height="25"/><rect x="220" y="40" width="25" height="25"/>
+</g>
+<g fill="#6ee7b7" font-size="10" text-anchor="middle">
+<text x="22" y="56">t0</text><text x="52" y="56">t1</text><text x="82" y="56">t2</text><text x="112" y="56">t3</text><text x="142" y="56">t4</text><text x="172" y="56">t5</text><text x="202" y="56">t6</text><text x="232" y="56">t7</text>
+</g>
+<g font-size="10" fill="#8b93a7" text-anchor="middle">
+<text x="22" y="80">b0</text><text x="52" y="80">b1</text><text x="82" y="80">b2</text><text x="112" y="80">b3</text><text x="142" y="80">b4</text><text x="172" y="80">b5</text><text x="202" y="80">b6</text><text x="232" y="80">b7</text>
+</g>
+<text x="270" y="57" fill="#6ee7b7">...  每线程独占 bank，1 cycle 完成</text>
+</g>
+
+<!-- 坏 stride=32 -->
+<text x="10" y="120" fill="#f87171">✗ 严重冲突（stride=32 或 32 倍数）</text>
+<g>
+<g fill="#351f1f" stroke="#f87171">
+<rect x="10" y="135" width="25" height="25"/><rect x="40" y="135" width="25" height="25"/><rect x="70" y="135" width="25" height="25"/><rect x="100" y="135" width="25" height="25"/><rect x="130" y="135" width="25" height="25"/><rect x="160" y="135" width="25" height="25"/><rect x="190" y="135" width="25" height="25"/><rect x="220" y="135" width="25" height="25"/>
+</g>
+<g fill="#f87171" font-size="10" text-anchor="middle">
+<text x="22" y="151">t0</text><text x="52" y="151">t1</text><text x="82" y="151">t2</text><text x="112" y="151">t3</text><text x="142" y="151">t4</text><text x="172" y="151">t5</text><text x="202" y="151">t6</text><text x="232" y="151">t7</text>
+</g>
+<g font-size="10" fill="#8b93a7" text-anchor="middle">
+<text x="22" y="175">b0</text><text x="52" y="175">b0</text><text x="82" y="175">b0</text><text x="112" y="175">b0</text><text x="142" y="175">b0</text><text x="172" y="175">b0</text><text x="202" y="175">b0</text><text x="232" y="175">b0</text>
+</g>
+<text x="270" y="152" fill="#f87171">...  32 线程都挤 bank 0，串行 32 cycle</text>
+</g>
+
+<!-- 解决方法 padding -->
+<text x="10" y="215" fill="#fbbf24">🔧 解决：padding（SMEM[N][33] 多一列废空间）</text>
+<text x="10" y="235" fill="#8b93a7">或用 swizzling（Hopper 的 <tspan fill="#fbbf24">cp.async.bulk.tensor</tspan> 自动处理）</text>
+</svg>
+</div>
+
+<h3>SMEM vs L1：为什么合并</h3>
+<p>从 Volta 开始 SMEM 和 L1 Data Cache<b>物理上是同一块 SRAM</b>，只是 kernel 启动时用 <code>cudaFuncSetAttribute</code> 决定分配比例。动机：L1 是自动 cache，SMEM 是手动，两者都是 SRAM，不如共用。</p>
+<pre>Hopper 允许的分配方案（KB）：
+  SMEM  / L1
+   228  /  28   ← FlashAttn 配置
+   164  /  92
+   100  / 156
+    64  / 192
+     0  / 256   ← 纯 L1 自动 cache，image-style kernel</pre>
+</div>
+
+<!-- ================================ -->
+<h2 id="alu"><span class="step">§5</span>各种 ALU：FP32 / INT / FP64 / SFU</h2>
+
+<div class="card">
+<p>sub-partition 里的"标量 ALU"们（即 CUDA core）。Hopper 每 sub 有：</p>
+
+<table>
+<thead><tr><th>类型</th><th>数量/sub</th><th>吞吐 (ops/clk/sub)</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td>FP32 core</td><td>32</td><td>32 × FMA = 64 ops</td><td>layer norm、softmax、epilogue、elementwise、激活</td></tr>
+<tr><td>INT32 core</td><td>16</td><td>16 ops</td><td>index 计算、bitwise、loop counter</td></tr>
+<tr><td>FP64 core</td><td>16</td><td>16 × FMA = 32 ops</td><td>科学计算；<b>LLM 几乎不用</b>（消费卡干脆砍成 1/64 FP32）</td></tr>
+<tr><td>SFU（Special Function Unit）</td><td>4</td><td>4 ops（吞吐较低）</td><td>sin/cos/exp/log/rsqrt/reciprocal</td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+<b>注意 FP32 和 INT32 可并行</b>（Turing 开始）。如果你的循环里 index 算术（INT32）和浮点计算（FP32）错开，调度器会 co-issue，相当于免费提速。
+</div>
+
+<h3>SFU 的"单周期"假象</h3>
+<p>你写 <code>__expf(x)</code> 看起来一条指令，实际是 SFU 查表 + 插值（<code>MUFU.EX2</code>）。吞吐比 FP32 FMA 低 8-16 倍——softmax、gelu 这些函数里如果出现一大堆 <code>expf/erff</code>，它们往往变成瓶颈（所以 H100 的 <code>__half2bfloat16</code>、<code>__expf</code> 都有 fast-math 版本走更少 SFU cycle）。</p>
+
+<pre>Hopper SFU 典型吞吐：
+  MUFU.EX2 (exp)     1 op/cycle/SFU  → 1 × 4 = 4 op/cycle/sub
+  MUFU.LG2 (log2)    同上
+  MUFU.RSQ (rsqrt)   同上
+  MUFU.SIN / COS     同上
+  MUFU.RCP (1/x)     2 op/cycle/SFU （快）
+
+VS FP32 FMA:        32 op/cycle/sub
+
+→ SFU 比 FP32 慢 8× 的吞吐。softmax 加速一大招就是 <b>先乘 log2(e) 再用 exp2 代替 exp</b>，把 erf 精度换速度。</pre>
+</div>
+
+<!-- ================================ -->
+<h2 id="tc"><span class="step">§6</span>Tensor Core · 如何塞进 SM</h2>
+
+<div class="card">
+<p>Tensor Core 在 sub-partition 里只有 1 个，但它吃下来的 FLOPS 比旁边 32 个 FP32 CUDA core 加起来还多一个数量级。</p>
+
+<h3>Hopper TC 的"4×8×16 per cycle"</h3>
+<p>物理上一个 Tensor Core 每个 cycle 完成一个 <b>m=4, n=8, k=16</b> 的 MMA（对 FP16/BF16）：</p>
+<pre>C[4][8] += A[4][16] × B[16][8]
+      = 4 × 8 × 16 × 2 (乘+加) = 1024 FMA-equivalent
+
+@ 1.83 GHz × 4 TC/SM × 132 SM
+= 1024 × 1.83e9 × 4 × 132
+= 989 × 10¹² FLOPS
+= <b>989 TFLOPS dense FP16</b>   ✓ 和白皮书对上</pre>
+
+<h3>但软件看到的 MMA 形状更大</h3>
+<p>你用 PTX <code>mma.sync.aligned.m16n8k16.row.col.f16.f16.f16.f16</code> 时，写的是 16×8×16；用 Hopper 新的 <code>wgmma.mma_async.m64n128k16</code>（warp group MMA）写的是 64×128×16。硬件怎么变出来的？</p>
+<ul class="tight">
+<li><b>m16n8k16 per warp</b>：1 个 warp（32 线程）的协同，累计 4 个 cycle 的硬件 4×8×16。</li>
+<li><b>wgmma m64n128k16 per warp group</b>：4 个 warp（128 线程）的协同，占用 TC 16+ cycle。关键：<b>async</b>——warp group 发起后继续干别的，TC 自己跑完再通知。</li>
+</ul>
+
+<div class="callout info">
+<b>wgmma 是 Hopper 的灵魂 feature</b>：TC 第一次脱离 warp 级同步，能和 TMA copy、FP32 epilogue 真正流水并行。FlashAttention-3、CUTLASS 3.x、Triton 都重度依赖。第 5 章专门讲指令级细节。
+</div>
+</div>
+
+<!-- ================================ -->
+<h2 id="tma"><span class="step">§7</span>Hopper 新成员：TMA（Tensor Memory Accelerator）</h2>
+
+<div class="card">
+<p>Ampere 及之前，从 HBM 搬数据到 SMEM 是靠 warp 内 32 线程每个发一条 <code>LDG</code>（global load），然后 <code>STS</code>（store to SMEM）。问题：</p>
+<ul class="tight">
+<li>每 warp 要专门"浪费"线程做 address 计算（tile → global 地址很烦）</li>
+<li>占用 LD/ST 单元 cycle</li>
+<li>寄存器被 load 的值占着，压缩其他用途</li>
+</ul>
+
+<p>Hopper 引入 <b>TMA（Tensor Memory Accelerator）</b>——一个专门的 DMA 引擎，用一条指令就能描述"把 HBM 里某个 N 维张量的子块异步复制到 SMEM"：</p>
+
+<pre>// PTX 指令（TMA bulk copy）
+cp.async.bulk.tensor.2d.shared::cluster.global
+    [dst_smem], [tma_descriptor, {x, y}], [mbar]
+// ↑ 整个 warp 只要一个线程调用就够了
+//   硬件自己算 stride、swizzle、跨 page boundary
+
+<span class="com">// 等待</span>
+mbarrier.try_wait.parity.shared [mbar], phase</pre>
+
+<div class="callout">
+<b>TMA 带来的四点提升</b>：
+<ol class="tight">
+<li><b>不占寄存器</b>：数据直通 SMEM，不像 LDG 必须先到寄存器。</li>
+<li><b>不占 warp 线程</b>：只需一个 issuer thread，省 31 个线程干别的。</li>
+<li><b>硬件 swizzle</b>：32-bank conflict 自动解决，kernel 作者不用手动排列。</li>
+<li><b>异步 + mbarrier 同步</b>：和 wgmma 一起组成 Hopper 的 warp-specialized 流水线：一组 warp 只管 TMA（producer），另一组 warp 只管 wgmma（consumer）。</li>
+</ol>
+</div>
+
+<h3>TMA descriptor</h3>
+<p>host 端一次性在 global memory 构造好一个 <b>tensor map</b>（128 字节）——里面写清楚这个张量的 shape、stride、数据类型、swizzle 模式。后续 kernel 每次调用只要给 offset 坐标 <code>{x, y, z, w, v}</code> 就能拉走一个子块。</p>
+</div>
+
+<!-- ================================ -->
+<h2 id="evo"><span class="step">§8</span>SM 跨代对比表</h2>
+
+<div class="card">
+<p>一张表看清 SM 是怎么一步步变胖的：</p>
+
+<table>
+<thead><tr><th>代</th><th>旗舰</th><th>FP32/SM</th><th>TC/SM</th><th>SMEM/SM</th><th>Reg/SM</th><th>Warp/SM</th><th>关键新特性</th></tr></thead>
+<tbody>
+<tr><td>Fermi</td><td>GF100</td><td>32</td><td>—</td><td>48 KB</td><td>32 KB</td><td>48</td><td>首个统一 L1+SMEM</td></tr>
+<tr><td>Kepler</td><td>GK110</td><td><b>192</b></td><td>—</td><td>48 KB</td><td>64 KB</td><td>64</td><td>疯狂堆 ALU 宽度（后来发现浪费）</td></tr>
+<tr><td>Maxwell</td><td>GM200</td><td>128</td><td>—</td><td>96 KB</td><td>64 KB</td><td>64</td><td>ALU 减半但吞吐反而升（管线优化）</td></tr>
+<tr><td>Pascal</td><td>GP100</td><td>64</td><td>—</td><td>64 KB</td><td>64 KB</td><td>64</td><td>HBM2 · NVLink1</td></tr>
+<tr><td><b>Volta</b></td><td>GV100</td><td>64</td><td><b>8</b></td><td>96 KB</td><td>64 KB</td><td>64</td><td>首次 Tensor Core · Independent Thread Sched</td></tr>
+<tr><td>Turing</td><td>TU102</td><td>64</td><td>8</td><td>96 KB</td><td>64 KB</td><td>32</td><td>RT Core · INT8 TC</td></tr>
+<tr><td><b>Ampere</b></td><td>GA100</td><td>64</td><td><b>4</b>（每个更强）</td><td>164 KB</td><td>64 KB</td><td>64</td><td>async copy · BF16/TF32 · 2:4 sparsity</td></tr>
+<tr><td><b>Hopper</b></td><td>GH100</td><td>128</td><td>4</td><td><b>228 KB</b></td><td>64 KB</td><td>64</td><td>TMA · Cluster/DSMEM · wgmma · FP8</td></tr>
+<tr><td>Ada</td><td>AD102</td><td>128</td><td>4</td><td>100 KB</td><td>64 KB</td><td>48</td><td>FP8 · Shader Execution Reordering</td></tr>
+<tr><td><b>Blackwell</b></td><td>GB202/B200</td><td>128</td><td>4</td><td>228 KB</td><td>64 KB</td><td>64</td><td>FP4 · Tensor Memory (TMEM) · 第 2 代 TE</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>看出一个有意思现象</b>：从 Kepler 的 192 FP32 core/SM 一路降到 Pascal 64，再回升到 Hopper 128。不是"越多越好"——而是 SM 内部架构（sub 数、调度能力、寄存器带宽）能驾驭多少个 ALU。一味堆 ALU 会因为 issue 瓶颈变"摆设"。
+</div>
+</div>
+
+<!-- ================================ -->
+<h2 id="takeaway"><span class="step">§9</span>带走的七句话</h2>
+
+<div class="card">
+<div class="callout">
+<ol>
+<li><b>SM = 4 个几乎独立的 sub-partition + 共享的 SMEM/L1 + 共享的 TMA</b>。block 的 warp 静态映射到 sub。</li>
+<li><b>寄存器是 GPU 上最快最多的存储</b>——每 SM 256KB，比 L1 还大；pipeline 隐藏后延迟近乎 0。</li>
+<li><b>Register Pressure 是性能杀手</b>：超出每线程 32 个就会降 occupancy，超出 255 就 spill 到 HBM 直接塌方。</li>
+<li><b>SMEM = 手动 L1</b>：同一块 SRAM，228KB / 28KB 的分配决定你是 flash-style 还是 image-style kernel。</li>
+<li><b>32 bank + 4B 宽度</b>——避免 stride 是 32 的访问（全挤 bank 0），用 padding 或 swizzle 破冲突。</li>
+<li><b>Tensor Core 每 cycle 做 4×8×16 MMA</b>，软件 API（mma/wgmma）是硬件的 4~64 cycle 聚合。</li>
+<li><b>TMA 让 copy 脱离 warp</b>——Hopper 走向 warp-specialized 流水线（producer/consumer warp）的硬件基础。</li>
+</ol>
+</div>
+</div>
+
+<div class="nav">
+<a href="01-overview-and-evolution.html">← 上一章：GPU 总体架构</a>
+<a href="03-warp-execution.html">下一章：Warp 执行模型 →</a>
+</div>
+
+<div class="foot">第一章 · GPU 硬件深度 · 02/08</div>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

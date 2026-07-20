@@ -1,0 +1,322 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C13 · CUTLASS 源码解剖 · 工业级 GEMM 的架构</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.type{color:#fb7185}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+svg text{font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.svg-wrap{margin:20px 0;text-align:center}
+.svg-wrap svg{max-width:100%}
+.formula{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 20px;margin:12px 0;font-family:"SF Mono","JetBrains Mono",monospace;font-size:13px;line-height:1.8}
+.highlight{color:var(--brand);font-weight:600}
+.highlight2{color:var(--brand2);font-weight:600}
+.highlight-warn{color:var(--warn);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>C13 · CUTLASS 源码解剖 · 工业级 GEMM 的架构 <span class="tag">CUDA GEMM 系列 · 14/15</span></h1>
+<p class="sub">CUTLASS 是 NVIDIA 开源的高性能 GEMM 库。读懂它的架构，你就理解了所有 GEMM 优化的终极形态。这节不要求你能写 CUTLASS，但要能读懂。</p>
+
+<!-- §1 -->
+<h2><span class="step">§1</span>CUTLASS 是什么</h2>
+
+<div class="card">
+<p><span class="highlight">定位：</span></p>
+<ul class="tight">
+  <li>NVIDIA 开源的 <strong>C++ template</strong> 库</li>
+  <li>目标：提供接近 cuBLAS 的性能 + <strong>完全可定制</strong></li>
+  <li>版本演进：CUTLASS 2.x（传统）&rarr; CUTLASS 3.x（CuTe-based, Hopper-first）</li>
+  <li>GitHub：<code>github.com/NVIDIA/cutlass</code></li>
+</ul>
+</div>
+
+<h3>典型使用场景</h3>
+
+<table>
+<tr><th>场景</th><th>为什么用 CUTLASS 而非 cuBLAS</th></tr>
+<tr><td>自定义数据类型</td><td>FP8, INT4, NF4 — cuBLAS 不支持或支持有限</td></tr>
+<tr><td>自定义 Epilogue</td><td>bias + activation fusion — cuBLAS 的 epilogue 不够灵活</td></tr>
+<tr><td>非标准 Layout</td><td>Grouped GEMM, Batched GEMM — 需要精细控制</td></tr>
+<tr><td>极致性能调优</td><td>可以手调 tile size、pipeline stages、swizzle 策略</td></tr>
+</table>
+
+<div class="callout info">
+cuBLAS 是黑盒，CUTLASS 是白盒。当你需要"改一点点"时，CUTLASS 是唯一选择。
+</div>
+
+<!-- §2 -->
+<h2><span class="step">§2</span>CUTLASS 2.x 架构（经典）</h2>
+
+<pre>
+┌──────────────────────────────────────────────┐
+│ <span class="type">GEMM Device-level</span>                            │
+│ ┌──────────────────────────────────────────┐ │
+│ │ <span class="fn">Threadblock (Mainloop)</span>                   │ │
+│ │ ┌────────────────────────────────────┐   │ │
+│ │ │ Global → Shared (<span class="kw">Iterator</span>)        │   │ │
+│ │ │   PredicatedTileIterator           │   │ │
+│ │ └────────────────────────────────────┘   │ │
+│ │ ┌────────────────────────────────────┐   │ │
+│ │ │ Shared → Register (<span class="kw">Smem</span>)          │   │ │
+│ │ │   SmemIterator                     │   │ │
+│ │ └────────────────────────────────────┘   │ │
+│ │ ┌────────────────────────────────────┐   │ │
+│ │ │ Compute (<span class="kw">MMA</span>)                     │   │ │
+│ │ │   MmaTensorOp                      │   │ │
+│ │ └────────────────────────────────────┘   │ │
+│ └──────────────────────────────────────────┘ │
+│ ┌──────────────────────────────────────────┐ │
+│ │ <span class="fn">Epilogue</span>                                 │ │
+│ │   LinearCombination / BiasAdd / GELU     │ │
+│ └──────────────────────────────────────────┘ │
+└──────────────────────────────────────────────┘
+</pre>
+
+<h3>四大组件</h3>
+
+<div class="card">
+<table>
+<tr><th>组件</th><th>职责</th><th>关键类</th></tr>
+<tr><td><span class="highlight">Iterator</span></td><td>描述如何遍历 global memory tiles</td><td><code>PredicatedTileIterator</code></td></tr>
+<tr><td><span class="highlight">Mainloop</span></td><td>K 循环：load → compute → advance</td><td><code>MmaPipelined</code></td></tr>
+<tr><td><span class="highlight">MMA</span></td><td>矩阵乘累加（Tensor Core 指令）</td><td><code>MmaTensorOp</code></td></tr>
+<tr><td><span class="highlight">Epilogue</span></td><td>后处理：scale, bias, activation, store</td><td><code>LinearCombination</code></td></tr>
+</table>
+</div>
+
+<div class="callout">
+<strong>Mainloop 的核心逻辑：</strong><br>
+<code>for k = 0 to K/BK:</code><br>
+&nbsp;&nbsp;① 从 Global Memory 加载下一个 tile 到 Shared（异步 cp.async）<br>
+&nbsp;&nbsp;② 从 Shared 加载当前 tile 到 Register<br>
+&nbsp;&nbsp;③ 发射 Tensor Core MMA 指令<br>
+&nbsp;&nbsp;④ 同步 + advance iterator
+</div>
+
+<!-- §3 -->
+<h2><span class="step">§3</span>CUTLASS 3.x 与 CuTe</h2>
+
+<div class="callout info">
+CUTLASS 3.x 用 <strong>CuTe (Cute Tensor)</strong> 重写了底层抽象。CuTe 的哲学：<em>用代数语言描述数据 layout 和操作映射，让编译器生成最优代码。</em>
+</div>
+
+<h3>CuTe 四大概念</h3>
+
+<div class="card">
+<p><strong>1. Layout</strong> — 描述数据排列（shape + stride）</p>
+<pre>
+<span class="kw">auto</span> layout = <span class="fn">make_layout</span>(<span class="fn">make_shape</span>(<span class="num">4</span>, <span class="num">8</span>), <span class="fn">make_stride</span>(<span class="num">8</span>, <span class="num">1</span>));  <span class="com">// 4×8 row-major</span>
+</pre>
+</div>
+
+<div class="card">
+<p><strong>2. Tensor</strong> — Layout + pointer（逻辑视图）</p>
+<pre>
+<span class="kw">auto</span> tensor = <span class="fn">make_tensor</span>(ptr, layout);
+</pre>
+</div>
+
+<div class="card">
+<p><strong>3. TiledMMA</strong> — 描述一组 Tensor Core 操作的 tiling</p>
+<pre>
+<span class="kw">auto</span> mma = <span class="fn">make_tiled_mma</span>(<span class="type">SM80_16x8x16_F32F16F16F32</span>{});
+</pre>
+</div>
+
+<div class="card">
+<p><strong>4. TiledCopy</strong> — 描述数据搬运（global↔shared↔register）</p>
+<pre>
+<span class="kw">auto</span> copy = <span class="fn">make_tiled_copy</span>(
+    <span class="type">Copy_Atom</span>&lt;<span class="type">SM80_CP_ASYNC_CACHEALWAYS</span>&lt;<span class="type">uint128_t</span>&gt;, <span class="type">half</span>&gt;{}
+);
+</pre>
+</div>
+
+<div class="callout warn">
+CuTe 的学习曲线非常陡峭 — 大量 C++ template metaprogramming + 自定义代数系统。但一旦理解，你会发现它比 CUTLASS 2.x 的手动 iterator 更优雅、更不容易出 bug。
+</div>
+
+<!-- §4 -->
+<h2><span class="step">§4</span>一个 CUTLASS GEMM 的使用示例</h2>
+
+<pre>
+<span class="com">// 使用 CUTLASS 2.x device API</span>
+<span class="kw">#include</span> <span class="str">"cutlass/gemm/device/gemm.h"</span>
+
+<span class="kw">using</span> Gemm = <span class="type">cutlass::gemm::device::Gemm</span>&lt;
+    <span class="type">cutlass::half_t</span>,                     <span class="com">// Element A</span>
+    <span class="type">cutlass::layout::RowMajor</span>,           <span class="com">// Layout A</span>
+    <span class="type">cutlass::half_t</span>,                     <span class="com">// Element B</span>
+    <span class="type">cutlass::layout::RowMajor</span>,           <span class="com">// Layout B</span>
+    <span class="type">cutlass::half_t</span>,                     <span class="com">// Element C</span>
+    <span class="type">cutlass::layout::RowMajor</span>,           <span class="com">// Layout C</span>
+    <span class="type">float</span>,                               <span class="com">// Accumulator</span>
+    <span class="type">cutlass::arch::OpClassTensorOp</span>,      <span class="com">// 使用 Tensor Cores</span>
+    <span class="type">cutlass::arch::Sm80</span>,                 <span class="com">// A100</span>
+    <span class="type">cutlass::gemm::GemmShape</span>&lt;<span class="num">128</span>,<span class="num">256</span>,<span class="num">64</span>&gt;,    <span class="com">// Threadblock shape</span>
+    <span class="type">cutlass::gemm::GemmShape</span>&lt;<span class="num">64</span>,<span class="num">64</span>,<span class="num">64</span>&gt;,      <span class="com">// Warp shape</span>
+    <span class="type">cutlass::gemm::GemmShape</span>&lt;<span class="num">16</span>,<span class="num">8</span>,<span class="num">16</span>&gt;        <span class="com">// MMA shape (Tensor Core)</span>
+&gt;;
+
+<span class="type">Gemm</span> gemm_op;
+<span class="type">Gemm::Arguments</span> args(
+    {M, N, K},           <span class="com">// problem size</span>
+    {d_A, K},            <span class="com">// A + leading dimension</span>
+    {d_B, N},            <span class="com">// B + leading dimension</span>
+    {d_C, N},            <span class="com">// C (input) + leading dimension</span>
+    {d_C, N},            <span class="com">// D (output) + leading dimension</span>
+    {<span class="num">1.0f</span>, <span class="num">0.0f</span>}        <span class="com">// alpha, beta</span>
+);
+
+gemm_op(args);           <span class="com">// launch!</span>
+</pre>
+
+<div class="callout">
+<strong>三级 Shape 嵌套：</strong><br>
+<code>ThreadblockShape&lt;128,256,64&gt;</code> → 整个 threadblock 负责的 tile<br>
+<code>WarpShape&lt;64,64,64&gt;</code> → 每个 warp 负责的 sub-tile<br>
+<code>MMAShape&lt;16,8,16&gt;</code> → 单次 Tensor Core 指令的尺寸<br><br>
+从大到小嵌套，CUTLASS 自动算出 warp 数量和 register 分配。
+</div>
+
+<!-- §5 -->
+<h2><span class="step">§5</span>CUTLASS Profiler</h2>
+
+<pre>
+<span class="com"># 搜索最优 kernel 配置</span>
+./tools/profiler/cutlass_profiler \
+    --operation=gemm \
+    --m=<span class="num">4096</span> --n=<span class="num">4096</span> --k=<span class="num">4096</span> \
+    --A=f16:row --B=f16:row --C=f16:row \
+    --accum=f32 \
+    --op_class=tensorop \
+    --arch=sm_80
+</pre>
+
+<div class="card">
+<p><span class="highlight">Profiler 的工作方式：</span></p>
+<ul class="tight">
+  <li>枚举所有合法的 tile size / warp shape / pipeline stages 组合</li>
+  <li>逐一编译 + 运行 + 测量性能</li>
+  <li>输出最优配置及其 TFLOPS</li>
+  <li>这就是 <strong>Triton <code>@autotune</code> 的 CUDA 版</strong></li>
+</ul>
+</div>
+
+<div class="callout info">
+实际工程中，先用 Profiler 找到最优 tile/warp/stages 组合，然后硬编码进你的 kernel 调用。
+</div>
+
+<!-- §6 -->
+<h2><span class="step">§6</span>如何阅读 CUTLASS 源码</h2>
+
+<h3>推荐阅读路径</h3>
+
+<table>
+<tr><th>顺序</th><th>文件</th><th>关注点</th></tr>
+<tr><td>1</td><td><code>include/cutlass/gemm/device/gemm.h</code></td><td>顶层 API，参数如何传递</td></tr>
+<tr><td>2</td><td><code>include/cutlass/gemm/kernel/gemm.h</code></td><td>kernel launch 逻辑</td></tr>
+<tr><td>3</td><td><code>include/cutlass/gemm/threadblock/</code></td><td>K-loop (mainloop) 逻辑</td></tr>
+<tr><td>4</td><td><code>include/cutlass/gemm/warp/mma_tensor_op.h</code></td><td>Warp-level MMA</td></tr>
+<tr><td>5</td><td><code>include/cutlass/arch/mma_sm80.h</code></td><td>Tensor Core PTX wrapper</td></tr>
+<tr><td>6</td><td><code>include/cute/</code></td><td>Layout algebra (3.x)</td></tr>
+</table>
+
+<h3>源码目录结构</h3>
+
+<pre>
+cutlass/
+├── include/cutlass/
+│   ├── gemm/
+│   │   ├── device/<span class="fn">gemm.h</span>              <span class="com">← 用户入口</span>
+│   │   ├── kernel/<span class="fn">gemm.h</span>              <span class="com">← kernel launch</span>
+│   │   ├── threadblock/
+│   │   │   ├── <span class="fn">mma_pipelined.h</span>        <span class="com">← mainloop (double buffer)</span>
+│   │   │   └── <span class="fn">default_mma.h</span>          <span class="com">← 默认配置组装</span>
+│   │   └── warp/
+│   │       └── <span class="fn">mma_tensor_op.h</span>        <span class="com">← warp-level MMA</span>
+│   └── arch/
+│       └── <span class="fn">mma_sm80.h</span>                 <span class="com">← PTX mma 指令封装</span>
+└── examples/
+    └── <span class="fn">00_basic_gemm/</span>                 <span class="com">← 最简单的入门示例</span>
+</pre>
+
+<div class="callout warn">
+<strong>阅读建议：</strong>不要试图从头到尾读完 CUTLASS — 它有几十万行 template 代码。<br>
+从 <code>examples/00_basic_gemm</code> 出发，跟着 type alias 一层层展开就好。
+</div>
+
+<!-- §7 -->
+<h2><span class="step">§7</span>CUTLASS vs 手写 CUDA vs Triton</h2>
+
+<table>
+<tr><th></th><th>Triton</th><th>手写 CUDA</th><th>CUTLASS</th></tr>
+<tr><td><span class="highlight2">代码量</span></td><td>~50 行</td><td>~200-500 行</td><td>~20 行（使用 API）</td></tr>
+<tr><td><span class="highlight2">性能</span></td><td>90-97% cuBLAS</td><td>80-95%（看功力）</td><td>95-100% cuBLAS</td></tr>
+<tr><td><span class="highlight2">定制性</span></td><td>中等</td><td>最高</td><td>高（template 参数）</td></tr>
+<tr><td><span class="highlight2">学习曲线</span></td><td>低</td><td>高</td><td>极高（C++ template）</td></tr>
+<tr><td><span class="highlight2">新数据类型</span></td><td>容易</td><td>手动实现</td><td>已有 FP8/INT4/NF4</td></tr>
+<tr><td><span class="highlight2">Epilogue fusion</span></td><td>手动</td><td>手动</td><td>内置（BiasAdd, GELU...）</td></tr>
+</table>
+
+<div class="callout">
+<strong>选择建议：</strong><br>
+• 快速原型 / 研究 → <span class="highlight">Triton</span><br>
+• 生产环境 + 需要定制 → <span class="highlight">CUTLASS</span><br>
+• 学习底层原理 → <span class="highlight">手写 CUDA</span>（就是我们这个系列在做的事）
+</div>
+
+<!-- §8 -->
+<h2><span class="step">§8</span>带走</h2>
+
+<div class="card">
+<ol>
+  <li><strong>CUTLASS = 模板化的高性能 GEMM</strong>，接近 cuBLAS 性能但完全开源可定制</li>
+  <li><strong>三级分工</strong>：ThreadblockShape → WarpShape → MMAShape，从大到小嵌套</li>
+  <li><strong>CuTe (3.x)</strong>：Layout algebra 描述数据排列和操作映射，编译期生成最优代码</li>
+  <li><strong>Profiler 自动搜索最优配置</strong>（= Triton autotune 的 CUDA 原生版）</li>
+  <li><strong>读源码路径</strong>：device → kernel → threadblock → warp → arch</li>
+</ol>
+</div>
+
+<div class="callout">
+你不需要"会写 CUTLASS"，但需要"能读懂 CUTLASS"。当你 debug 推理框架的 GEMM kernel 时，你会感谢今天的付出。
+</div>
+
+<p class="foot">C13 · CUTLASS 源码解剖 — CUDA GEMM 系列 14/15</p>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

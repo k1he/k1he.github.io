@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T13 · 从 Triton 到 CUDA · GEMM 概念桥梁</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px;max-width:820px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.hl{color:#6ee7b7;font-weight:600}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+td.best{color:var(--brand);font-weight:600}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.takeaway{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 24px;margin:12px 0}
+.takeaway li{margin:8px 0}
+.takeaway li strong{color:var(--brand)}
+.formula{font-family:"SF Mono",monospace;font-size:13px;color:var(--brand2);margin:8px 0}
+.grid2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+@media(max-width:800px){.grid2{grid-template-columns:1fr}}
+.grid2 .card{margin:0}
+.grid2 .card h3{margin-top:0}
+.highlight-line{background:rgba(110,231,183,.12);display:block;margin:0 -16px;padding:0 16px;border-radius:4px}
+
+/* Extra styles for this page */
+.big-table{overflow-x:auto}
+.big-table table{min-width:700px}
+.big-table th{background:var(--panel2);position:sticky;top:0;font-size:12.5px;white-space:nowrap}
+.big-table td:first-child{color:var(--brand);font-weight:600;white-space:nowrap}
+.big-table td:nth-child(2){color:var(--brand2);font-weight:500;white-space:nowrap}
+.hierarchy{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:20px 24px;overflow:auto;font-family:"SF Mono","JetBrains Mono",monospace;font-size:13px;line-height:1.8;margin:16px 0}
+.hierarchy .level0{color:var(--mute)}
+.hierarchy .level1{color:var(--brand2)}
+.hierarchy .level2{color:var(--purple)}
+.hierarchy .level3{color:var(--pink)}
+.hierarchy .anno{color:var(--mute);font-style:italic}
+.roadmap{counter-reset:stage}
+.roadmap .stage{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px 22px;margin:14px 0;position:relative;padding-left:58px}
+.roadmap .stage::before{counter-increment:stage;content:counter(stage);position:absolute;left:18px;top:18px;background:var(--brand);color:var(--bg);width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:14px}
+.roadmap .stage.done::before{background:var(--mute)}
+.roadmap .stage.done{opacity:.7}
+.roadmap .stage h3{margin:0 0 6px;font-size:15px}
+.roadmap .stage p{margin:4px 0;font-size:13.5px;color:var(--mute)}
+.hidden-list{list-style:none;padding:0;margin:12px 0}
+.hidden-list li{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px 18px;margin:10px 0}
+.hidden-list li strong{color:var(--pink);display:block;margin-bottom:4px}
+.hidden-list .vs{display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:8px;font-size:13px}
+.hidden-list .vs span{display:block;padding:6px 10px;border-radius:8px}
+.hidden-list .vs .triton-way{background:rgba(110,231,183,.08);border:1px solid rgba(110,231,183,.2)}
+.hidden-list .vs .cuda-way{background:rgba(248,113,113,.08);border:1px solid rgba(248,113,113,.2)}
+.recap-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:12px;margin:16px 0}
+.recap-grid .item{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 16px}
+.recap-grid .item .label{font-size:12px;color:var(--mute);margin-bottom:4px}
+.recap-grid .item .title{font-size:14px;color:var(--brand2);font-weight:600}
+.recap-grid .item .desc{font-size:12.5px;color:var(--ink);margin-top:4px}
+.resource-list{list-style:none;padding:0;margin:12px 0}
+.resource-list li{padding:8px 0;border-bottom:1px solid var(--line);font-size:13.5px}
+.resource-list li:last-child{border:none}
+.resource-list li::before{content:">";color:var(--brand);margin-right:8px;font-weight:700}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>T13 · 从 Triton 到 CUDA · GEMM 概念桥梁 <span class="tag">Triton 系列 · 14/15</span></h1>
+<p class="sub">这是 GEMM 系列的收尾。把 T6-T12 学到的每个 Triton 概念映射到 CUDA/CUTLASS——当你开始写 CUDA GEMM 时，这些已经是你的直觉了。</p>
+
+<!-- ===== §1 ===== -->
+<h2><span class="step">§1</span>概念对照表</h2>
+
+<p>每个 Triton 概念在 CUDA/CUTLASS 中都有明确对应。这张表就是你的 <strong>翻译词典</strong>：</p>
+
+<div class="card big-table">
+<table>
+<thead>
+<tr><th>Triton 概念</th><th>CUDA / CUTLASS 对应</th><th>说明</th></tr>
+</thead>
+<tbody>
+<tr><td>program</td><td>Threadblock (CTA)</td><td>一个 program = 一组线程的协作单元</td></tr>
+<tr><td>tl.program_id(0)</td><td>blockIdx.x</td><td>获取当前 CTA 的编号</td></tr>
+<tr><td>BLOCK_M / BLOCK_N</td><td>Tile shape (ThreadblockShape)</td><td>CTA 负责的输出区域大小</td></tr>
+<tr><td>BLOCK_K</td><td>K-group size</td><td>内层循环每步处理的 K 维宽度</td></tr>
+<tr><td>tl.dot(a, b)</td><td>wmma / mma instruction (Tensor Core)</td><td>硬件矩阵乘指令</td></tr>
+<tr><td>K 维 for 循环</td><td>Mainloop (pipelining)</td><td>加载 + 计算的循环体</td></tr>
+<tr><td>tl.load + mask</td><td>cp.async / ldg.128 + predicate</td><td>全局内存异步加载</td></tr>
+<tr><td>tl.zeros(..., float32)</td><td>Fragment accumulator (C fragment)</td><td>Tensor Core 的 fp32 累加寄存器</td></tr>
+<tr><td>L2 swizzle (GROUP_SIZE_M)</td><td>ThreadblockSwizzle / ClusterLaunchPolicy</td><td>改变 CTA 调度顺序以提升缓存命中</td></tr>
+<tr><td>Split-K</td><td>SplitKMode::kParallel / kSerial</td><td>沿 K 维增加并行度</td></tr>
+<tr><td>@triton.autotune</td><td>CUTLASS Profiler / cuBLAS heuristics</td><td>搜索最优配置</td></tr>
+<tr><td>num_stages</td><td>Pipeline stages (double/triple buffering)</td><td>共享内存缓冲区数量</td></tr>
+<tr><td>num_warps</td><td>Warp count per CTA</td><td>CTA 内的 warp 数量</td></tr>
+<tr><td>acc.to(tl.float16)</td><td>Epilogue (convert + store)</td><td>结果类型转换 + 写回全局内存</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout">你在 Triton 中写的每一行代码，在 CUDA 中都有对应——只不过 CUDA 需要你手动管理更多细节。这张表是双向的：读 CUDA 代码时也能用 Triton 概念理解。</div>
+
+<!-- ===== §2 ===== -->
+<h2><span class="step">§2</span>Triton 隐藏了什么（你在 CUDA 中需要手动做的）</h2>
+
+<ol class="hidden-list">
+<li>
+<strong>1. Shared Memory 分配 + Bank Conflict 避免</strong>
+<div class="vs">
+<span class="triton-way"><b>Triton:</b> 自动分配，自动 padding</span>
+<span class="cuda-way"><b>CUDA:</b> <code>__shared__ half A_shared[BM][BK+PADDING]</code> — 需要手动 padding 避免 bank conflict</span>
+</div>
+</li>
+<li>
+<strong>2. Global → Shared Memory 搬运</strong>
+<div class="vs">
+<span class="triton-way"><b>Triton:</b> <code>tl.load</code> 自动决定搬运策略</span>
+<span class="cuda-way"><b>CUDA:</b> 手动用 <code>cp.async</code> / <code>ldg.128</code> + 计算 thread-to-element mapping</span>
+</div>
+</li>
+<li>
+<strong>3. Shared → Register 搬运 (LDS → RF)</strong>
+<div class="vs">
+<span class="triton-way"><b>Triton:</b> 编译器自动安排</span>
+<span class="cuda-way"><b>CUDA:</b> <code>ldmatrix</code> 指令 + warp-level layout 约束</span>
+</div>
+</li>
+<li>
+<strong>4. Tensor Core MMA 指令编排</strong>
+<div class="vs">
+<span class="triton-way"><b>Triton:</b> <code>tl.dot(a, b)</code> 一行搞定</span>
+<span class="cuda-way"><b>CUDA:</b> <code>wmma::mma_sync</code> 或 PTX <code>mma.sync.aligned.m16n8k16</code></span>
+</div>
+</li>
+<li>
+<strong>5. Software Pipelining（多缓冲区重叠）</strong>
+<div class="vs">
+<span class="triton-way"><b>Triton:</b> <code>num_stages=3</code> 一个参数</span>
+<span class="cuda-way"><b>CUDA:</b> 手动维护 2-4 个 shared memory buffer，用 barrier 同步</span>
+</div>
+</li>
+<li>
+<strong>6. Warp 内部的数据分布 (Layout)</strong>
+<div class="vs">
+<span class="triton-way"><b>Triton:</b> 编译器决定数据分布</span>
+<span class="cuda-way"><b>CUDA:</b> swizzle pattern + <code>ldmatrix</code> 的 "warp-arranged" layout</span>
+</div>
+</li>
+<li>
+<strong>7. Register Pressure 管理</strong>
+<div class="vs">
+<span class="triton-way"><b>Triton:</b> 编译器优化寄存器分配</span>
+<span class="cuda-way"><b>CUDA:</b> 手动控制寄存器使用量 (<code>__launch_bounds__</code> / <code>maxrregcount</code>)</span>
+</div>
+</li>
+</ol>
+
+<div class="callout warn">这 7 项加起来，就是为什么 CUDA GEMM 代码通常是 <strong>500-1000 行</strong>而 Triton 只需 <strong>50 行</strong>。Triton 的编译器 (Triton-IR → LLVM-IR → PTX) 替你做了这些决策。</div>
+
+<!-- ===== §3 ===== -->
+<h2><span class="step">§3</span>CUDA GEMM 的完整层次</h2>
+
+<p>CUDA 让你在 <strong>每一层</strong> 都有控制权——这既是力量也是负担：</p>
+
+<div class="hierarchy">
+<span class="level0">┌─────────────────────────────────────┐</span>
+<span class="level0">│ <b>Grid Level</b>                          │</span> <span class="anno">← grid = 所有 CTA 的集合</span>
+<span class="level0">│ ┌─────────────────────────────────┐ │</span>
+<span class="level1">│ │ <b>CTA (Threadblock) Level</b>       │ │</span> <span class="anno">← Triton 的 "program" 在这里</span>
+<span class="level0">│ │ ┌───────────────────────────┐ │ │</span>
+<span class="level2">│ │ │ <b>Warp Level</b>              │ │ │</span> <span class="anno">← Triton 隐藏了这层</span>
+<span class="level0">│ │ │ ┌───────────────────────┐│ │ │</span>
+<span class="level3">│ │ │ │ <b>Thread Level</b>         ││ │ │</span> <span class="anno">← Triton 完全隐藏</span>
+<span class="level3">│ │ │ │ (Tensor Core instr.) ││ │ │</span>
+<span class="level0">│ │ │ └───────────────────────┘│ │ │</span>
+<span class="level0">│ │ └───────────────────────────┘ │ │</span>
+<span class="level0">│ └─────────────────────────────────┘ │</span>
+<span class="level0">└─────────────────────────────────────┘</span>
+</div>
+
+<div class="callout info"><strong>核心区别：</strong>Triton 让你在 CTA level 思考（定义 tile + K 循环），编译器处理 warp/thread level。CUDA 让你在所有 level 都有控制权——但也要求你全部手动管理。</div>
+
+<!-- ===== §4 ===== -->
+<h2><span class="step">§4</span>CUTLASS 3.x 的 CuTe 抽象</h2>
+
+<p>CUTLASS 3.x 引入了 <strong>CuTe</strong>（Cute Tensor）库——试图在 CUDA 层面提供类似 Triton 的高层抽象：</p>
+
+<div class="grid2">
+<div class="card">
+<h3>Layout</h3>
+<p>描述数据在内存中的排列方式。用代数形式表达 shape + stride，支持组合、分割、补充。</p>
+<p style="font-size:12.5px;color:var(--mute)">类似 Triton 的 <code>tl.make_block_ptr</code> + stride 信息</p>
+</div>
+<div class="card">
+<h3>Tensor</h3>
+<p>Layout + 数据指针 = 一个可操作的张量视图。支持 partition、tile 等操作。</p>
+<p style="font-size:12.5px;color:var(--mute)">类似 Triton 中 pointer + offsets 的组合</p>
+</div>
+<div class="card">
+<h3>TiledMMA</h3>
+<p>描述一组 Tensor Core 操作的分工：哪些 warp 负责哪些元素，MMA atom 的排列方式。</p>
+<p style="font-size:12.5px;color:var(--mute)">类似 Triton 的 <code>tl.dot</code> 但暴露了 warp 级细节</p>
+</div>
+<div class="card">
+<h3>Copy</h3>
+<p>描述数据搬运模式：global→shared、shared→register 的线程映射与指令选择。</p>
+<p style="font-size:12.5px;color:var(--mute)">类似 Triton 的 <code>tl.load</code>/<code>tl.store</code> 但手动控制</p>
+</div>
+</div>
+
+<div class="callout">CuTe 试图在 CUDA 层面提供类似 Triton 的高层抽象——但仍然是 <strong>C++ template metaprogramming</strong>。学习曲线陡峭，但理解后非常强大。</div>
+
+<!-- ===== §5 ===== -->
+<h2><span class="step">§5</span>CUDA GEMM 学习路线</h2>
+
+<div class="roadmap">
+<div class="stage done">
+<h3>阶段 0 — 理论基础（你已完成!）</h3>
+<p>✅ 理解 tiling + K-loop + accumulator</p>
+<p>✅ 理解 L2 swizzle + Split-K</p>
+<p>✅ 理解 autotune / num_stages / num_warps</p>
+</div>
+<div class="stage">
+<h3>阶段 1 — Naive CUDA GEMM</h3>
+<p>每个 thread 算一个输出元素</p>
+<p>理解 threadIdx / blockIdx 到矩阵坐标的映射</p>
+<p>性能极差（~18% cuBLAS），但理解基本编程模型</p>
+</div>
+<div class="stage">
+<h3>阶段 2 — Shared Memory Tiling</h3>
+<p><code>__shared__</code> 声明 tile buffer</p>
+<p>线程协作加载 tile → <code>__syncthreads()</code> 同步 → 从 shared 读取计算</p>
+<p>Bank conflict 问题初现</p>
+</div>
+<div class="stage">
+<h3>阶段 3 — Tensor Core (WMMA)</h3>
+<p><code>wmma::load_matrix_sync</code> / <code>mma_sync</code> / <code>store_matrix_sync</code></p>
+<p>理解 Fragment 概念：数据分布在 warp 的 32 个线程中</p>
+<p>性能跳跃 (~5x)</p>
+</div>
+<div class="stage">
+<h3>阶段 4 — 高性能 GEMM</h3>
+<p><code>cp.async</code> + software pipeline (double/triple buffering)</p>
+<p><code>ldmatrix</code> + swizzle pattern</p>
+<p>Register tiling：每个 thread 负责更多输出元素</p>
+</div>
+<div class="stage">
+<h3>阶段 5 — 阅读 CUTLASS 源码</h3>
+<p>mainloop + epilogue 架构分离</p>
+<p>CuTe layout algebra（代数式描述数据布局）</p>
+<p>Hopper 架构特性：TMA、warp specialization、cluster</p>
+</div>
+</div>
+
+<h3>推荐学习资源</h3>
+<ul class="resource-list">
+<li><strong>CUTLASS GEMM Tutorial</strong> — GitHub NVIDIA/cutlass/examples</li>
+<li><strong>"How to Optimize a CUDA Matmul Kernel"</strong> — Simon Boehm（从 naive 到 95% cuBLAS）</li>
+<li><strong>"Programming Tensor Cores"</strong> — Lei Mao's Blog</li>
+<li><strong>NVIDIA Developer Blog: "Efficient GEMM"</strong> — 官方最佳实践</li>
+<li><strong>CUTLASS 3.x CuTe documentation</strong> — 理解现代 CUTLASS 抽象</li>
+</ul>
+
+<!-- ===== §6 ===== -->
+<h2><span class="step">§6</span>性能对比：你学了什么</h2>
+
+<div class="card big-table">
+<table>
+<thead>
+<tr><th>实现</th><th>M=N=K=4096 TFLOPS</th><th>vs cuBLAS</th></tr>
+</thead>
+<tbody>
+<tr><td>PyTorch (torch.matmul)</td><td>165</td><td>~100%（就是 cuBLAS）</td></tr>
+<tr><td>Triton T9 (K-loop)</td><td>135</td><td>82%</td></tr>
+<tr><td>Triton T10 (+ swizzle)</td><td>155</td><td>94%</td></tr>
+<tr><td class="best">Triton T12 (+ autotune)</td><td class="best">160</td><td class="best">97%</td></tr>
+<tr><td>手写 CUDA (无 Tensor Core)</td><td>~30</td><td>18%</td></tr>
+<tr><td>手写 CUDA (+ TC + pipeline)</td><td>~155</td><td>94%</td></tr>
+<tr><td>cuBLAS (NVIDIA 工程师精调)</td><td>165</td><td>100%</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="callout"><strong>关键洞察：</strong>Triton 用 50 行代码达到了 cuBLAS <strong>95%+</strong> 的性能。CUDA 要 500+ 行才能达到同样水平——但 CUDA 给了你 <strong>100% 的控制权</strong>。</div>
+
+<!-- ===== §7 ===== -->
+<h2><span class="step">§7</span>什么时候必须用 CUDA（Triton 不够的场景）</h2>
+
+<div class="card">
+<ul class="tight">
+<li><strong style="color:var(--pink)">Custom memory layout</strong> — 非标准 stride 排列（如 interleaved quantization format）</li>
+<li><strong style="color:var(--pink)">Warp-specialization</strong> — Hopper TMA 的 producer/consumer warp 分工</li>
+<li><strong style="color:var(--pink)">极端低延迟要求</strong> — Persistent kernel（常驻 GPU，不退出）</li>
+<li><strong style="color:var(--pink)">通信重叠</strong> — 与 NCCL / custom all-reduce 的 computation-communication overlap</li>
+<li><strong style="color:var(--pink)">非标准数据类型</strong> — FP4、microscaling (MXFP)、custom quantization</li>
+<li><strong style="color:var(--pink)">跨 CTA 协作</strong> — Cluster-level synchronization (Hopper sm_90+)</li>
+</ul>
+</div>
+
+<div class="callout info">经验法则：90%+ 的场景 Triton 够用。只有当你需要压榨最后 5% 性能、或用到 Triton 尚不支持的硬件特性时，才需要下沉到 CUDA。</div>
+
+<!-- ===== §8 ===== -->
+<h2><span class="step">§8</span>GEMM 系列总结</h2>
+
+<p>回顾 T6 → T13 的完整旅程：</p>
+
+<div class="recap-grid">
+<div class="item">
+<div class="label">T6</div>
+<div class="title">数学基础</div>
+<div class="desc">GEMM 在 AI 中的地位 + Roofline 分析</div>
+</div>
+<div class="item">
+<div class="label">T7</div>
+<div class="title">Naive 实现</div>
+<div class="desc">暴露 Memory-Bound 问题</div>
+</div>
+<div class="item">
+<div class="label">T8</div>
+<div class="title">Tiling</div>
+<div class="desc">数据复用 → Arithmetic Intensity 提升</div>
+</div>
+<div class="item">
+<div class="label">T9</div>
+<div class="title">K-loop + tl.dot</div>
+<div class="desc">完整 GEMM 实现 + Tensor Core</div>
+</div>
+<div class="item">
+<div class="label">T10</div>
+<div class="title">L2 Swizzle</div>
+<div class="desc">CTA 调度优化 → 缓存命中率</div>
+</div>
+<div class="item">
+<div class="label">T11</div>
+<div class="title">Split-K</div>
+<div class="desc">小 M 场景的 K 维并行</div>
+</div>
+<div class="item">
+<div class="label">T12</div>
+<div class="title">Autotune</div>
+<div class="desc">自动搜索最优 BLOCK / warp / stage 配置</div>
+</div>
+<div class="item">
+<div class="label">T13</div>
+<div class="title">桥梁 → CUDA</div>
+<div class="desc">概念映射 + CUDA 学习路线</div>
+</div>
+</div>
+
+<div class="callout"><strong>你现在拥有了理解任何 GEMM 实现（无论 Triton 还是 CUDA）的概念框架。</strong> 当你看到 CUTLASS 的 <code>ThreadblockShape&lt;128,256,64&gt;</code> 时，你知道那就是 BLOCK_M=128, BLOCK_N=256, BLOCK_K=64。</div>
+
+<!-- ===== §9 ===== -->
+<h2><span class="step">§9</span>带走</h2>
+
+<ol class="takeaway">
+<li><strong>1. 概念无缝迁移</strong> — Triton 的每个概念都有 CUDA 对应。你在 Triton 学的不会浪费，它们会成为你读 CUDA 代码时的直觉。</li>
+<li><strong>2. 7 层隐藏复杂度</strong> — Shared memory 管理、warp layout、pipeline、register pressure... Triton 编译器替你做了这些决策。</li>
+<li><strong>3. 渐进式学习路线</strong> — naive → shared mem → tensor core → pipeline → CUTLASS。每一步都建立在前一步之上。</li>
+<li><strong>4. 选择的智慧</strong> — 90%+ 场景 Triton 够用。极端性能 / 特殊硬件特性才需要 CUDA。别在不需要的时候增加复杂度。</li>
+</ol>
+
+<p class="foot">T13 · 从 Triton 到 CUDA — Triton 系列 14/15</p>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

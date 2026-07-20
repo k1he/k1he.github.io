@@ -1,0 +1,498 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>为什么必须 PD 分离</title>
+<style>
+
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+  --R0:#fbbf24;--R1:#7dd3fc;--R2:#a78bfa;--R3:#34d399;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+.cols-4{grid-template-columns:repeat(4,1fr)}
+@media (max-width:900px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+
+/* Demo */
+.demo{background:#0f1218;border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}
+.demo-title{font-size:16px;font-weight:600;color:var(--brand);margin:0 0 4px}
+.demo-sub{color:var(--mute);font-size:12.5px;margin-bottom:14px}
+.demo-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
+.demo-btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:7px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:all .12s}
+.demo-btn:hover{border-color:var(--brand);color:var(--brand)}
+.demo-btn.primary{background:var(--brand);color:var(--bg);border-color:var(--brand);font-weight:600}
+.demo-btn.primary:hover{background:#5cd6a4}
+.demo-step{font-family:"SF Mono",monospace;font-size:12px;color:var(--mute);margin-left:auto;background:#1a1f2b;padding:4px 10px;border-radius:6px;border:1px solid var(--line)}
+.demo-narration{background:rgba(110,231,183,.08);border-left:3px solid var(--brand);padding:10px 14px;border-radius:0 8px 8px 0;margin-top:12px;color:#cbd5e1;font-size:13px;min-height:42px;transition:all .3s}
+
+.rank-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}
+.rank-card{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px;text-align:center;transition:all .3s}
+.rank-card.active{border-color:var(--brand);box-shadow:0 0 12px rgba(110,231,183,.3)}
+.rank-card .rid{font-family:"SF Mono",monospace;font-weight:700;font-size:14px;margin-bottom:6px}
+.rank-card .body{color:var(--mute);font-family:"SF Mono",monospace;font-size:11px;line-height:1.5}
+.bar-h{display:flex;flex-direction:column;gap:3px;margin:8px 0}
+.bar-row{display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center;font-size:11px}
+.bar-row .lbl{color:var(--mute);font-family:"SF Mono",monospace}
+.bar-track{height:24px;background:#0a0d12;border:1px solid var(--line);border-radius:4px;position:relative;overflow:hidden}
+.bar-seg{position:absolute;top:2px;bottom:2px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0b0d12;transition:all .35s}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.pulse{animation:pulse 1s ease-in-out infinite}
+.kpi{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace}
+.kpi span{background:#1a1f2b;padding:3px 8px;border-radius:5px;border:1px solid var(--line)}
+.kpi span b{color:var(--brand)}
+
+
+.queue-box{background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:12px;min-height:110px;position:relative}
+.queue-title{font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace;margin-bottom:8px;display:flex;justify-content:space-between}
+.queue-title .cnt{color:var(--brand)}
+.req-chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:11px;font-family:"SF Mono",monospace;margin:3px;transition:all .35s;cursor:pointer}
+.req-chip.bootstrapping{border-color:var(--warn);color:var(--warn)}
+.req-chip.waiting{border-color:var(--brand2);color:var(--brand2)}
+.req-chip.transferring{border-color:var(--purple);color:var(--purple);animation:pulse 1s ease-in-out infinite}
+.req-chip.success{border-color:var(--brand);color:var(--brand);background:rgba(110,231,183,0.15)}
+.req-chip.failed{border-color:var(--bad);color:var(--bad)}
+.req-chip.active{box-shadow:0 0 10px currentColor}
+.msg-line{font-family:"SF Mono",monospace;font-size:11.5px;padding:4px 10px;margin:2px 0;border-radius:4px;background:#0f1218;border-left:2px solid var(--line);color:var(--mute)}
+.msg-line.active{border-color:var(--brand);color:var(--ink);background:rgba(110,231,183,0.05)}
+.msg-line .ts{color:var(--purple);margin-right:8px}
+.msg-line .tag{color:var(--warn);margin-right:8px}
+.path{color:var(--mute);font-size:11px;font-family:"SF Mono",monospace}
+.hl{background:rgba(251,191,36,.15);color:var(--warn);padding:0 3px;border-radius:3px}
+.step-badge{display:inline-block;background:var(--brand);color:var(--bg);border-radius:50%;width:22px;height:22px;line-height:22px;text-align:center;font-size:12px;font-weight:700;margin-right:8px}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--brand)}
+.flow-node{fill:#11141b;stroke:#262b38;stroke-width:1.5}
+.flow-node.active{stroke:#6ee7b7;stroke-width:2.2}
+.flow-node.active-warn{stroke:#fbbf24;stroke-width:2.2}
+.flow-node.active-blue{stroke:#7dd3fc;stroke-width:2.2}
+.flow-edge{stroke:#3a4050;stroke-width:1.5;fill:none}
+.flow-edge.active{stroke:#fbbf24;stroke-width:2}
+.flow-label{fill:#e6e8ee;font-family:"SF Mono",monospace;font-size:11px}
+.flow-label.sub{fill:#8b93a7;font-size:10px}
+.click-hint{font-size:11px;color:var(--mute);margin-top:6px;text-align:center}
+
+</style>
+</head><body><div class="wrap"><h1>为什么必须 PD 分离<span class="tag">PD · 1/7</span></h1><div class="sub">从 Roofline 和 ITL 抖动切入，解释为什么 Prefill 和 Decode 必须分家。两个交互演示帮你亲眼看到 jitter。</div><div class="toc"><a href="#role">P/D 两种工作</a><a href="#unified">同池的代价 🎬</a><a href="#tradeoff">PD 的代价</a><a href="#arch">架构总览</a><a href="#summary">要点</a></div>
+<!-- PART 1 -->
+<h2 id="role"><span class="step">PART 1</span>Prefill 和 Decode：两个完全不同的工作</h2>
+<div class="card">
+<p>LLM 推理对每个请求要做两件事：</p>
+<table>
+<tr><th>阶段</th><th>做什么</th><th>算的什么</th><th>瓶颈</th></tr>
+<tr><td><strong>Prefill</strong></td><td>把整段 prompt 一次性算成 KV cache</td><td>N 个 token 同时过 attention / MLP</td><td><span class="hl">compute-bound</span>（matmul 打满算力）</td></tr>
+<tr><td><strong>Decode</strong></td><td>每次只生成 1 个 token，循环 N 次</td><td>1 个 token 过 attention，但要读全部 KV</td><td><span class="hl">memory-bound</span>（HBM 带宽打满）</td></tr>
+</table>
+
+<h3>一个具体例子：H100 上 70B 模型</h3>
+<div class="grid cols-2" style="margin-top:10px">
+<div class="card" style="margin:0;background:var(--panel2)">
+<h4 style="color:var(--warn)">Prefill 4096 tokens</h4>
+<ul class="tight">
+<li>FLOPS：约 <code>2 · 4096 · 70B ≈ 5.7e14</code></li>
+<li>HBM read：权重 140GB（只读一次，因为 4096 token 共享）</li>
+<li>arithmetic intensity = 5.7e14 / 140e9 ≈ 4100</li>
+<li>H100 算力 989 TFLOPS，带宽 3.35 TB/s，转折点约 295</li>
+<li><strong>远在 roofline 的 compute 侧</strong></li>
+</ul>
+</div>
+<div class="card" style="margin:0;background:var(--panel2)">
+<h4 style="color:var(--brand2)">Decode 1 个 token</h4>
+<ul class="tight">
+<li>FLOPS：约 <code>2 · 1 · 70B = 1.4e11</code></li>
+<li>HBM read：权重 140GB（每个 token 都要重读）</li>
+<li>arithmetic intensity = 1.4e11 / 140e9 = 1.0</li>
+<li>带宽 3.35 TB/s → 理论 latency ≈ 42 ms/token</li>
+<li><strong>远在 roofline 的 memory 侧</strong></li>
+</ul>
+</div>
+</div>
+</div>
+
+<!-- Interactive: roofline -->
+<div class="demo">
+<div class="demo-title">📐 Roofline 可视化：拖动 batch/seq 看 P 和 D 的位置</div>
+<div class="demo-sub">横轴 arithmetic intensity，纵轴吞吐；两个关键点：Prefill 在 compute ceiling，Decode 紧贴 bandwidth ceiling</div>
+
+<div class="demo-controls">
+  <label style="font-size:12.5px;color:var(--mute)">Prefill seq 长度 <b id="rl-seq-v">4096</b></label>
+  <input type="range" id="rl-seq" min="128" max="8192" step="128" value="4096" style="width:150px">
+  <label style="font-size:12.5px;color:var(--mute)">Decode batch <b id="rl-bs-v">32</b></label>
+  <input type="range" id="rl-bs" min="1" max="512" step="1" value="32" style="width:150px">
+</div>
+
+<div style="background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px">
+  <svg viewBox="0 0 760 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto" id="rl-svg">
+    <!-- Axes -->
+    <line x1="60" y1="300" x2="720" y2="300" stroke="#3a4050"/>
+    <line x1="60" y1="300" x2="60" y2="30" stroke="#3a4050"/>
+    <text x="390" y="325" fill="#8b93a7" font-size="11" text-anchor="middle">arithmetic intensity (FLOPs/Byte, log)</text>
+    <text x="20" y="170" fill="#8b93a7" font-size="11" transform="rotate(-90 20 170)">TFLOPS (log)</text>
+
+    <!-- Bandwidth line (slope 1) -->
+    <line x1="60" y1="300" x2="320" y2="70" stroke="#fb7185" stroke-width="2"/>
+    <text x="180" y="175" fill="#fb7185" font-size="11">bandwidth ceiling (3.35 TB/s)</text>
+
+    <!-- Compute line (horizontal) -->
+    <line x1="320" y1="70" x2="720" y2="70" stroke="#fbbf24" stroke-width="2"/>
+    <text x="480" y="62" fill="#fbbf24" font-size="11">compute ceiling (989 TFLOPS)</text>
+
+    <!-- Transition point -->
+    <circle cx="320" cy="70" r="3" fill="#ffffff"/>
+    <text x="330" y="90" fill="#e6e8ee" font-size="10">transition ≈ 295 FLOPs/B</text>
+
+    <!-- P point -->
+    <circle id="rl-p" cx="560" cy="70" r="8" fill="#fbbf24" stroke="#fff" stroke-width="1.5"/>
+    <text id="rl-p-l" x="575" y="75" fill="#fbbf24" font-size="11">Prefill</text>
+
+    <!-- D point -->
+    <circle id="rl-d" cx="100" cy="268" r="8" fill="#7dd3fc" stroke="#fff" stroke-width="1.5"/>
+    <text id="rl-d-l" x="115" y="273" fill="#7dd3fc" font-size="11">Decode</text>
+  </svg>
+
+  <div class="kpi" style="margin-top:10px">
+    <span>Prefill AI: <b id="rl-p-ai">4096</b> FLOPs/B</span>
+    <span>Prefill 吞吐: <b id="rl-p-tp">989</b> TFLOPS</span>
+    <span>Decode AI: <b id="rl-d-ai">1.0</b> FLOPs/B</span>
+    <span>Decode 吞吐: <b id="rl-d-tp">3.35</b> TFLOPS</span>
+  </div>
+</div>
+<div class="demo-narration" id="rl-narr">拖动两个滑块：注意无论你怎么调 prefill 长度，Prefill 的点都停在 compute ceiling 上；Decode 无论 batch 多大，都死死贴在 bandwidth 斜线上。这两种工作放在一个 GPU 上，一定会互相拖后腿。</div>
+</div>
+
+<script>
+(function(){
+  function update(){
+    const seq = +document.getElementById('rl-seq').value;
+    const bs = +document.getElementById('rl-bs').value;
+    document.getElementById('rl-seq-v').textContent = seq;
+    document.getElementById('rl-bs-v').textContent = bs;
+
+    // Prefill AI ≈ seq 长度（共享权重）；简化为线性
+    const pAI = seq;
+    const pTP = Math.min(989, 3350 * Math.log10(pAI+1)/Math.log10(pAI+1));  // compute-bound so = 989
+    // 位置：x 按 log10(AI)/log10(10000) 映射到 60..720；y 按 TP map 到 300..30
+    const xP = 60 + Math.min(1, Math.log10(pAI)/Math.log10(10000)) * 660;
+    const yP = 300 - (989/989) * 230;  // 贴 ceiling
+    document.getElementById('rl-p').setAttribute('cx', xP);
+    document.getElementById('rl-p').setAttribute('cy', yP);
+    document.getElementById('rl-p-l').setAttribute('x', xP+13);
+    document.getElementById('rl-p-l').setAttribute('y', yP+4);
+
+    // Decode AI ≈ bs（batched decode 可以分摊权重读取）
+    const dAI = bs;
+    const dTP = Math.min(989, 3.35 * dAI);
+    const xD = 60 + Math.min(1, Math.log10(dAI)/Math.log10(10000)) * 660;
+    const yD = 300 - (dTP/989) * 230;
+    document.getElementById('rl-d').setAttribute('cx', xD);
+    document.getElementById('rl-d').setAttribute('cy', yD);
+    document.getElementById('rl-d-l').setAttribute('x', xD+13);
+    document.getElementById('rl-d-l').setAttribute('y', yD+4);
+
+    document.getElementById('rl-p-ai').textContent = pAI;
+    document.getElementById('rl-p-tp').textContent = pTP.toFixed(0);
+    document.getElementById('rl-d-ai').textContent = dAI.toFixed(1);
+    document.getElementById('rl-d-tp').textContent = dTP.toFixed(1);
+  }
+  document.getElementById('rl-seq').addEventListener('input',update);
+  document.getElementById('rl-bs').addEventListener('input',update);
+  update();
+})();
+</script>
+
+<!-- PART 2: unified GPU -->
+<h2 id="unified"><span class="step">PART 2</span>放在一台 GPU 上会怎样：Prefill Interruption</h2>
+<div class="card">
+<p>传统方案：一台 GPU 同时处理 Prefill 和 Decode 请求，调度器从 waiting_queue 中按策略挑选。看起来自然，但会出两个严重问题：</p>
+
+<h3>问题 1：Prefill 把 Decode 卡住</h3>
+<p>假设 GPU 正在 decode 一批请求，每 42ms 出一个 token。此时一个 4096-token 的 prompt 进来，prefill 需要约 120ms。Scheduler 为了效率，会让 prefill 插进来共享一次 forward。结果：</p>
+<ul class="tight">
+<li>原本每 42ms 一 token 的 decode 节奏被打断</li>
+<li>这一步的 forward 变成 prefill+decode 混合，延迟 120ms+</li>
+<li>所有正在 decode 的请求都要等这 120ms</li>
+<li>ITL（inter-token latency）从 42ms 飙到 120ms</li>
+</ul>
+
+<h3>问题 2：Chunked Prefill 的半截解法</h3>
+<p>Chunked Prefill 把长 prompt 切成 512 或 1024 token 小段，每次和 decode 一起跑。但：</p>
+<ul class="tight">
+<li>P 原本是 compute-bound；切成小块反而让 AI 下降，<strong>每 token prefill 效率变低</strong></li>
+<li>仍有 ITL jitter（小块也占用 forward 时间）</li>
+<li>调优复杂：chunk 太小 P 吞吐下降，chunk 太大 ITL 抖动</li>
+</ul>
+</div>
+
+<!-- Interactive timeline -->
+<div class="demo">
+<div class="demo-title">🎬 同池 vs PD 分离：观察 ITL 抖动</div>
+<div class="demo-sub">两条时间线同时播放 5s 模拟：上面是 unified（混合），下面是 PD 分离</div>
+
+<div class="demo-controls">
+  <button class="demo-btn primary" id="tl-play">▶ 播放 5s</button>
+  <button class="demo-btn" id="tl-reset">↻ 重置</button>
+  <label style="font-size:12.5px;color:var(--mute);margin-left:12px">新 prefill 频率 <b id="tl-freq-v">每 1.5s</b></label>
+  <input type="range" id="tl-freq" min="500" max="3000" step="250" value="1500" style="width:140px">
+</div>
+
+<div style="background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px">
+  <div style="font-size:12px;color:var(--warn);margin-bottom:4px">❌ Unified 模式：1 台 GPU 做全部</div>
+  <div style="height:50px;background:#0f1218;border:1px solid var(--line);border-radius:6px;position:relative;overflow:hidden" id="tl-unified"></div>
+  <div id="tl-u-kpi" class="kpi" style="margin-top:6px">
+    <span>已生成 token: <b id="tl-u-tok">0</b></span>
+    <span>ITL p50: <b id="tl-u-p50">-</b> ms</span>
+    <span>ITL p99: <b id="tl-u-p99">-</b> ms</span>
+  </div>
+
+  <div style="font-size:12px;color:var(--brand);margin-top:14px;margin-bottom:4px">✅ PD 分离模式：2 台 GPU，各司其职</div>
+  <div style="height:50px;background:#0f1218;border:1px solid var(--line);border-radius:6px;position:relative;overflow:hidden" id="tl-pd-p"></div>
+  <div style="height:50px;background:#0f1218;border:1px solid var(--line);border-radius:6px;position:relative;overflow:hidden;margin-top:4px" id="tl-pd-d"></div>
+  <div id="tl-pd-kpi" class="kpi" style="margin-top:6px">
+    <span>已生成 token: <b id="tl-p-tok">0</b></span>
+    <span>ITL p50: <b id="tl-p-p50">-</b> ms</span>
+    <span>ITL p99: <b id="tl-p-p99">-</b> ms</span>
+  </div>
+</div>
+<div class="demo-narration" id="tl-narr">点播放：unified 模式上会看到长条 prefill 把中间的 decode 切断，ITL p99 明显飙高；PD 模式下 decode 时间线是均匀的。</div>
+</div>
+
+<script>
+(function(){
+  let running = false;
+  function pct(arr,p){ if(!arr.length) return 0; const s=[...arr].sort((a,b)=>a-b); return s[Math.floor(s.length*p/100)]; }
+
+  function run(){
+    if(running) return; running = true;
+    const DUR = 5000;
+    const t0 = performance.now();
+    const uBar = document.getElementById('tl-unified');
+    const pBar = document.getElementById('tl-pd-p');
+    const dBar = document.getElementById('tl-pd-d');
+    uBar.innerHTML = ''; pBar.innerHTML = ''; dBar.innerHTML = '';
+    const freq = +document.getElementById('tl-freq').value;
+
+    // Schedule prefills
+    const prefills = [];
+    for(let t=200; t<DUR; t+=freq){ prefills.push(t); }
+
+    // Unified: decode 每 42ms 一个 token，但被 prefill 打断 120ms
+    let cur = 0;
+    const uItl = []; const uLast = {t:0};
+    let uTok = 0;
+    function makeSeg(bar,x,w,color,label){
+      const s = document.createElement('div');
+      s.style.position='absolute'; s.style.top='4px'; s.style.bottom='4px';
+      s.style.left=(x/DUR*100)+'%'; s.style.width=(w/DUR*100)+'%';
+      s.style.background=color; s.style.borderRadius='3px';
+      s.style.display='flex'; s.style.alignItems='center'; s.style.justifyContent='center';
+      s.style.fontSize='9px'; s.style.color='#0b0d12'; s.style.fontWeight='600';
+      if(w/DUR*100 > 2) s.textContent = label||'';
+      bar.appendChild(s); return s;
+    }
+
+    // pre-draw unified timeline
+    let uT = 0;
+    while(uT < DUR){
+      const nextP = prefills.find(p=>p>uT && p<uT+42) ?? null;
+      if(nextP !== null && nextP-uT < 42){
+        // fit one decode then prefill
+        const dT = nextP - uT;
+        if(dT>0) { makeSeg(uBar, uT, dT, '#7dd3fc', ''); uTok++; uItl.push(dT+42); }
+        makeSeg(uBar, nextP, 120, '#fbbf24', 'P');
+        uT = nextP + 120;
+      } else {
+        makeSeg(uBar, uT, 42, '#7dd3fc', ''); uTok++; uItl.push(42);
+        uT += 42;
+      }
+    }
+    document.getElementById('tl-u-tok').textContent = uTok;
+    document.getElementById('tl-u-p50').textContent = pct(uItl,50).toFixed(0);
+    document.getElementById('tl-u-p99').textContent = pct(uItl,99).toFixed(0);
+
+    // PD: D 持续 42ms 一 token，P 独立跑 prefill
+    let pTok = 0; const pItl = [];
+    let dT = 0;
+    while(dT < DUR){
+      makeSeg(dBar, dT, 42, '#6ee7b7', '');
+      pItl.push(42); pTok++;
+      dT += 42;
+    }
+    prefills.forEach(t=>{ makeSeg(pBar, t, 120, '#fbbf24', 'P'); });
+    document.getElementById('tl-p-tok').textContent = pTok;
+    document.getElementById('tl-p-p50').textContent = pct(pItl,50).toFixed(0);
+    document.getElementById('tl-p-p99').textContent = pct(pItl,99).toFixed(0);
+
+    document.getElementById('tl-narr').innerHTML =
+      `结果：unified 生成 <b>${uTok}</b> 个 token，p99 ITL = <b>${pct(uItl,99).toFixed(0)}ms</b>；` +
+      `PD 生成 <b>${pTok}</b> 个 token，p99 ITL = <b>${pct(pItl,99).toFixed(0)}ms</b>。` +
+      ` decode 的"稳定吐字节奏"在 PD 模式下被保住了。`;
+    running = false;
+  }
+
+  document.getElementById('tl-play').addEventListener('click',run);
+  document.getElementById('tl-reset').addEventListener('click',()=>{
+    document.getElementById('tl-unified').innerHTML = '';
+    document.getElementById('tl-pd-p').innerHTML = '';
+    document.getElementById('tl-pd-d').innerHTML = '';
+    document.getElementById('tl-u-tok').textContent = '0';
+    document.getElementById('tl-p-tok').textContent = '0';
+    ['tl-u-p50','tl-u-p99','tl-p-p50','tl-p-p99'].forEach(i=>document.getElementById(i).textContent='-');
+  });
+  document.getElementById('tl-freq').addEventListener('input',e=>{
+    document.getElementById('tl-freq-v').textContent = '每 ' + (e.target.value/1000).toFixed(2) + 's';
+  });
+})();
+</script>
+
+<!-- PART 3: PD benefits & costs -->
+<h2 id="tradeoff"><span class="step">PART 3</span>PD 的代价：并不是纯净胜利</h2>
+<div class="card">
+<p>PD 分离不是免费午餐。分开之后新增的代价：</p>
+
+<h3>新增的链路成本</h3>
+<table>
+<tr><th>新增环节</th><th>代价</th><th>源码体现</th></tr>
+<tr><td>Router 选 P+D</td><td>两次 policy 调用（cache_aware + power_of_two）</td><td><span class="path">pd_router.rs:702</span></td></tr>
+<tr><td>P/D 通过 bootstrap_room 认亲</td><td>一次 ZMQ 控制消息 (D→P: metadata)</td><td><span class="path">mooncake/conn.py:1820</span></td></tr>
+<tr><td>KV 跨机传输</td><td>一次 RDMA write（NVLink 或 IB）</td><td><span class="path">mooncake/conn.py:1146</span></td></tr>
+<tr><td>首 token 跨机传输</td><td>metadata buffer 捎带 output_id / logprobs</td><td><span class="path">utils.py:135</span></td></tr>
+<tr><td>D 侧 pre-alloc KV 空间</td><td>DecodeReqToTokenPool 多一个 pre_alloc_size</td><td><span class="path">decode.py:96</span></td></tr>
+</table>
+
+<h3>何时 PD 值得做</h3>
+<ul class="tight">
+<li><strong>长 prompt + 对 ITL 敏感</strong>（chatbot、agent 多轮）：unified 的 jitter 无法接受，PD 收益最大</li>
+<li><strong>高并发</strong>：P 和 D 的最优 batch size 不同，分开让每侧独立调优</li>
+<li><strong>异构硬件</strong>：P 用大显存卡（算力强），D 用高带宽卡（memory 强）</li>
+</ul>
+
+<h3>何时不值得</h3>
+<ul class="tight">
+<li>prompt 很短（几十 token）：prefill 本身不到 10ms，打断影响小</li>
+<li>低 QPS：unified 下 prefill 不频繁，无 jitter 问题</li>
+<li>单机部署：KV transfer 只能走 NVLink / shared memory，收益缩水</li>
+</ul>
+</div>
+
+<!-- PART 4: architecture overview -->
+<h2 id="arch"><span class="step">PART 4</span>PD 架构总览：一个请求会经过哪些模块</h2>
+<div class="card">
+<p>本章接下来会深入每个模块。先看总架构：</p>
+<div class="svg-wrap">
+<svg viewBox="0 0 960 400" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="a1" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#6ee7b7"/></marker></defs>
+
+<!-- Client -->
+<rect class="flow-node" x="30" y="170" width="100" height="60" rx="8"/>
+<text class="flow-label" x="80" y="200" text-anchor="middle">Client</text>
+<text class="flow-label sub" x="80" y="216" text-anchor="middle">HTTP POST</text>
+
+<!-- Router -->
+<rect class="flow-node" x="170" y="170" width="120" height="60" rx="8" style="stroke:#fbbf24;stroke-width:2"/>
+<text class="flow-label" x="230" y="200" text-anchor="middle">PDRouter</text>
+<text class="flow-label sub" x="230" y="216" text-anchor="middle">Rust · axum</text>
+
+<!-- P path -->
+<rect class="flow-node" x="340" y="50" width="140" height="70" rx="8" style="stroke:#fbbf24"/>
+<text class="flow-label" x="410" y="75" text-anchor="middle">P TokenizerMgr</text>
+<text class="flow-label sub" x="410" y="92" text-anchor="middle">+ Scheduler</text>
+<text class="flow-label sub" x="410" y="108" text-anchor="middle">BootstrapQueue</text>
+
+<rect class="flow-node" x="520" y="50" width="140" height="70" rx="8" style="stroke:#fbbf24"/>
+<text class="flow-label" x="590" y="75" text-anchor="middle">P Model Runner</text>
+<text class="flow-label sub" x="590" y="92" text-anchor="middle">prefill forward</text>
+<text class="flow-label sub" x="590" y="108" text-anchor="middle">+ send_kv_chunk</text>
+
+<rect class="flow-node" x="700" y="50" width="140" height="70" rx="8" style="stroke:#fb7185"/>
+<text class="flow-label" x="770" y="75" text-anchor="middle">Mooncake Engine</text>
+<text class="flow-label sub" x="770" y="92" text-anchor="middle">bootstrap_thread</text>
+<text class="flow-label sub" x="770" y="108" text-anchor="middle">transfer_worker</text>
+
+<!-- D path -->
+<rect class="flow-node" x="340" y="280" width="140" height="70" rx="8" style="stroke:#7dd3fc"/>
+<text class="flow-label" x="410" y="305" text-anchor="middle">D TokenizerMgr</text>
+<text class="flow-label sub" x="410" y="322" text-anchor="middle">+ Scheduler</text>
+<text class="flow-label sub" x="410" y="338" text-anchor="middle">PreallocQueue</text>
+
+<rect class="flow-node" x="520" y="280" width="140" height="70" rx="8" style="stroke:#7dd3fc"/>
+<text class="flow-label" x="590" y="305" text-anchor="middle">D KV Receiver</text>
+<text class="flow-label sub" x="590" y="322" text-anchor="middle">send_metadata</text>
+<text class="flow-label sub" x="590" y="338" text-anchor="middle">TransferQueue</text>
+
+<rect class="flow-node" x="700" y="280" width="140" height="70" rx="8" style="stroke:#7dd3fc"/>
+<text class="flow-label" x="770" y="305" text-anchor="middle">D Model Runner</text>
+<text class="flow-label sub" x="770" y="322" text-anchor="middle">decode forward</text>
+<text class="flow-label sub" x="770" y="338" text-anchor="middle">stream_output</text>
+
+<!-- Edges -->
+<path class="flow-edge" d="M130,200 L170,200" marker-end="url(#a1)"/>
+<path class="flow-edge active" d="M290,190 L340,85" marker-end="url(#a1)"/>
+<path class="flow-edge active" d="M290,210 L340,315" marker-end="url(#a1)"/>
+<path class="flow-edge" d="M480,85 L520,85" marker-end="url(#a1)"/>
+<path class="flow-edge" d="M660,85 L700,85" marker-end="url(#a1)"/>
+<path class="flow-edge" d="M480,315 L520,315" marker-end="url(#a1)"/>
+<path class="flow-edge" d="M660,315 L700,315" marker-end="url(#a1)"/>
+<path class="flow-edge" d="M770,120 Q650,200 590,280" marker-end="url(#a1)" stroke="#fb7185" stroke-dasharray="4 3"/>
+<text class="flow-label sub" x="680" y="190" fill="#fb7185">RDMA: KV + metadata</text>
+
+<path class="flow-edge" d="M840,315 Q900,200 230,230" marker-end="url(#a1)" stroke-dasharray="4 3"/>
+<text class="flow-label sub" x="600" y="380" fill="#6ee7b7">D → Router → Client (SSE)</text>
+</svg>
+</div>
+
+<p style="margin-top:10px">后续 6 章每一章钻进图里的一个模块，都会配交互演示：</p>
+<table>
+<tr><td class="path">02</td><td>全链路时序：14 步串起整图</td></tr>
+<tr><td class="path">03</td><td>PDRouter（Rust 层）</td></tr>
+<tr><td class="path">04</td><td>Prefill worker（上面那条路径）</td></tr>
+<tr><td class="path">05</td><td>Decode worker（下面那条路径）</td></tr>
+<tr><td class="path">06</td><td>KV Transfer &amp; Bootstrap（中间那条 RDMA 虚线）</td></tr>
+<tr><td class="path">07</td><td>生产治理：metrics、failure、EPD</td></tr>
+</table>
+</div>
+
+<h2 id="summary"><span class="step">PART 5</span>本章要点</h2>
+<div class="card">
+<table>
+<tr><th>问题</th><th>答案</th></tr>
+<tr><td>Prefill 和 Decode 为什么特性不同？</td><td>P 算 N 个 token 共享权重 → compute-bound；D 每次 1 token 重读权重 → memory-bound</td></tr>
+<tr><td>同池推理最大的坏处？</td><td>Prefill 插队会打断 decode 的稳定节奏，ITL p99 暴涨</td></tr>
+<tr><td>Chunked Prefill 够不够？</td><td>只是缓解；切小块降低 P 效率，decode 仍有 jitter</td></tr>
+<tr><td>PD 引入的新代价？</td><td>Router 决策、bootstrap 协议、RDMA KV 传输、D 侧预分配</td></tr>
+<tr><td>什么时候 PD 值得？</td><td>长 prompt + 高并发 + 对 ITL 敏感</td></tr>
+</table>
+</div>
+<div class="nav"><a href="index.html">← 返回路线</a><a href="02-request-lifecycle.html">下一篇：全链路时序 →</a></div><div class="foot">SGLang PD Disaggregation · 原理 → 源码 → 流转 → 交互演示</div></div>  <script src="../course-nav.js"></script>
+</body></html>

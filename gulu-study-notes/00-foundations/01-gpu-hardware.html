@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>GPU 硬件架构 · 为什么 LLM 推理长这样</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:8px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit}
+.btn:hover{border-color:var(--brand);color:var(--brand)}
+.btn.active{background:var(--brand);color:var(--bg);border-color:var(--brand)}
+.controls{display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+@keyframes glow{0%,100%{opacity:.35}50%{opacity:1}}
+.glow{animation:glow 1.4s ease-in-out infinite}
+@keyframes drift{from{stroke-dashoffset:0}to{stroke-dashoffset:-40}}
+.drift{stroke-dasharray:6 4;animation:drift 1.2s linear infinite}
+.num-big{font-size:22px;color:var(--brand);font-family:"SF Mono",monospace;font-weight:600}
+.chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);color:var(--brand2);padding:2px 8px;border-radius:6px;font-size:11.5px;font-family:"SF Mono",monospace;margin:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>GPU 硬件架构 · 为什么 LLM 推理长这样 <span class="tag">第零章 · 01/05</span></h1>
+<div class="sub">不讲 CUDA 编程，只讲"硬件为什么长这样，LLM 推理不得不迁就谁"——给后续 KV Cache / Paged Attention / CUDA Graph / TP 四大优化做地基。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么要先学硬件</a>
+  <a href="#sm">§1 SM 是什么</a>
+  <a href="#warp">§2 Warp 为什么是 32</a>
+  <a href="#mem">§3 三层内存</a>
+  <a href="#hbm">§4 HBM 真相</a>
+  <a href="#tc">§5 Tensor Core</a>
+  <a href="#takeaway">§6 带走这五句话</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么 LLM 推理的每一条优化，都要先从硬件讲起</h2>
+
+<div class="card">
+<p>你会在 mini-sglang 里反复看到这些奇怪设计：</p>
+<ul class="tight">
+  <li><b>KV Cache</b>——把算过的 K/V 存下来，换显存省算力</li>
+  <li><b>Paged Attention</b>——把一段连续 KV 切成 page，页表寻址</li>
+  <li><b>CUDA Graph</b>——把一整次 forward 录成图，一键 replay</li>
+  <li><b>Tensor Parallel</b>——权重横切竖切，每卡只存一块</li>
+  <li><b>Chunked Prefill</b>——长 prompt 切成小块，和 decode 混批</li>
+</ul>
+<p>它们看起来五花八门，但<b>全部都在回答同一个硬件问题</b>：</p>
+<div class="callout warn" style="font-size:15px">
+GPU 的<b>算力</b>涨得比<b>显存带宽</b>快 10 倍，但 LLM decode 的本质是<b>搬一堆权重/KV 进来、算一点点、再搬出去</b>——所以推理几乎永远被带宽卡死，而不是被算力卡死。一切优化都在想办法<b>让 HBM 少动、或者让动过的东西被反复用</b>。
+</div>
+<p>这一章的目标：让你看到"搬"和"算"的速度差距，后面所有 trick 你就能一眼看穿。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="sm"><span class="step">§1</span>SM 是什么 · 为什么 GPU 有 100+ 个小核心</h2>
+
+<div class="card">
+<p>一块 H100 上有 <b>132 个 SM</b>（Streaming Multiprocessor，流多处理器）。你可以把它理解成 GPU 里的<b>"132 个独立工人小组"</b>。每个 SM 内部长这样：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 360" width="900">
+  <defs>
+    <linearGradient id="smBg" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#1a1f2b"/><stop offset="1" stop-color="#11141b"/>
+    </linearGradient>
+    <linearGradient id="cuda" x1="0" x2="0" y1="0" y2="1">
+      <stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#38bdf8"/>
+    </linearGradient>
+  </defs>
+  <!-- 外框：一个 SM -->
+  <rect x="20" y="20" width="860" height="320" rx="14" fill="url(#smBg)" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="40" y="50" fill="#6ee7b7" font-family="SF Mono" font-size="16" font-weight="600">1 × SM (Streaming Multiprocessor)</text>
+  <text x="40" y="70" fill="#8b93a7" font-size="12">H100 共 132 个这样的 SM · 一个 SM 约等于一个独立小工厂</text>
+
+  <!-- CUDA Core 阵列 -->
+  <text x="40" y="105" fill="#fbbf24" font-size="13">128× CUDA Core (FP32 ALU)</text>
+  <g transform="translate(40,115)">
+    <!-- 8 x 16 个小方块 -->
+    <g id="cudacore">
+      <!-- draw 128 small squares -->
+    </g>
+  </g>
+
+  <!-- Tensor Core -->
+  <rect x="40" y="180" width="340" height="50" rx="8" fill="#a78bfa" opacity=".85"/>
+  <text x="50" y="200" fill="#11141b" font-weight="700" font-size="13">4× Tensor Core</text>
+  <text x="50" y="218" fill="#11141b" font-size="11.5">专做 16×16 矩阵乘 · FP16/BF16/FP8 · 速度是 CUDA Core 的 10+ 倍</text>
+
+  <!-- Warp Scheduler -->
+  <rect x="40" y="245" width="340" height="40" rx="8" fill="#fb7185" opacity=".85"/>
+  <text x="50" y="270" fill="#11141b" font-weight="700" font-size="13">4× Warp Scheduler · 每 cycle 挑一个 warp 发射</text>
+
+  <!-- Register / Shared Mem -->
+  <rect x="420" y="100" width="440" height="90" rx="8" fill="#1f2937" stroke="#6ee7b7" stroke-dasharray="4 3"/>
+  <text x="440" y="125" fill="#6ee7b7" font-weight="700" font-size="13">Register File · 256 KB</text>
+  <text x="440" y="145" fill="#8b93a7" font-size="11.5">每个线程的"私人抽屉"，1 cycle 访问，0 等待</text>
+  <text x="440" y="165" fill="#8b93a7" font-size="11.5">Warp 切换就是切寄存器组——所以线程超多也不怕</text>
+
+  <rect x="420" y="200" width="440" height="120" rx="8" fill="#1f2937" stroke="#fbbf24" stroke-dasharray="4 3"/>
+  <text x="440" y="225" fill="#fbbf24" font-weight="700" font-size="13">Shared Memory / L1 · 228 KB</text>
+  <text x="440" y="245" fill="#8b93a7" font-size="11.5">SM 内共享 · ~30 cycle · 比 HBM 快 100+ 倍</text>
+  <text x="440" y="265" fill="#8b93a7" font-size="11.5">FlashAttention 就是把 Q/K/V 搬这里算 softmax，</text>
+  <text x="440" y="283" fill="#8b93a7" font-size="11.5">避免回 HBM 重复读——后面 attention 优化必提到</text>
+  <text x="440" y="310" fill="#c4b5fd" font-size="11.5">同一个 block 内的线程在这里"串门"</text>
+</svg>
+</div>
+<script>
+// draw 128 small squares for CUDA core
+(function(){
+  const g = document.getElementById('cudacore');
+  for(let r=0;r<4;r++){
+    for(let c=0;c<32;c++){
+      const x=c*10, y=r*14;
+      g.insertAdjacentHTML('beforeend',
+        `<rect x="${x}" y="${y}" width="8" height="10" rx="1.5" fill="url(#cuda)"/>`);
+    }
+  }
+})();
+</script>
+
+<h3>一句话解读</h3>
+<ul class="tight">
+  <li>SM 是 GPU <b>"并行的单位"</b>——kernel 启动时，thread block 被分发到不同 SM 上独立跑</li>
+  <li>SM 内部又分<b>三种计算单元</b>：CUDA Core（万金油）、Tensor Core（矩阵乘专用）、SFU（sin/exp 这类特殊指令）</li>
+  <li>SM 内部<b>只有两层快速存储</b>：Register（线程私有）、Shared Memory（block 内共享）</li>
+  <li>出了 SM 就只剩 <b>HBM</b>（显存）——<span style="color:var(--bad)">慢 100 倍以上</span></li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="warp"><span class="step">§2</span>Warp 为什么是 32 · SIMT 执行模型</h2>
+
+<div class="card">
+<p>GPU 不像 CPU 一次执行一条指令，它一次执行 <b>32 条</b>——这 32 条绑在一起叫一个 <b>warp</b>。理由很简单：</p>
+
+<div class="callout info">
+<b>一个指令译码器 + 32 个 ALU</b> 比 <b>32 个指令译码器 + 32 个 ALU</b> 便宜得多。GPU 舍掉了 CPU 的乱序执行、分支预测、大 cache，全部省下的晶体管都堆成了 ALU。代价是——32 个线程必须跑同一条指令。
+</div>
+
+<h3>SIMT 就是"让 32 个线程步调一致"</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 240" width="900">
+  <!-- 指令流 -->
+  <rect x="30" y="30" width="120" height="48" rx="8" fill="#6ee7b7"/>
+  <text x="90" y="60" text-anchor="middle" fill="#11141b" font-weight="700" font-size="13">1 条指令</text>
+  <text x="90" y="92" text-anchor="middle" fill="#8b93a7" font-size="11.5">LOAD / MUL / ADD ...</text>
+
+  <!-- 箭头发散 -->
+  <g stroke="#6ee7b7" stroke-width="1.2" fill="none" opacity=".6">
+    <path d="M150 54 L260 54"/>
+    <path d="M150 54 L260 84" />
+    <path d="M150 54 L260 114"/>
+    <path d="M150 54 L260 144"/>
+    <path d="M150 54 L260 174"/>
+  </g>
+
+  <!-- 32 个小线程 -->
+  <g transform="translate(270,30)">
+    <text x="0" y="10" fill="#fbbf24" font-size="13" font-weight="600">同一 cycle，32 个线程并发执行同一条指令</text>
+    <g>
+      <!-- Render 32 tokens -->
+    </g>
+    <g id="warpLanes"></g>
+  </g>
+
+  <text x="30" y="195" fill="#8b93a7" font-size="12.5">
+    • 32 个线程共用一个程序计数器 (PC) · 一个寄存器组
+  </text>
+  <text x="30" y="215" fill="#8b93a7" font-size="12.5">
+    • 如果出现 if/else 分支分叉（"warp divergence"），GPU 会让走 if 的线程跑完、再跑 else——<tspan fill="#f87171">并行度直接减半</tspan>
+  </text>
+</svg>
+</div>
+<script>
+(function(){
+  const g = document.getElementById('warpLanes');
+  if(!g) return;
+  for(let i=0;i<32;i++){
+    const x = (i%8)*58, y = 30 + Math.floor(i/8)*36;
+    g.insertAdjacentHTML('beforeend',
+      `<rect x="${x}" y="${y}" width="50" height="28" rx="4" fill="#1a1f2b" stroke="#7dd3fc"/>
+       <text x="${x+25}" y="${y+18}" text-anchor="middle" fill="#7dd3fc" font-family="SF Mono" font-size="10">t${i}</text>`);
+  }
+})();
+</script>
+
+<h3>warp 是隐藏延迟的"神器"</h3>
+<p>一个 SM 同时驻留 <b>多个 warp</b>（64 个也不奇怪）。当一个 warp 在等 HBM 返回数据（几百个 cycle）时，Warp Scheduler 瞬间<b>切到另一个 warp</b>继续跑——<b>切换 0 开销</b>，因为所有 warp 的寄存器都同时存在于 Register File 里。</p>
+
+<div class="callout">
+这就是 GPU 和 CPU 本质不同：<b>CPU 用大 cache 降低延迟，GPU 用大量 warp 隐藏延迟</b>。后面你会看到 CUDA Graph 章节里提到"decode 时 kernel 跑得太快，launch 追不上"——根因就是 warp 太空、SM 算力真没得发挥。
+</div>
+
+<h3>为什么是 32 不是 16 或 64</h3>
+<ul class="tight">
+  <li>NVIDIA 从 G80 (2006) 就定下 32，历史原因：刚好对应 32-bit 地址总线 + 一个 SIMD 宽度</li>
+  <li>AMD GPU 用 64（wavefront），所以 ROCm 生态会稍有不同</li>
+  <li>对 mini-sglang 来说：<b>不需要记</b>，只需要知道 kernel 的线程数最好是 32 的倍数</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="mem"><span class="step">§3</span>三层内存 · 速度差 100 倍才是一切优化的理由</h2>
+
+<div class="card">
+<p>GPU 上的数据存在哪里，决定了你的 kernel 跑多快。先把三层内存<b>的绝对数字背下来</b>（H100 为例）：</p>
+
+<table>
+<thead><tr><th>层级</th><th>容量</th><th>延迟</th><th>带宽</th><th>谁能访问</th><th>典型用途</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>Register</b></td><td>256 KB / SM</td><td><b>1 cycle</b></td><td>~∞</td><td>单线程私有</td><td>循环变量、累加器</td></tr>
+<tr><td style="color:#fbbf24"><b>Shared Mem / L1</b></td><td>228 KB / SM</td><td>~30 cycle</td><td>~19 TB/s</td><td>block 内共享</td><td>FlashAttention 的 Q/K tile</td></tr>
+<tr><td style="color:#7dd3fc"><b>L2 Cache</b></td><td>50 MB（全卡）</td><td>~200 cycle</td><td>~7 TB/s</td><td>全 SM 共享</td><td>跨 block 复用的小量数据</td></tr>
+<tr><td style="color:#f87171"><b>HBM (显存)</b></td><td>80 GB</td><td><b>~600 cycle</b></td><td><b>3.35 TB/s</b></td><td>所有人</td><td>权重、KV Cache、activation</td></tr>
+<tr><td style="color:var(--mute)">PCIe → CPU</td><td>—</td><td>ms 级</td><td>64 GB/s (gen5)</td><td>host 侧</td><td>权重上卡、输出回传</td></tr>
+</tbody>
+</table>
+
+<div class="callout bad">
+<b>HBM 比 Register 慢 600 倍，比 Shared Memory 慢 20 倍。</b> 于是<b>所有高性能 kernel 的核心思路只有一条</b>：<span style="color:var(--brand)">把数据从 HBM 搬到 Shared Memory 一次，然后在 SM 内部反复用</span>。FlashAttention / Paged Attention / fused MoE 都是这个思路的变体。
+</div>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 340" width="900">
+  <!-- 金字塔：越上越快 -->
+  <defs>
+    <linearGradient id="g1" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#6ee7b7"/><stop offset="1" stop-color="#34d399"/></linearGradient>
+    <linearGradient id="g2" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/></linearGradient>
+    <linearGradient id="g3" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#38bdf8"/></linearGradient>
+    <linearGradient id="g4" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#f87171"/><stop offset="1" stop-color="#ef4444"/></linearGradient>
+  </defs>
+  <!-- 分层矩形 -->
+  <rect x="340" y="30"  width="220" height="50"  rx="6" fill="url(#g1)"/>
+  <rect x="290" y="90"  width="320" height="50"  rx="6" fill="url(#g2)"/>
+  <rect x="220" y="150" width="460" height="50"  rx="6" fill="url(#g3)"/>
+  <rect x="100" y="210" width="700" height="60"  rx="6" fill="url(#g4)"/>
+
+  <text x="450" y="60" text-anchor="middle" fill="#11141b" font-weight="700">Register · 1 cycle</text>
+  <text x="450" y="120" text-anchor="middle" fill="#11141b" font-weight="700">Shared Memory · 30 cycle · 19 TB/s</text>
+  <text x="450" y="180" text-anchor="middle" fill="#11141b" font-weight="700">L2 Cache · 200 cycle · 7 TB/s</text>
+  <text x="450" y="248" text-anchor="middle" fill="#11141b" font-weight="700" font-size="15">HBM · 600 cycle · 3.35 TB/s · 80 GB</text>
+
+  <!-- 右侧注解 -->
+  <g font-family="SF Mono" font-size="11.5" fill="#8b93a7">
+    <text x="600" y="60">快</text>
+    <text x="610" y="240" fill="#f87171">慢</text>
+  </g>
+  <!-- 对比条 -->
+  <text x="100" y="300" fill="#fbbf24" font-size="13" font-family="SF Mono">
+    读 1 次 HBM 的时间 ≈ 读 600 次寄存器 ≈ 算 300 次乘加
+  </text>
+  <text x="100" y="320" fill="#c4b5fd" font-size="12">
+    所以只要能把数据"框"在 Shared Memory 里算，性能立刻翻 10 倍以上
+  </text>
+</svg>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="hbm"><span class="step">§4</span>HBM 真相 · 为什么 LLM 推理被它卡死</h2>
+
+<div class="card">
+<h3>H100 的两个指标</h3>
+<div class="cols-2 grid">
+<div class="card" style="margin:0">
+  <div style="color:var(--mute);font-size:12px">算力 (FP16 Tensor Core)</div>
+  <div class="num-big">989 TFLOPS</div>
+  <div style="color:#8b93a7;font-size:12px;margin-top:4px">每秒 9.89 × 10¹⁴ 次乘加</div>
+</div>
+<div class="card" style="margin:0">
+  <div style="color:var(--mute);font-size:12px">显存带宽 (HBM3)</div>
+  <div class="num-big" style="color:var(--bad)">3.35 TB/s</div>
+  <div style="color:#8b93a7;font-size:12px;margin-top:4px">每秒 3.35 × 10¹² 字节</div>
+</div>
+</div>
+
+<h3>推出一个关键比值：算力 / 带宽 = 295</h3>
+<p>把单位统一到"每 byte"：</p>
+<pre><span class="com"># FP16 一个数 = 2 byte</span>
+<span class="com"># 算力: 989e12 FLOPS</span>
+<span class="com"># 带宽: 3.35e12 byte/s = 1.675e12 个 FP16 数/s</span>
+
+算术强度阈值 = 算力 / 带宽 = 989e12 / 3.35e12 ≈ <span class="num">295 FLOPs per byte</span>
+                                                 ≈ <span class="num">590 FLOPs per FP16 数</span>
+</pre>
+
+<div class="callout warn">
+这个数字意思是：<b>你从 HBM 每读 1 个 FP16 数，至少要对它算 590 次乘加</b>，才能把算力吃满。低于这个比值，GPU 就在空转等数据——<b>memory-bound</b>。
+</div>
+
+<h3>LLM decode 的算术强度是多少</h3>
+<p>decode 时一个 token 过一层 Transformer（隐藏维 d=4096，FFN 倍率 4）：</p>
+
+<table>
+<thead><tr><th>阶段</th><th>读 (byte)</th><th>算 (FLOPs)</th><th>强度 (FLOPs/byte)</th><th>判定</th></tr></thead>
+<tbody>
+<tr><td>QKV 投影</td><td>weights: 3·d·d·2 = 100 MB</td><td>2·d·3d = 100 M</td><td><b>~1</b></td><td style="color:var(--bad)">memory-bound</td></tr>
+<tr><td>FFN</td><td>weights: 2·d·4d·2 = 268 MB</td><td>2·d·4d·2 = 268 M</td><td><b>~1</b></td><td style="color:var(--bad)">memory-bound</td></tr>
+<tr><td>Attention (读 KV)</td><td>KV: ctx·2·d·2</td><td>~ctx·2·d</td><td><b>~0.5</b></td><td style="color:var(--bad)">memory-bound</td></tr>
+<tr><td style="color:var(--mute)">Prefill 矩阵乘</td><td style="color:var(--mute)">权重 + activation</td><td style="color:var(--mute)">~2·B·d²·seq</td><td style="color:var(--brand)">>100</td><td style="color:var(--brand)">compute-bound</td></tr>
+</tbody>
+</table>
+
+<div class="callout bad">
+decode 阶段的算术强度只有 <b>~1</b>，距离 GPU 的"经济线" 295 差了<b>两个数量级</b>。这意味着你就算换 4 倍算力的卡，<b>decode 速度几乎不变</b>——瓶颈是把权重从 HBM 搬进 SM 的时间。
+</div>
+
+<h3>所以所有 decode 优化都在做同一件事</h3>
+<ul class="tight">
+  <li><b>continuous batching</b>：同一批权重"搬一次、算 N 个 token"——把算术强度从 ~1 提到 ~N</li>
+  <li><b>CUDA Graph</b>：别让 launch 开销把 memory-bound 变成更差的 "launch-bound"</li>
+  <li><b>KV Cache</b>：别再重算一次 K/V（重算的是算力，不解决带宽；存下来则是用带宽换算力）</li>
+  <li><b>Paged Attention</b>：给 KV 连续寻址，让 HBM 读到最高效的 burst 模式</li>
+  <li><b>TP</b>：把一张卡搬不完的权重切到 4 张——<b>总带宽变成 4 倍</b>，这才是 TP 真正提速的根</li>
+</ul>
+
+<p>这 5 个优化在后面每一章都会展开，但<b>根都在这一节</b>。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="tc"><span class="step">§5</span>Tensor Core · 为什么 H100 FP16 比 A100 FP32 快 60 倍</h2>
+
+<div class="card">
+<p>上面 989 TFLOPS 是 <b>Tensor Core</b> 的数字。如果你只用普通 CUDA Core 做 FP32，H100 只有 67 TFLOPS——<b>差了 15 倍</b>。Tensor Core 是一块<b>矩阵乘专用电路</b>。</p>
+
+<h3>一条 MMA 指令 = 16×16×16 矩阵乘</h3>
+<pre><span class="com"># HMMA 指令: D = A × B + C</span>
+A: 16×16 FP16
+B: 16×16 FP16    <span class="com"># 2 个 warp 协作加载</span>
+C: 16×16 FP32
+D: 16×16 FP32
+<span class="com"># 一条指令在 ~4 cycle 内完成 16·16·16·2 = 8192 次 FLOP</span>
+</pre>
+
+<div class="callout info">
+<b>mini-sglang 从不直接写 Tensor Core 汇编</b>——PyTorch / FlashInfer / Triton 会帮你生成。但你得知道<b>精度会被约束</b>：<code>nn.Linear</code> 在 bf16 模式下会走 Tensor Core，FP32 不会；FP8 走最新一代 H100，还能再翻倍。这就是为什么工业推理基本都跑 BF16/FP16，而不是 FP32。
+</div>
+
+<h3>Tensor Core 的连带影响</h3>
+<ul class="tight">
+  <li><b>矩阵乘维度最好是 16 的倍数</b>——否则 Tensor Core 要 padding，效率下降</li>
+  <li><b>小矩阵跑不动 Tensor Core</b>——decode 时每次只算 1 个 token，Tensor Core 大量闲置，这也是为什么 decode 是 memory-bound</li>
+  <li><b>MoE "fused" kernel</b>——把几百个 <code>[1, d]</code> 小矩阵 pack 成一个大矩阵喂 Tensor Core，12 章细讲</li>
+  <li><b>Ampere (A100) 开始支持 TF32, Hopper (H100) 开始支持 FP8</b>——数字精度越小，Tensor Core 吞吐越高</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§6</span>带走这五句话，后面章节一通百通</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① 并行单位</div><div>SM 是"小工厂" · warp 是 32 个线程一条指令步调一致 · warp 切换隐藏 HBM 延迟</div>
+  <div class="k">② 内存金字塔</div><div>Register / Shared / L2 / HBM · 速度差 600 倍 · 谁能在 Shared 里算完就赢了</div>
+  <div class="k">③ 算术强度</div><div>H100 阈值 ≈ 295 FLOPs/byte · 高于它是 compute-bound · 低于它是 memory-bound</div>
+  <div class="k">④ decode 本质</div><div>算术强度 ~1 · 永远被 HBM 卡死 · 所有 decode 优化都在"提强度"或"省搬运"</div>
+  <div class="k">⑤ Tensor Core</div><div>矩阵乘专用电路 · 只吃规整维度 · decode 小矩阵喂不饱 · prefill 吃得很满</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——把这些硬件参数塞进 Roofline 模型，正式推导"LLM 推理 = memory-bound 的魔咒"，并用一个交互滑块让你看到：算术强度变一点，GPU 利用率天差地别。→ <a href="02-roofline.html" style="color:var(--brand)">01-roofline-memory-bound.html</a>
+</div>
+</div>
+
+<div class="foot">
+第零章 · 01 / 05 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

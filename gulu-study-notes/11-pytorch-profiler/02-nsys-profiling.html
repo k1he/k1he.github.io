@@ -1,0 +1,427 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Nsight Systems 抓取实战 · 从 nsys 命令到完整 Trace</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-left-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Nsight Systems 抓取实战 <span class="tag">Nsight Systems · 02/04</span></h1>
+<div class="sub">一条命令开始 profile · 参数详解 · 对运行中进程抓取 · SGLang 压测全流程实战 · NVTX 标注 · 命令行快速统计。</div>
+
+<div class="toc">
+  <a href="#minimal">§0 最小示例</a>
+  <a href="#params">§1 参数详解</a>
+  <a href="#running">§2 对运行中进程抓取</a>
+  <a href="#sglang">§3 SGLang 压测全流程</a>
+  <a href="#nvtx">§4 NVTX 标注</a>
+  <a href="#advanced">§5 其他常用模式</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="minimal"><span class="step">§0</span>最小示例 · 一条命令抓取</h2>
+
+<div class="card">
+<pre><span class="com"># 最简单的用法：包住你的 Python 程序</span>
+nsys profile \
+    --trace=cuda,nvtx,osrt \
+    --output=my_trace \
+    --force-overwrite=true \
+    python train.py
+
+<span class="com"># 执行完毕后生成 my_trace.nsys-rep</span>
+<span class="com"># 拖到本地 Nsight Systems GUI 打开即可</span>
+</pre>
+
+<div class="callout">
+就这么简单。不需要改任何代码，<code>nsys</code> 会在进程外自动采集所有 CUDA kernel、NVTX 标注和 OS Runtime 调用。执行结束后生成 <code>.nsys-rep</code> 文件，用 Nsight Systems GUI 打开就能看到完整时间线。
+</div>
+
+<h3>打开 trace 文件</h3>
+<pre><span class="com"># 本地（有 GUI 的机器）</span>
+nsys-ui my_trace.nsys-rep
+
+<span class="com"># 或者直接用 Nsight Systems 应用程序打开</span>
+<span class="com"># File → Open → 选择 .nsys-rep 文件</span>
+</pre>
+
+<h3>远程服务器上的工作流</h3>
+<pre><span class="com"># Step 1: 在远程 GPU 服务器上抓取</span>
+ssh gpu-server
+nsys profile --trace=cuda,nvtx,osrt --output=sglang_trace python -m sglang.launch_server ...
+
+<span class="com"># Step 2: 把 nsys-rep 文件拖回本地</span>
+scp gpu-server:~/sglang_trace.nsys-rep ./
+
+<span class="com"># Step 3: 本地 GUI 打开分析</span>
+nsys-ui sglang_trace.nsys-rep
+</pre>
+
+<div class="callout info">
+<b>远程抓取 + 本地分析</b>是生产环境的常见工作流。服务器通常没有 GUI，但 <code>nsys profile</code> 只做采集（命令行），<code>.nsys-rep</code> 文件很小（通常几十 MB），拖回本地用 GUI 分析即可。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="params"><span class="step">§1</span>nsys profile 参数详解</h2>
+
+<div class="card">
+<pre>nsys profile \
+    --trace=<span class="str">cuda,nvtx,osrt,nvml,nccl</span>  <span class="com"># 采集哪些维度</span>
+    --duration=<span class="num">30</span>                     <span class="com"># 抓取 30 秒后自动停止</span>
+    --sample=<span class="str">cpu</span>                      <span class="com"># CPU 采样（看 CPU 热点函数）</span>
+    --cpuctxsw=<span class="num">true</span>                   <span class="com"># 记录 CPU 上下文切换</span>
+    --gpuctxsw=<span class="num">true</span>                   <span class="com"># 记录 GPU 上下文切换</span>
+    --gpu-metrics-device=<span class="str">all</span>          <span class="com"># 记录 GPU 利用率/功耗/温度</span>
+    --output=<span class="str">my_trace</span>                <span class="com"># 输出文件名（自动加 .nsys-rep）</span>
+    --force-overwrite=<span class="num">true</span>            <span class="com"># 覆盖已有文件</span>
+    --export=<span class="str">sqlite</span>                 <span class="com"># 同时导出 SQLite 格式</span>
+    python my_script.py
+</pre>
+
+<h3>--trace 参数选项</h3>
+<table>
+<thead><tr><th>选项</th><th>采集内容</th><th>性能开销</th><th>建议</th></tr></thead>
+<tbody>
+<tr><td><code>cuda</code></td><td>CUDA API 调用和 GPU kernel 执行</td><td>+3-5%</td><td>总是开</td></tr>
+<tr><td><code>nvtx</code></td><td>NVTX 标注区间</td><td>+0%</td><td>总是开（零开销）</td></tr>
+<tr><td><code>osrt</code></td><td>OS Runtime (malloc, pthread, read/write 等)</td><td>+5-10%</td><td>排查 CPU 瓶颈时开</td></tr>
+<tr><td><code>nvml</code></td><td>GPU 利用率、显存、功耗、温度</td><td>+1-2%</td><td>推荐开</td></tr>
+<tr><td><code>nccl</code></td><td>NCCL 通信操作</td><td>+2-3%</td><td>多卡场景开</td></tr>
+<tr><td><code>cudnn</code></td><td>cuDNN 内部 kernel 标注</td><td>+2-3%</td><td>排查 conv 时开</td></tr>
+<tr><td><code>cublas</code></td><td>cuBLAS 内部 kernel 标注</td><td>+2-3%</td><td>排查 GEMM 时开</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>推荐组合</b>：日常用 <code>--trace=cuda,nvtx,osrt,nvml</code>；多卡场景加 <code>nccl</code>；不要无脑全开——<code>osrt</code> 和 <code>--sample=cpu</code> 同时开会显著增加 trace 文件大小和采集开销。
+</div>
+
+<h3>常用参数速查</h3>
+<table>
+<thead><tr><th>参数</th><th>用途</th><th>示例</th></tr></thead>
+<tbody>
+<tr><td><code>--duration N</code></td><td>采集 N 秒后自动停止</td><td><code>--duration=60</code></td></tr>
+<tr><td><code>-p PID</code></td><td>对运行中的进程抓取</td><td><code>-p 12345</code></td></tr>
+<tr><td><code>--sample=cpu</code></td><td>CPU 采样（火焰图）</td><td><code>--sample=cpu</code></td></tr>
+<tr><td><code>--cpuctxsw=true</code></td><td>记录 CPU 上下文切换</td><td><code>--cpuctxsw=true</code></td></tr>
+<tr><td><code>--gpu-metrics-device=all</code></td><td>GPU 利用率/功耗/温度</td><td><code>--gpu-metrics-device=all</code></td></tr>
+<tr><td><code>--export=sqlite</code></td><td>导出 SQLite 方便脚本分析</td><td><code>--export=sqlite</code></td></tr>
+<tr><td><code>--force-overwrite=true</code></td><td>覆盖已有输出文件</td><td><code>--force-overwrite=true</code></td></tr>
+<tr><td><code>-c cudaProfilerApi</code></td><td>只在代码中 nsys 标记区间内采集</td><td><code>-c cudaProfilerApi</code></td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="running"><span class="step">§2</span>对运行中进程抓取（核心场景！）</h2>
+
+<div class="card">
+<p>这是 Nsight Systems 相比 PyTorch Profiler 最大的优势：<b>不需要改任何代码，不需要重启服务</b>。</p>
+
+<h3>方式一：nsys profile -p</h3>
+<pre><span class="com"># 找到 SGLang 的 PID</span>
+pgrep -f sglang
+<span class="com"># 或者</span>
+ps aux | grep sglang
+
+<span class="com"># 对运行中的进程抓取 30 秒</span>
+nsys profile \
+    --trace=cuda,nvtx,osrt,nvml \
+    --duration=<span class="num">30</span> \
+    --output=sglang_30s \
+    -p <span class="num">12345</span>
+
+<span class="com"># 30 秒后自动停止，生成 sglang_30s.nsys-rep</span>
+</pre>
+
+<h3>方式二：nsys start / stop（交互式）</h3>
+<pre><span class="com"># 启动采集会话</span>
+nsys start \
+    --trace=cuda,nvtx,osrt,nvml \
+    --output=sglang_interactive \
+    -p <span class="num">12345</span>
+
+<span class="com"># ... 此时你可以跑压测 ...</span>
+<span class="com"># 什么时候想停就停</span>
+nsys stop
+
+<span class="com"># 生成 sglang_interactive.nsys-rep</span>
+</pre>
+
+<h3>方式三：多卡场景，每个 rank 一个 nsys</h3>
+<pre><span class="com"># 假设有 4 个 GPU rank，PID 分别为 1001-1004</span>
+<span class="kw">for</span> i <span class="kw">in</span> <span class="num">1</span> <span class="num">2</span> <span class="num">3</span> <span class="num">4</span>; <span class="kw">do</span>
+    nsys profile \
+        --trace=cuda,nvtx,nccl \
+        --duration=<span class="num">30</span> \
+        --output=rank_${i} \
+        -p <span class="num">100${i}</span> &
+<span class="kw">done</span>
+<span class="kw">wait</span>
+
+<span class="com"># 生成 rank_1.nsys-rep ~ rank_4.nsys-rep</span>
+<span class="com"># 在 GUI 中可以同时打开多个文件对比</span>
+</pre>
+
+<div class="callout">
+<b>生产环境最佳实践</b>：先启动 SGLang 服务 → 用 <code>bench_serving</code> 或 <code>bench_multiturn</code> 开始压测 → 压测稳定后用 <code>nsys profile -p &lt;PID&gt; --duration=30</code> 抓取。这样抓到的是<b>稳态负载</b>下的 trace，不是启动阶段。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="sglang"><span class="step">§3</span>SGLang 压测全流程实战</h2>
+
+<div class="card">
+<p>以下是一个完整的"SGLang 推理服务 → 压测 → nsys 抓取 → 本地分析"工作流：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 280" width="900">
+  <!-- Step 1 -->
+  <rect x="30" y="30" width="190" height="70" rx="12" fill="rgba(110,231,183,.12)" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="125" y="55" text-anchor="middle" fill="#6ee7b7" font-weight="700" font-size="13">Step 1: 启动服务</text>
+  <text x="125" y="75" text-anchor="middle" fill="#8b93a7" font-size="11">python -m sglang.launch_server</text>
+  <text x="125" y="90" text-anchor="middle" fill="#8b93a7" font-size="11">--enable-profile (可选)</text>
+
+  <!-- Arrow -->
+  <path d="M220 65 L260 65" stroke="#6ee7b7" stroke-width="2" marker-end="url(#arr2)"/>
+
+  <!-- Step 2 -->
+  <rect x="260" y="30" width="190" height="70" rx="12" fill="rgba(125,211,252,.12)" stroke="#7dd3fc" stroke-width="2"/>
+  <text x="355" y="55" text-anchor="middle" fill="#7dd3fc" font-weight="700" font-size="13">Step 2: 开始压测</text>
+  <text x="355" y="75" text-anchor="middle" fill="#8b93a7" font-size="11">bench_serving / bench_multiturn</text>
+  <text x="355" y="90" text-anchor="middle" fill="#8b93a7" font-size="11">等待流量稳定 (~30s)</text>
+
+  <!-- Arrow -->
+  <path d="M450 65 L490 65" stroke="#7dd3fc" stroke-width="2" marker-end="url(#arr2)"/>
+
+  <!-- Step 3 -->
+  <rect x="490" y="30" width="190" height="70" rx="12" fill="rgba(251,191,36,.12)" stroke="#fbbf24" stroke-width="2"/>
+  <text x="585" y="55" text-anchor="middle" fill="#fbbf24" font-weight="700" font-size="13">Step 3: nsys 抓取</text>
+  <text x="585" y="75" text-anchor="middle" fill="#8b93a7" font-size="11">nsys profile -p PID</text>
+  <text x="585" y="90" text-anchor="middle" fill="#8b93a7" font-size="11">--duration=30~60</text>
+
+  <!-- Arrow -->
+  <path d="M680 65 L720 65" stroke="#fbbf24" stroke-width="2" marker-end="url(#arr2)"/>
+
+  <!-- Step 4 -->
+  <rect x="720" y="30" width="160" height="70" rx="12" fill="rgba(167,139,250,.12)" stroke="#a78bfa" stroke-width="2"/>
+  <text x="800" y="55" text-anchor="middle" fill="#a78bfa" font-weight="700" font-size="13">Step 4: 本地分析</text>
+  <text x="800" y="75" text-anchor="middle" fill="#8b93a7" font-size="11">scp → nsys-ui</text>
+  <text x="800" y="90" text-anchor="middle" fill="#8b93a7" font-size="11">看时间线 + 瓶颈</text>
+
+  <defs><marker id="arr2" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#8b93a7"/></marker></defs>
+
+  <!-- 详细命令 -->
+  <rect x="30" y="130" width="850" height="130" rx="12" fill="var(--code)" stroke="var(--line)" stroke-width="1"/>
+  <text x="50" y="155" fill="#6ee7b7" font-size="12" font-family="SF Mono,Menlo,monospace"><tspan font-weight="600">Step 1</tspan>  python -m sglang.launch_server --model-path /data/glm5 --tp 16 --port 30000</text>
+  <text x="50" y="175" fill="#7dd3fc" font-size="12" font-family="SF Mono,Menlo,monospace"><tspan font-weight="600">Step 2</tspan>  python -m sglang.bench_serving --port 30000 --num-prompts 1000 &</text>
+  <text x="50" y="195" fill="#fbbf24" font-size="12" font-family="SF Mono,Menlo,monospace"><tspan font-weight="600">Step 3</tspan>  nsys profile --trace=cuda,nvtx,osrt,nvml --duration=30 -p $(pgrep -f sglang) --output=sglang_trace</text>
+  <text x="50" y="215" fill="#a78bfa" font-size="12" font-family="SF Mono,Menlo,monospace"><tspan font-weight="600">Step 4</tspan>  scp gpu-server:~/sglang_trace.nsys-rep ./ && nsys-ui sglang_trace.nsys-rep</text>
+  <text x="50" y="240" fill="#8b93a7" font-size="11" font-family="SF Mono,Menlo,monospace"><tspan font-style="italic"># Step 2 和 Step 3 可以并行，压测稳定后再抓</tspan></text>
+</svg>
+</div>
+
+<h3>抓取时机选择</h3>
+<table>
+<thead><tr><th>时机</th><th>抓取内容</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td>压测刚开始</td><td>CUDA 初始化、模型加载、cache 预热</td><td>排查启动慢问题</td></tr>
+<tr><td>压测稳定期</td><td>稳态推理 kernel、KV Cache、通信</td><td>稳态性能分析（推荐）</td></tr>
+<tr><td>长流量退化时</td><td>host memory 碎片化、缓存效率退化</td><td>排查累积型退化</td></tr>
+<tr><td>切换前后对比</td><td>优化前 vs 优化后的 trace</td><td>验证优化效果</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>抓取时长建议</b>：30-60 秒通常足够。<code>--duration=30</code> 抓稳态；<code>--duration=60</code> 抓包含冷启动的完整过程。不要抓太长（>5 分钟），trace 文件会很大，GUI 打开也会慢。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="nvtx"><span class="step">§4</span>NVTX 标注 · 让 Trace 可读</h2>
+
+<div class="card">
+<p>没有标注的 trace 里，你只能看到 <code>void cutlass_kernel<...></code> 这样的 kernel 名。加了 NVTX 标注后，trace 中会出现彩色区间，一眼定位"这是 prefill，那是 decode"。</p>
+
+<h3>Python（PyTorch 内置）</h3>
+<pre><span class="kw">import</span> torch.cuda.nvtx <span class="kw">as</span> nvtx
+
+<span class="com"># 方式一：push/pop</span>
+nvtx.<span class="fn">range_push</span>(<span class="str">"prefill_batch"</span>)
+output = model(inputs)
+nvtx.<span class="fn">range_pop</span>()
+
+<span class="com"># 方式二：context manager (PyTorch 2.0+)</span>
+<span class="kw">with</span> torch.cuda.nvtx.<span class="fn">range</span>(<span class="str">"decode_step"</span>):
+    token = model.generate(...)
+
+<span class="com"># 方式三：mark（瞬时标记，不占区间）</span>
+nvtx.<span class="fn">mark</span>(<span class="str">"cache_hit"</span>)
+</pre>
+
+<h3>C/C++</h3>
+<pre><span class="kw">#include</span> &lt;nvtx3/nvtx3.hpp&gt;
+
+<span class="com">// 方式一：push/pop</span>
+nvtx3::<span class="fn">range_push</span>(<span class="str">"prefill_batch"</span>);
+run_prefill(...);
+nvtx3::<span class="fn">range_pop</span>();
+
+<span class="com">// 方式二：RAII（自动 pop）</span>
+{
+    <span class="kw">auto</span> range = nvtx3::<span class="fn">scoped_range</span>(<span class="str">"decode_step"</span>);
+    run_decode(...);
+}  <span class="com">// 自动 pop</span>
+
+<span class="com">// 方式三：带颜色</span>
+nvtx3::<span class="fn">range_push</span>(nvtx3::<span class="fn">color{0xFF0000}</span>, <span class="str">"kv_transfer"</span>);
+</pre>
+
+<h3>框架内置的 NVTX 标注</h3>
+<p>好消息是，<b>PyTorch 和 SGLang 内部已经大量使用了 NVTX</b>。即使你不手动添加，trace 里也会有：</p>
+<ul class="tight">
+  <li>PyTorch: <code>aten::mm</code>, <code>aten::scaled_dot_product_attention</code> 等自动标注</li>
+  <li>SGLang: <code>forward_batch</code>, <code>decode_batch</code>, <code>kv_transfer</code> 等内部标注</li>
+  <li>NCCL: 自动标注 AllReduce / AllGather 等操作</li>
+</ul>
+
+<div class="callout">
+<b>什么时候需要手动添加 NVTX</b>：当你需要在 trace 中标记<b>业务逻辑层面</b>的区间时——比如"这 5 个 kernel 属于 HiCache L2 回填"或"这段是 EAGLE 投机推理"。框架内部只标注到 op 级别，业务级标注需要你自己加。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="advanced"><span class="step">§5</span>其他常用模式</h2>
+
+<div class="card">
+
+<h3>5.1 GPU 指标采集</h3>
+<pre><span class="com"># 记录 GPU 利用率、显存带宽、功耗、温度</span>
+nsys profile \
+    --trace=cuda,nvtx,nvml \
+    --gpu-metrics-device=<span class="str">all</span> \
+    --duration=<span class="num">30</span> \
+    -p <span class="num">12345</span> \
+    --output=gpu_metrics
+</pre>
+<p>GUI 中会显示 GPU SM 利用率、显存带宽利用率、功耗等曲线，与 kernel 时间线对齐。</p>
+
+<h3>5.2 命令行快速统计（nsys stats）</h3>
+<pre><span class="com"># 不用开 GUI，命令行直接看统计</span>
+nsys stats sglang_trace.nsys-rep
+
+<span class="com"># 只看 GPU kernel 统计</span>
+nsys stats --report=gpkern sglang_trace.nsys-rep
+
+<span class="com"># 只看 CUDA API 统计</span>
+nsys stats --report=cudaapi sglang_trace.nsys-rep
+
+<span class="com"># 只看 NCCL 通信统计</span>
+nsys stats --report=nccl sglang_trace.nsys-rep
+</pre>
+
+<h3>5.3 导出 SQLite 做自定义分析</h3>
+<pre><span class="com"># 采集时直接导出 SQLite</span>
+nsys profile --trace=cuda,nvtx --export=sqlite --output=my_trace python train.py
+
+<span class="com"># 或对已有 nsys-rep 文件导出</span>
+nsys export --type=sqlite --output=my_trace my_trace.nsys-rep
+
+<span class="com"># 用 Python 分析</span>
+<span class="kw">import</span> sqlite3
+conn = sqlite3.<span class="fn">connect</span>(<span class="str">"my_trace.sqlite"</span>)
+
+<span class="com"># 查询最耗时的 10 个 kernel</span>
+df = conn.<span class="fn">execute</span>(<span class="str">"""
+    SELECT name, avg(duration) as avg_ms, count(*) as calls
+    FROM CUPTI_ACTIVITY_KIND_KERNEL
+    GROUP BY name
+    ORDER BY avg_ms DESC
+    LIMIT 10
+"""</span>).<span class="fn">fetchall</span>()
+</pre>
+
+<h3>5.4 代码控制的采集区间</h3>
+<pre><span class="com"># 只在 nsys 标记区间内采集，减少无关数据</span>
+<span class="com"># 启动时加 -c cudaProfilerApi</span>
+nsys profile -c cudaProfilerApi --trace=cuda,nvtx --output=controlled python train.py
+
+<span class="com"># Python 代码中</span>
+<span class="kw">import</span> torch
+torch.cuda.<span class="fn">profiler</span>.start()   <span class="com"># 开始采集</span>
+<span class="com"># ... 你关心的代码 ...</span>
+torch.cuda.<span class="fn">profiler</span>.stop()    <span class="com"># 停止采集</span>
+</pre>
+
+<div class="callout info">
+<b>选择建议</b>：日常用 <code>-p PID --duration=30</code> 最简单；需要精确控制区间时用 <code>-c cudaProfilerApi</code>；需要脚本分析时用 <code>--export=sqlite</code>。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<div class="card">
+<div class="kv">
+  <span class="k">最小示例</span>
+  <span><code>nsys profile --trace=cuda,nvtx,osrt --output=xxx python train.py</code></span>
+  <span class="k">对运行中进程</span>
+  <span><code>nsys profile -p PID --duration=30</code> — 零代码修改</span>
+  <span class="k">SGLang 全流程</span>
+  <span>启动服务 → 压测 → nsys 抓取 → scp 拖回 → 本地 GUI 分析</span>
+  <span class="k">NVTX 标注</span>
+  <span><code>nvtx.range_push/pop</code> — 让 trace 中的 kernel 关联回业务逻辑</span>
+  <span class="k">高级用法</span>
+  <span>GPU 指标、命令行统计、SQLite 导出、代码控制采集区间</span>
+</div>
+</div>
+
+<div class="foot">Nsight Systems · 02 / 04 · <a href="01-nsys-intro.html" style="color:var(--brand2)">← 上一篇：基本介绍</a> · <a href="03-nsys-trace-analysis.html" style="color:var(--brand2)">下一篇：Trace 阅读与瓶颈排查 →</a></div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

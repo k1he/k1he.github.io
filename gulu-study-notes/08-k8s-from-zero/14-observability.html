@@ -1,0 +1,874 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>可观测性 · 监控 / 日志 / 事件排障</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>可观测性 <span class="tag">第四层 · 14/15</span></h1>
+<div class="sub">监控 / 日志 / 事件排障——GPU 利用率 80% 但 TTFT P99 飙到 10 秒，问题出在哪？没有可观测性就只能靠猜。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么推理服务的可观测性特别重要</a>
+  <a href="#three-layers">§1 监控三层模型</a>
+  <a href="#prometheus">§2 Prometheus 生态</a>
+  <a href="#logging">§3 日志收集</a>
+  <a href="#events">§4 事件与排障</a>
+  <a href="#sli-slo">§5 推理服务 SLI/SLO 设计</a>
+  <a href="#takeaway">§6 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么推理服务的可观测性特别重要</h2>
+
+<div class="card">
+<p>推理服务和传统 Web 服务的可观测性需求差异巨大：</p>
+
+<table>
+<thead><tr><th>维度</th><th>传统 Web 服务</th><th>LLM 推理服务</th></tr></thead>
+<tbody>
+<tr><td>核心资源</td><td>CPU / 内存（便宜）</td><td><b>GPU 显存 + 算力</b>（一张 A100 = ~15 元/小时）</td></tr>
+<tr><td>延迟特征</td><td>毫秒级，分布均匀</td><td><b>秒级，长尾严重</b>（同模型短 prompt 0.5s，长 prompt 30s）</td></tr>
+<tr><td>资源浪费信号</td><td>CPU idle 高 = 浪费</td><td><b>GPU 利用率低 + 队列深</b> = batching/调度有问题</td></tr>
+<tr><td>故障隐蔽性</td><td>500 错误立刻可见</td><td>KV Cache 溢出→截断输出，用户感知慢</td></tr>
+<tr><td>成本敏感度</td><td>中等</td><td><b>极高</b>——8×A100 闲置一天 = ~2880 元浪费</td></tr>
+</tbody>
+</table>
+
+<div class="callout bad">
+<b>经典陷阱</b>：Dashboard 显示 GPU Utilization = 80%，你觉得"挺好的"。但一看 <code>waiting_queue_length = 47</code>，TTFT P99 = 12s。原因：continuous batching 的 max_batch_size 设太小，GPU 在做小 batch 低效计算，大量请求排队等待。<b>没有应用层指标，你永远发现不了这个问题。</b>
+</div>
+
+<h3>可观测性三支柱</h3>
+<ul class="tight">
+  <li><b>Metrics（指标）</b>：数值型、可聚合、支持告警和 Dashboard —— "正在发生什么"</li>
+  <li><b>Logs（日志）</b>：事件流、细节丰富、适合 debug —— "为什么发生"</li>
+  <li><b>Events（事件）</b>：K8S 内建的状态变更记录 —— "集群里出了什么事"</li>
+</ul>
+
+<div class="callout info">
+推理服务场景下，Metrics 是最核心的支柱——因为你需要<b>实时看到延迟分布和队列状态</b>才能做扩缩容决策。Logs 用于事后排查细节，Events 用于定位 K8S 层面的编排问题。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="three-layers"><span class="step">§1</span>监控三层模型</h2>
+
+<div class="card">
+<p>推理服务的监控必须覆盖三层，任何一层缺失都会让排障变成盲人摸象：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 400" width="900">
+  <!-- 应用层 -->
+  <rect x="150" y="20" width="600" height="105" rx="12" fill="#1f2937" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="180" y="48" fill="#6ee7b7" font-size="14" font-weight="700">Layer 3 · 应用层（Application Metrics）</text>
+  <text x="180" y="70" fill="#8b93a7" font-size="11">指标：TTFT / ITL / Token throughput / Queue depth / Cache hit rate</text>
+  <text x="180" y="88" fill="#8b93a7" font-size="11">数据源：推理引擎内置 /metrics 端点（SGLang / vLLM / TRT-LLM）</text>
+  <text x="180" y="108" fill="#6ee7b7" font-size="10.5">回答："用户体验怎么样？推理引擎内部健不健康？"</text>
+
+  <!-- K8S 对象层 -->
+  <rect x="150" y="140" width="600" height="105" rx="12" fill="#1f2937" stroke="#7dd3fc" stroke-width="2"/>
+  <text x="180" y="168" fill="#7dd3fc" font-size="14" font-weight="700">Layer 2 · K8S 对象层（Kubernetes Metrics）</text>
+  <text x="180" y="190" fill="#8b93a7" font-size="11">指标：Pod 状态 / 重启次数 / 容器资源使用 / HPA 副本数 / PVC 使用量</text>
+  <text x="180" y="208" fill="#8b93a7" font-size="11">数据源：kube-state-metrics + cAdvisor（kubelet 内置）+ metrics-server</text>
+  <text x="180" y="228" fill="#7dd3fc" font-size="10.5">回答："K8S 编排层正常吗？Pod 在正确运行吗？"</text>
+
+  <!-- 基础设施层 -->
+  <rect x="150" y="260" width="600" height="105" rx="12" fill="#1f2937" stroke="#fbbf24" stroke-width="2"/>
+  <text x="180" y="288" fill="#fbbf24" font-size="14" font-weight="700">Layer 1 · 基础设施层（Infrastructure Metrics）</text>
+  <text x="180" y="310" fill="#8b93a7" font-size="11">指标：CPU / Mem / Disk IO / Network / GPU Util / GPU Memory / GPU Temp</text>
+  <text x="180" y="328" fill="#8b93a7" font-size="11">数据源：node-exporter（通用）+ DCGM-exporter（NVIDIA GPU 专用）</text>
+  <text x="180" y="348" fill="#fbbf24" font-size="10.5">回答："硬件层面有没有瓶颈或故障？"</text>
+
+  <!-- 左侧排障方向 -->
+  <text x="55" y="195" fill="#8b93a7" font-size="11" text-anchor="middle" transform="rotate(-90,55,195)">排障方向：自上而下</text>
+  <line x1="80" y1="40" x2="80" y2="350" stroke="#262b38" stroke-width="1.5" stroke-dasharray="4 3"/>
+  <polygon points="80,355 75,345 85,345" fill="#8b93a7"/>
+
+  <!-- 右侧重要度 -->
+  <text x="830" y="72" fill="#6ee7b7" font-size="11">最关键</text>
+  <text x="830" y="192" fill="#7dd3fc" font-size="11">中间层</text>
+  <text x="830" y="312" fill="#fbbf24" font-size="11">基础层</text>
+
+  <!-- 底部说明 -->
+  <text x="150" y="388" fill="#8b93a7" font-size="11.5">排障路径：用户反馈"慢" → 看应用层（TTFT 确实高？）→ 看 K8S 层（Pod 重启？副本不足？）→ 看基础设施层（GPU ECC 错误？磁盘满？）</text>
+</svg>
+</div>
+
+<h3>基础设施层：DCGM-exporter</h3>
+<p>NVIDIA DCGM (Data Center GPU Manager) Exporter 以 <b>DaemonSet</b> 形式部署在每个 GPU 节点上，采集 GPU 硬件指标并暴露给 Prometheus。</p>
+
+<table>
+<thead><tr><th>DCGM 指标名</th><th>含义</th><th>告警阈值建议</th></tr></thead>
+<tbody>
+<tr><td><code>DCGM_FI_DEV_GPU_UTIL</code></td><td>GPU SM（计算单元）利用率 %</td><td>推理时持续 &lt; 10% → 空跑告警</td></tr>
+<tr><td><code>DCGM_FI_DEV_FB_USED</code></td><td>帧缓冲区（显存）已使用量 MB</td><td>&gt; 总量 95% → OOM 预警</td></tr>
+<tr><td><code>DCGM_FI_DEV_FB_FREE</code></td><td>帧缓冲区剩余量 MB</td><td>&lt; 2GB → 紧急扩容/限流</td></tr>
+<tr><td><code>DCGM_FI_DEV_GPU_TEMP</code></td><td>GPU 核心温度 °C</td><td>&gt; 83°C → 即将触发降频</td></tr>
+<tr><td><code>DCGM_FI_DEV_POWER_USAGE</code></td><td>当前功耗 W</td><td>接近 TDP → 功耗墙限频</td></tr>
+<tr><td><code>DCGM_FI_DEV_ECC_DBE_VOL_TOTAL</code></td><td>不可纠正 ECC 错误累计数</td><td>&gt; 0 → 需要下线检修</td></tr>
+</tbody>
+</table>
+
+<h3>K8S 对象层：kube-state-metrics</h3>
+<p><code>kube-state-metrics</code> 是一个只读服务，watch apiserver 的所有资源对象，将其状态转换为 Prometheus 格式指标：</p>
+
+<table>
+<thead><tr><th>指标名</th><th>含义</th><th>典型用途</th></tr></thead>
+<tbody>
+<tr><td><code>kube_pod_status_phase</code></td><td>Pod 当前阶段</td><td>统计 Pending/Failed Pod 数量</td></tr>
+<tr><td><code>kube_pod_container_status_restarts_total</code></td><td>容器累计重启次数</td><td>检测 CrashLoopBackOff</td></tr>
+<tr><td><code>kube_pod_container_resource_requests</code></td><td>资源 requests 声明值</td><td>对比实际用量，发现超配/欠配</td></tr>
+<tr><td><code>kube_deployment_status_replicas_available</code></td><td>可用副本数</td><td>检测 rollout 卡住/副本不足</td></tr>
+<tr><td><code>kube_node_status_condition</code></td><td>节点状态条件</td><td>检测 NotReady / DiskPressure</td></tr>
+</tbody>
+</table>
+
+<h3>应用层：推理引擎内置 /metrics</h3>
+<p>SGLang / vLLM 等主流推理引擎内置了 Prometheus 格式的指标端点，暴露推理特有的业务指标：</p>
+
+<table>
+<thead><tr><th>指标</th><th>类型</th><th>含义</th><th>健康范围</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>TTFT (Time To First Token)</b></td><td>Histogram</td><td>从收到请求到输出第一个 token 的延迟</td><td>P99 &lt; 2s</td></tr>
+<tr><td style="color:#6ee7b7"><b>ITL (Inter-Token Latency)</b></td><td>Histogram</td><td>相邻两个输出 token 之间的间隔</td><td>P99 &lt; 100ms</td></tr>
+<tr><td style="color:#fbbf24"><b>Token Throughput</b></td><td>Counter</td><td>单位时间内生成的 token 总数</td><td>接近理论峰值</td></tr>
+<tr><td style="color:#fb7185"><b>GPU Utilization</b></td><td>Gauge</td><td>GPU SM 利用率</td><td>推理繁忙时 60-90%</td></tr>
+<tr><td style="color:#fb7185"><b>GPU Memory Used</b></td><td>Gauge</td><td>显存使用量</td><td>&lt; 总量 95%</td></tr>
+<tr><td style="color:#a78bfa"><b>Waiting Queue Length</b></td><td>Gauge</td><td>当前等待调度的请求数</td><td>&lt; 10（持续 &gt; 50 需扩容）</td></tr>
+<tr><td style="color:#a78bfa"><b>Cache Hit Rate</b></td><td>Gauge</td><td>RadixAttention 前缀缓存命中率</td><td>&gt; 60%（多轮对话场景）</td></tr>
+</tbody>
+</table>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+排障时<b>先看应用层</b>：TTFT P99 暴涨了吗？队列积压了吗？确认问题存在后，<b>再下钻到 K8S 层</b>：Pod 在重启？副本不足？最后看<b>基础设施层</b>：GPU ECC 错误？温度降频？磁盘满？<br>口诀：<b>自顶向下定位问题，自底向上确认根因</b>。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="prometheus"><span class="step">§2</span>Prometheus 生态</h2>
+
+<div class="card">
+<h3>Pull 模型：Prometheus 主动拉 /metrics 端点</h3>
+<p>与 Push 模型（应用推送指标到监控中心）不同，Prometheus 采用 <b>Pull 模型</b>：由 Prometheus Server 定期 HTTP GET 每个目标的 <code>/metrics</code> 端点。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 320" width="900">
+  <!-- Prometheus Server 中心 -->
+  <rect x="320" y="20" width="260" height="70" rx="12" fill="#1f2937" stroke="#fb7185" stroke-width="2"/>
+  <text x="450" y="48" text-anchor="middle" fill="#fb7185" font-size="14" font-weight="700">Prometheus Server</text>
+  <text x="450" y="68" text-anchor="middle" fill="#8b93a7" font-size="11">定时 scrape + TSDB 存储 + PromQL 引擎</text>
+
+  <!-- 左侧 targets -->
+  <rect x="30" y="140" width="170" height="45" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="115" y="160" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">node-exporter :9100</text>
+  <text x="115" y="175" text-anchor="middle" fill="#8b93a7" font-size="9.5">节点 CPU/Mem/Disk/Net</text>
+
+  <rect x="30" y="200" width="170" height="45" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="115" y="220" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">DCGM-exporter :9400</text>
+  <text x="115" y="235" text-anchor="middle" fill="#8b93a7" font-size="9.5">GPU 利用率/显存/温度</text>
+
+  <!-- 中间 targets -->
+  <rect x="240" y="160" width="190" height="45" rx="8" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="335" y="180" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">kube-state-metrics :8080</text>
+  <text x="335" y="195" text-anchor="middle" fill="#8b93a7" font-size="9.5">Pod/Deploy/Node 状态</text>
+
+  <!-- 右侧 targets -->
+  <rect x="470" y="140" width="170" height="45" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="555" y="160" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">SGLang Pod :30000</text>
+  <text x="555" y="175" text-anchor="middle" fill="#8b93a7" font-size="9.5">/metrics 推理指标</text>
+
+  <rect x="470" y="200" width="170" height="45" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="555" y="220" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">vLLM Pod :8000</text>
+  <text x="555" y="235" text-anchor="middle" fill="#8b93a7" font-size="9.5">/metrics 推理指标</text>
+
+  <!-- Pull 箭头 -->
+  <path d="M350 90 L115 138" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="4 2"/>
+  <path d="M350 90 L115 198" stroke="#fbbf24" stroke-width="1.2" stroke-dasharray="4 2"/>
+  <path d="M420 90 L335 158" stroke="#7dd3fc" stroke-width="1.2" stroke-dasharray="4 2"/>
+  <path d="M500 90 L555 138" stroke="#6ee7b7" stroke-width="1.2" stroke-dasharray="4 2"/>
+  <path d="M500 90 L555 198" stroke="#6ee7b7" stroke-width="1.2" stroke-dasharray="4 2"/>
+  <text x="250" y="120" fill="#8b93a7" font-size="10">HTTP GET /metrics（每 15-30s）</text>
+
+  <!-- 右上 Grafana -->
+  <rect x="680" y="20" width="160" height="55" rx="10" fill="#1f2937" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="760" y="42" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="600">Grafana</text>
+  <text x="760" y="58" text-anchor="middle" fill="#8b93a7" font-size="10">可视化 Dashboard</text>
+  <path d="M580 45 L680 45" stroke="#a78bfa" stroke-width="1.2"/>
+
+  <!-- 右中 Alertmanager -->
+  <rect x="680" y="90" width="160" height="55" rx="10" fill="#1f2937" stroke="#f87171"/>
+  <text x="760" y="112" text-anchor="middle" fill="#f87171" font-size="12" font-weight="600">Alertmanager</text>
+  <text x="760" y="128" text-anchor="middle" fill="#8b93a7" font-size="10">告警路由/静默/企微通知</text>
+  <path d="M580 65 L680 105" stroke="#f87171" stroke-width="1.2"/>
+
+  <!-- 底部说明 -->
+  <text x="30" y="275" fill="#8b93a7" font-size="11.5">Pull 模型优势：</text>
+  <text x="30" y="293" fill="#8b93a7" font-size="11">① 目标只需暴露 HTTP 端点即可，无需集成 SDK  ② Prometheus 控制抓取节奏，不会被突发流量淹没</text>
+  <text x="30" y="311" fill="#8b93a7" font-size="11">③ 目标宕机 = 抓取失败 = 自动产生 up{} = 0 告警  ④ 天然支持多租户（不同 Prometheus 抓不同目标）</text>
+</svg>
+</div>
+
+<h3>ServiceMonitor / PodMonitor：声明式配置抓取目标</h3>
+<p>在 Prometheus Operator 体系下，不需要手动编辑 prometheus.yml。通过 CRD 声明"谁需要被抓取"：</p>
+
+<pre><span style="color:#8b93a7"># ServiceMonitor：通过 Service 发现 Pod 的 /metrics 端点</span>
+<span style="color:#6ee7b7">apiVersion</span>: monitoring.coreos.com/v1
+<span style="color:#6ee7b7">kind</span>: ServiceMonitor
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#7dd3fc">name</span>: sglang-inference-monitor
+  <span style="color:#7dd3fc">namespace</span>: inference
+  <span style="color:#7dd3fc">labels</span>:
+    <span style="color:#fbbf24">release</span>: prometheus             <span style="color:#8b93a7"># 必须匹配 Prometheus 实例的 serviceMonitorSelector</span>
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#7dd3fc">selector</span>:
+    <span style="color:#7dd3fc">matchLabels</span>:
+      <span style="color:#fbbf24">app</span>: sglang                  <span style="color:#8b93a7"># 匹配目标 Service 的 label</span>
+  <span style="color:#7dd3fc">endpoints</span>:
+  - <span style="color:#7dd3fc">port</span>: metrics                 <span style="color:#8b93a7"># Service spec.ports 中定义的 port name</span>
+    <span style="color:#7dd3fc">path</span>: /metrics                <span style="color:#8b93a7"># 端点路径</span>
+    <span style="color:#7dd3fc">interval</span>: 15s                 <span style="color:#8b93a7"># 抓取间隔，推理服务建议 15s</span>
+    <span style="color:#7dd3fc">scrapeTimeout</span>: 10s            <span style="color:#8b93a7"># 单次抓取超时</span>
+  <span style="color:#7dd3fc">namespaceSelector</span>:
+    <span style="color:#7dd3fc">matchNames</span>:
+    - inference                     <span style="color:#8b93a7"># 限定 namespace 范围</span>
+</pre>
+
+<pre><span style="color:#8b93a7"># PodMonitor：直接匹配 Pod（适合 DaemonSet 场景，如 DCGM-exporter）</span>
+<span style="color:#6ee7b7">apiVersion</span>: monitoring.coreos.com/v1
+<span style="color:#6ee7b7">kind</span>: PodMonitor
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#7dd3fc">name</span>: dcgm-gpu-monitor
+  <span style="color:#7dd3fc">namespace</span>: monitoring
+  <span style="color:#7dd3fc">labels</span>:
+    <span style="color:#fbbf24">release</span>: prometheus
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#7dd3fc">selector</span>:
+    <span style="color:#7dd3fc">matchLabels</span>:
+      <span style="color:#fbbf24">app.kubernetes.io/name</span>: dcgm-exporter
+  <span style="color:#7dd3fc">podMetricsEndpoints</span>:
+  - <span style="color:#7dd3fc">port</span>: metrics
+    <span style="color:#7dd3fc">interval</span>: 15s                 <span style="color:#8b93a7"># GPU 指标建议 15s，默认 30s 太慢</span>
+  <span style="color:#7dd3fc">namespaceSelector</span>:
+    <span style="color:#7dd3fc">matchNames</span>:
+    - gpu-operator                  <span style="color:#8b93a7"># DCGM-exporter 通常在 gpu-operator namespace</span>
+</pre>
+
+<h3>PromQL 常用查询示例</h3>
+<pre><span style="color:#8b93a7"># ① TTFT P99（5 分钟窗口）</span>
+histogram_quantile(0.99,
+  sum(rate(sglang_time_to_first_token_seconds_bucket[5m])) by (le, pod)
+)
+
+<span style="color:#8b93a7"># ② ITL P50 和 P99 对比</span>
+histogram_quantile(0.50, sum(rate(sglang_inter_token_latency_seconds_bucket[5m])) by (le))
+histogram_quantile(0.99, sum(rate(sglang_inter_token_latency_seconds_bucket[5m])) by (le))
+
+<span style="color:#8b93a7"># ③ 集群总 Token 吞吐量 (tokens/s)</span>
+sum(rate(sglang_generated_tokens_total[1m]))
+
+<span style="color:#8b93a7"># ④ 每个 Pod 的等待队列深度</span>
+sglang_waiting_queue_length{namespace="inference"}
+
+<span style="color:#8b93a7"># ⑤ GPU 利用率低但队列深 = batching 异常</span>
+DCGM_FI_DEV_GPU_UTIL{namespace="inference"} &lt; 50
+  and on(pod) sglang_waiting_queue_length > 20
+
+<span style="color:#8b93a7"># ⑥ GPU 显存使用率百分比</span>
+DCGM_FI_DEV_FB_USED / (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) * 100
+
+<span style="color:#8b93a7"># ⑦ 容器内存使用接近 limit（OOM 预警）</span>
+container_memory_working_set_bytes{namespace="inference"}
+  / on(pod,container) kube_pod_container_resource_limits{resource="memory"} > 0.9
+
+<span style="color:#8b93a7"># ⑧ 过去 1 小时 Pod 重启次数 > 3</span>
+increase(kube_pod_container_status_restarts_total{namespace="inference"}[1h]) > 3
+</pre>
+
+<h3>Grafana 面板设计</h3>
+<p>推理服务 Dashboard 建议按以下行（Row）组织：</p>
+
+<div class="grid cols-2">
+<div class="card" style="margin:0">
+<h4 style="margin-top:0">Row 1: 用户体验指标</h4>
+<ul class="tight">
+  <li>TTFT P50 / P99 时间序列</li>
+  <li>ITL P50 / P99 时间序列</li>
+  <li>请求成功率 / 错误率</li>
+  <li>QPS 趋势</li>
+</ul>
+</div>
+<div class="card" style="margin:0">
+<h4 style="margin-top:0">Row 2: 引擎内部状态</h4>
+<ul class="tight">
+  <li>Token throughput (tokens/s)</li>
+  <li>Waiting queue length</li>
+  <li>Running batch size</li>
+  <li>Prefix cache hit rate</li>
+</ul>
+</div>
+<div class="card" style="margin:0">
+<h4 style="margin-top:0">Row 3: GPU 资源</h4>
+<ul class="tight">
+  <li>GPU utilization %（per GPU）</li>
+  <li>GPU memory used/total（per GPU）</li>
+  <li>GPU temperature</li>
+  <li>GPU power usage</li>
+</ul>
+</div>
+<div class="card" style="margin:0">
+<h4 style="margin-top:0">Row 4: K8S 状态</h4>
+<ul class="tight">
+  <li>Pod 状态分布（Running/Pending/Failed）</li>
+  <li>容器重启次数趋势</li>
+  <li>HPA 当前/期望副本数</li>
+  <li>节点 CPU/Mem 剩余</li>
+</ul>
+</div>
+</div>
+
+<div class="callout warn">
+<b>反模式：高基数标签爆炸</b><br>
+不要把 user_id、session_id、prompt_hash 作为 Prometheus label——这会导致时间序列数量爆炸，TSDB 内存耗尽。<b>规则：单个指标的 label 组合 &lt; 1000 条时间序列</b>。需要细粒度分析时用日志（ES/Loki），不用 metrics。
+</div>
+
+<div class="callout bad">
+<b>反模式：只看平均值</b><br>
+GPU 利用率"平均 50%"可能是"一半 GPU 跑满 + 一半 GPU 空转"。推理延迟"平均 1s"可能是"大部分 200ms + 少数 30s 长尾"。<b>必须看分位数（P50/P95/P99）和 per-GPU 视图</b>。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+DCGM-exporter 默认采集周期是 30s。对推理服务建议改为 <b>10-15s</b>——GPU 利用率的突变（如 batch 切换、OOM）在 30s 间隔下会被平滑掉，你看不到尖刺。修改方式：Helm values 中设 <code>serviceMonitor.interval: 15s</code>，或在 DaemonSet 环境变量中设 <code>DCGM_EXPORTER_INTERVAL=10000</code>（毫秒）。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="logging"><span class="step">§3</span>日志收集</h2>
+
+<div class="card">
+<h3>日志收集架构</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 280" width="900">
+  <!-- Node -->
+  <rect x="20" y="30" width="240" height="190" rx="10" fill="#1f2937" stroke="#6ee7b7" stroke-dasharray="4 3"/>
+  <text x="40" y="55" fill="#6ee7b7" font-size="12" font-weight="600">Worker Node</text>
+
+  <!-- 容器 -->
+  <rect x="40" y="70" width="90" height="35" rx="6" fill="#fbbf24" opacity=".2" stroke="#fbbf24"/>
+  <text x="50" y="92" fill="#fbbf24" font-size="10">SGLang Pod</text>
+  <rect x="145" y="70" width="90" height="35" rx="6" fill="#fbbf24" opacity=".2" stroke="#fbbf24"/>
+  <text x="155" y="92" fill="#fbbf24" font-size="10">vLLM Pod</text>
+
+  <!-- stdout → 日志文件 -->
+  <text x="60" y="120" fill="#8b93a7" font-size="9">stdout/stderr</text>
+  <line x1="120" y1="105" x2="120" y2="130" stroke="#8b93a7" stroke-width="1"/>
+
+  <!-- 日志文件路径 -->
+  <rect x="40" y="130" width="200" height="25" rx="4" fill="#0f1218" stroke="#262b38"/>
+  <text x="50" y="147" fill="#8b93a7" font-size="9">/var/log/containers/*.log</text>
+
+  <!-- Fluent-bit Agent -->
+  <rect x="40" y="170" width="200" height="38" rx="8" fill="#162924" stroke="#6ee7b7"/>
+  <text x="55" y="194" fill="#6ee7b7" font-size="11" font-weight="600">Fluent-bit (DaemonSet)</text>
+  <line x1="140" y1="155" x2="140" y2="170" stroke="#6ee7b7" stroke-width="1"/>
+  <text x="155" y="165" fill="#8b93a7" font-size="8">tail</text>
+
+  <!-- 箭头：Agent → 聚合 -->
+  <path d="M260 189 L340 150" stroke="#6ee7b7" stroke-width="1.5"/>
+
+  <!-- 聚合层 -->
+  <rect x="340" y="80" width="180" height="90" rx="10" fill="#1f2937" stroke="#a78bfa" stroke-dasharray="4 3"/>
+  <text x="360" y="105" fill="#a78bfa" font-size="12" font-weight="600">聚合层（可选）</text>
+  <text x="360" y="125" fill="#8b93a7" font-size="10">Kafka 缓冲</text>
+  <text x="360" y="142" fill="#8b93a7" font-size="10">Fluentd aggregator</text>
+  <text x="360" y="159" fill="#8b93a7" font-size="10">削峰 + 路由 + 过滤</text>
+
+  <!-- 小集群直写路径 -->
+  <path d="M260 189 L620 125" stroke="#6ee7b7" stroke-width="1" stroke-dasharray="3 2"/>
+  <text x="400" y="200" fill="#8b93a7" font-size="9.5">小规模可跳过聚合层，直写存储</text>
+
+  <!-- 箭头：聚合 → 存储 -->
+  <path d="M520 125 L620 125" stroke="#a78bfa" stroke-width="1.5"/>
+
+  <!-- 存储层 -->
+  <rect x="620" y="50" width="250" height="170" rx="10" fill="#1f2937" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="640" y="78" fill="#fb7185" font-size="12" font-weight="600">存储 + 查询</text>
+
+  <rect x="640" y="90" width="105" height="28" rx="5" fill="#0f1218" stroke="#262b38"/>
+  <text x="650" y="108" fill="#8b93a7" font-size="10">Elasticsearch</text>
+  <rect x="755" y="90" width="95" height="28" rx="5" fill="#0f1218" stroke="#262b38"/>
+  <text x="765" y="108" fill="#8b93a7" font-size="10">Grafana Loki</text>
+
+  <rect x="640" y="130" width="105" height="28" rx="5" fill="#0f1218" stroke="#262b38"/>
+  <text x="650" y="148" fill="#8b93a7" font-size="10">腾讯云 CLS</text>
+  <rect x="755" y="130" width="95" height="28" rx="5" fill="#0f1218" stroke="#262b38"/>
+  <text x="765" y="148" fill="#8b93a7" font-size="10">ClickHouse</text>
+
+  <text x="640" y="185" fill="#8b93a7" font-size="10">查询入口：</text>
+  <text x="640" y="200" fill="#8b93a7" font-size="10">Kibana / Grafana / CLS 控制台</text>
+
+  <!-- 底部说明 -->
+  <text x="20" y="255" fill="#8b93a7" font-size="11.5">核心思路：每节点一个 DaemonSet Agent → 读本地日志文件 → 发送到集中存储。应用无需改代码，只要输出到 stdout。</text>
+  <text x="20" y="273" fill="#fbbf24" font-size="11">推理服务日志量提示：SGLang 默认 INFO 级别单 Pod 约 1-5 MB/小时，开 DEBUG 可达 50 MB/小时。</text>
+</svg>
+</div>
+
+<h3>K8S 日志路径机制</h3>
+<pre><span style="color:#8b93a7"># K8S 约定：容器的 stdout/stderr 被 containerd 写到固定路径</span>
+/var/log/pods/&lt;namespace&gt;_&lt;pod-name&gt;_&lt;pod-uid&gt;/&lt;container-name&gt;/0.log
+
+<span style="color:#8b93a7"># /var/log/containers/ 下是软链接（兼容旧工具）</span>
+/var/log/containers/sglang-0_inference_sglang-server-a1b2c3d4e5f6.log
+  → /var/log/pods/inference_sglang-0_xxxx/sglang-server/0.log
+
+<span style="color:#8b93a7"># 日志格式（containerd 的 JSON 行格式）</span>
+{"log":"2026-05-08T10:30:00.123Z INFO  Model qwen3-72b loaded in 45.2s\n","stream":"stdout","time":"2026-05-08T10:30:00.123456789Z"}
+
+<span style="color:#8b93a7"># logrotate：默认 10MB/文件，保留 5 个旧文件，不会撑爆磁盘</span>
+</pre>
+
+<h3>结构化日志最佳实践</h3>
+<pre><span style="color:#f87171"># 反模式：非结构化纯文本，海量日志中 grep 是噩梦</span>
+[2026-05-08 10:30:01] INFO: Request req-abc123 completed, TTFT=850ms, tokens=256, user=u789
+
+<span style="color:#6ee7b7"># 正确：JSON 结构化日志，每个字段可被索引和聚合</span>
+{"ts":"2026-05-08T10:30:01Z","level":"info","msg":"request_complete",
+ "request_id":"req-abc123","ttft_ms":850,"itl_ms":42,
+ "prompt_tokens":1024,"output_tokens":256,
+ "model":"qwen3-72b","cache_hit":true,"batch_size":8}
+</pre>
+
+<div class="callout info">
+<b>推理服务日志该记什么：</b>
+<ul class="tight" style="margin-top:6px">
+<li><b>必记</b>：request_id, ttft_ms, itl_ms, prompt_tokens, output_tokens, error（如有）, status_code</li>
+<li><b>建议记</b>：model_name, batch_size, cache_hit, gpu_id, queue_wait_ms</li>
+<li><b>禁止记</b>：完整的 prompt/response 内容（合规风险 + 日志量爆炸 + 泄密风险）</li>
+</ul>
+</div>
+
+<h3>kubectl logs 使用技巧</h3>
+<pre><span style="color:#8b93a7"># 查看指定容器的日志</span>
+kubectl logs pod/sglang-0 -n inference -c sglang-server
+
+<span style="color:#8b93a7"># 查看上一次崩溃的容器日志（CrashLoopBackOff 排障第一步）</span>
+kubectl logs pod/sglang-0 -n inference <span style="color:#6ee7b7">--previous</span>
+
+<span style="color:#8b93a7"># 只看最近 5 分钟的日志</span>
+kubectl logs pod/sglang-0 -n inference <span style="color:#6ee7b7">--since=5m</span>
+
+<span style="color:#8b93a7"># 实时跟踪（等价于 tail -f）</span>
+kubectl logs pod/sglang-0 -n inference <span style="color:#6ee7b7">-f</span>
+
+<span style="color:#8b93a7"># 只看最后 200 行</span>
+kubectl logs pod/sglang-0 -n inference <span style="color:#6ee7b7">--tail=200</span>
+
+<span style="color:#8b93a7"># 按 label 查看所有匹配 Pod 的日志（多副本排查）</span>
+kubectl logs -l app=sglang -n inference --all-containers --max-log-requests=10
+
+<span style="color:#8b93a7"># 组合使用：看上次崩溃的最后 50 行</span>
+kubectl logs pod/sglang-0 -n inference --previous --tail=50
+</pre>
+
+<div class="callout bad">
+<b>反模式：日志写到容器内文件</b><br>
+有些旧代码把日志写到 <code>/app/logs/server.log</code> 而不是 stdout。后果：① <code>kubectl logs</code> 看不到任何输出 ② DaemonSet Agent 无法自动收集 ③ 容器重启后日志丢失。<br>
+<b>解法</b>：优先改代码输出到 stdout；无法改代码时，加一个 sidecar 容器用 <code>tail -F /app/logs/server.log</code> 转到 stdout。
+</div>
+
+<div class="callout warn">
+<b>反模式：推理服务开 DEBUG 日志上生产</b><br>
+SGLang/vLLM 的 DEBUG 级别会打印每个 token 的调度决策——单 Pod 每秒可产生几百 KB 日志。大规模集群下日志 agent CPU 飙高、ES 写入积压。生产环境只开 INFO/WARNING，需要排查时临时调整单 Pod 的日志级别。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="events"><span class="step">§4</span>事件与排障</h2>
+
+<div class="card">
+<h3>kubectl describe 的 Events 字段</h3>
+<p>K8S Events 是集群内建的<b>短期事件记录</b>（默认保留 1 小时）。每次调度、拉镜像、探针失败、OOM 都会产生 Event——是排障的第一手线索。</p>
+
+<pre><span style="color:#8b93a7"># 查看某个 Pod 的所有事件</span>
+$ kubectl describe pod sglang-0 -n inference
+
+<span style="color:#6ee7b7">Events:</span>
+  Type     Reason            Age   From               Message
+  ----     ------            ----  ----               -------
+  Normal   Scheduled         5m    default-scheduler  Successfully assigned inference/sglang-0 to gpu-node-03
+  Normal   Pulling           5m    kubelet            Pulling image "registry.example.com/sglang:v0.4.1"
+  Normal   Pulled            3m    kubelet            Successfully pulled image in 120s
+  Normal   Created           3m    kubelet            Created container sglang-server
+  Normal   Started           3m    kubelet            Started container sglang-server
+  Warning  Unhealthy         90s   kubelet            Readiness probe failed: HTTP probe failed with statuscode: 503
+  Warning  Unhealthy         60s   kubelet            Readiness probe failed: HTTP probe failed with statuscode: 503
+  Normal   Ready             30s   kubelet            Container became ready
+</pre>
+
+<h3>全局事件查询</h3>
+<pre><span style="color:#8b93a7"># 按时间排序查看所有事件（最常用）</span>
+kubectl get events -n inference <span style="color:#6ee7b7">--sort-by='.lastTimestamp'</span>
+
+<span style="color:#8b93a7"># 只看 Warning 类型（过滤掉 Normal 噪音）</span>
+kubectl get events -n inference <span style="color:#6ee7b7">--field-selector type=Warning</span>
+
+<span style="color:#8b93a7"># 实时 watch 新事件（排障时开着）</span>
+kubectl get events -n inference <span style="color:#6ee7b7">-w</span>
+
+<span style="color:#8b93a7"># 查看某种原因的事件</span>
+kubectl get events -n inference --field-selector reason=OOMKilling
+
+<span style="color:#8b93a7"># 查看全集群的 FailedScheduling 事件</span>
+kubectl get events -A --field-selector reason=FailedScheduling --sort-by='.lastTimestamp'
+</pre>
+
+<h3>常见事件类型及含义</h3>
+<table>
+<thead><tr><th>事件 Reason</th><th>类型</th><th>含义</th><th>排查方向</th></tr></thead>
+<tbody>
+<tr><td><code style="color:#f87171">FailedScheduling</code></td><td>Warning</td><td>Scheduler 找不到合适节点放 Pod</td><td>资源不足 / Taint 未容忍 / Affinity 过严 / GPU 被占满</td></tr>
+<tr><td><code style="color:#f87171">FailedMount</code></td><td>Warning</td><td>Volume 挂载失败</td><td>PVC 未绑定 / CSI 驱动异常 / NFS 服务器不通</td></tr>
+<tr><td><code style="color:#f87171">Unhealthy</code></td><td>Warning</td><td>探针检查失败（liveness/readiness）</td><td>容器还在启动 / 端口没监听 / 应用内部异常</td></tr>
+<tr><td><code style="color:#f87171">OOMKilled</code></td><td>Warning</td><td>容器内存超 limit 被 kernel 杀掉</td><td>memory limit 太低 / 内存泄漏 / 显存溢出导致 host OOM</td></tr>
+<tr><td><code style="color:#f87171">Evicted</code></td><td>Warning</td><td>节点资源压力，kubelet 主动驱逐</td><td>DiskPressure / MemoryPressure / PID 耗尽</td></tr>
+<tr><td><code style="color:#f87171">BackOff</code></td><td>Warning</td><td>容器反复崩溃，处于退避等待中</td><td><code>kubectl logs --previous</code> 查上次崩溃原因</td></tr>
+<tr><td><code style="color:#f87171">FailedCreatePodSandBox</code></td><td>Warning</td><td>网络沙箱创建失败</td><td>CNI 插件异常 / IP 地址池耗尽</td></tr>
+<tr><td><code style="color:#fbbf24">ImagePullBackOff</code></td><td>Warning</td><td>镜像拉取反复失败</td><td>镜像地址错 / 认证失败 / 网络不通 / 镜像太大超时</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>注意</b>：Events 默认只保留 1 小时（kube-apiserver 的 <code>--event-ttl</code> 参数）。如果需要事后追溯，必须把 Events 也收集到日志系统——Fluent-bit 可以配置 Kubernetes Events 输入插件。
+</div>
+
+<h3>排障决策树：Pod 不正常时的排查步骤</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 560" width="900">
+  <!-- 起点 -->
+  <rect x="330" y="10" width="240" height="40" rx="8" fill="#f87171" opacity=".3" stroke="#f87171" stroke-width="2"/>
+  <text x="450" y="35" text-anchor="middle" fill="#f87171" font-size="13" font-weight="700">Pod 不正常</text>
+
+  <!-- 第一步 -->
+  <path d="M450 50 L450 80" stroke="#8b93a7" stroke-width="1.5"/>
+  <rect x="320" y="80" width="260" height="32" rx="6" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="450" y="101" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">kubectl get pod -o wide → 看 STATUS</text>
+
+  <!-- Pending 分支 -->
+  <path d="M340 112 L140 145" stroke="#fbbf24" stroke-width="1.2"/>
+  <rect x="30" y="145" width="220" height="30" rx="6" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="140" y="165" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">Pending</text>
+
+  <path d="M140 175 L140 205" stroke="#8b93a7" stroke-width="1"/>
+  <rect x="20" y="205" width="240" height="70" rx="6" fill="#0f1218" stroke="#262b38"/>
+  <text x="35" y="223" fill="#6ee7b7" font-size="10">kubectl describe pod → Events</text>
+  <text x="35" y="240" fill="#8b93a7" font-size="10">FailedScheduling → 查资源/taint/affinity</text>
+  <text x="35" y="255" fill="#8b93a7" font-size="10">FailedMount → 查 PV/PVC/CSI</text>
+  <text x="35" y="270" fill="#8b93a7" font-size="10">无事件 → scheduler 本身可能异常</text>
+
+  <!-- CrashLoopBackOff 分支 -->
+  <path d="M450 112 L450 145" stroke="#f87171" stroke-width="1.2"/>
+  <rect x="330" y="145" width="240" height="30" rx="6" fill="#1f2937" stroke="#f87171"/>
+  <text x="450" y="165" text-anchor="middle" fill="#f87171" font-size="11" font-weight="600">CrashLoopBackOff</text>
+
+  <path d="M450 175 L450 205" stroke="#8b93a7" stroke-width="1"/>
+  <rect x="320" y="205" width="260" height="85" rx="6" fill="#0f1218" stroke="#262b38"/>
+  <text x="335" y="223" fill="#6ee7b7" font-size="10">kubectl logs --previous</text>
+  <text x="335" y="240" fill="#8b93a7" font-size="10">Exit 137 (SIGKILL) → OOMKilled → 加内存</text>
+  <text x="335" y="255" fill="#8b93a7" font-size="10">Exit 1 → 应用启动失败 → 看错误日志</text>
+  <text x="335" y="270" fill="#8b93a7" font-size="10">Exit 143 (SIGTERM) → 被探针杀 → 查 probe 配置</text>
+  <text x="335" y="285" fill="#8b93a7" font-size="10">CUDA error → 驱动不兼容 / GPU 故障</text>
+
+  <!-- ImagePullBackOff 分支 -->
+  <path d="M560 112 L740 145" stroke="#a78bfa" stroke-width="1.2"/>
+  <rect x="630" y="145" width="240" height="30" rx="6" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="750" y="165" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="600">ImagePullBackOff</text>
+
+  <path d="M750 175 L750 205" stroke="#8b93a7" stroke-width="1"/>
+  <rect x="620" y="205" width="260" height="70" rx="6" fill="#0f1218" stroke="#262b38"/>
+  <text x="635" y="223" fill="#6ee7b7" font-size="10">kubectl describe pod → 看错误详情</text>
+  <text x="635" y="240" fill="#8b93a7" font-size="10">401 Unauthorized → imagePullSecrets 配置</text>
+  <text x="635" y="255" fill="#8b93a7" font-size="10">not found → 镜像地址或 tag 错误</text>
+  <text x="635" y="270" fill="#8b93a7" font-size="10">timeout → 镜像太大 / 仓库网络不通</text>
+
+  <!-- Running 但不 Ready -->
+  <rect x="30" y="310" width="220" height="30" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="140" y="330" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">Running 但 READY = 0/1</text>
+
+  <path d="M140 340 L140 365" stroke="#8b93a7" stroke-width="1"/>
+  <rect x="20" y="365" width="240" height="55" rx="6" fill="#0f1218" stroke="#262b38"/>
+  <text x="35" y="383" fill="#6ee7b7" font-size="10">readinessProbe 持续失败</text>
+  <text x="35" y="398" fill="#8b93a7" font-size="10">模型还在加载 → 检查 startupProbe 超时</text>
+  <text x="35" y="413" fill="#8b93a7" font-size="10">CUDA 初始化失败 → exec 进容器查 nvidia-smi</text>
+
+  <!-- Evicted -->
+  <rect x="330" y="325" width="240" height="30" rx="6" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="450" y="345" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">Evicted</text>
+
+  <path d="M450 355 L450 380" stroke="#8b93a7" stroke-width="1"/>
+  <rect x="320" y="380" width="260" height="55" rx="6" fill="#0f1218" stroke="#262b38"/>
+  <text x="335" y="398" fill="#6ee7b7" font-size="10">kubectl describe node → Conditions</text>
+  <text x="335" y="413" fill="#8b93a7" font-size="10">DiskPressure → 清理镜像/日志</text>
+  <text x="335" y="428" fill="#8b93a7" font-size="10">MemoryPressure → 有 Pod 内存泄漏</text>
+
+  <!-- 万能四步 -->
+  <rect x="150" y="470" width="600" height="70" rx="12" fill="#1f2937" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="450" y="493" text-anchor="middle" fill="#6ee7b7" font-size="13" font-weight="700">万能排障四步（覆盖 90% 场景）</text>
+  <text x="180" y="513" fill="#8b93a7" font-size="11">① kubectl get pod -o wide</text>
+  <text x="430" y="513" fill="#8b93a7" font-size="11">② kubectl describe pod &lt;name&gt;</text>
+  <text x="180" y="530" fill="#8b93a7" font-size="11">③ kubectl logs &lt;name&gt; --previous</text>
+  <text x="430" y="530" fill="#8b93a7" font-size="11">④ kubectl get events --sort-by='.lastTimestamp'</text>
+</svg>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+推理服务特有的"看起来正常但实际有问题"场景：<b>Pod Running、READY=1/1、但用户反馈推理很慢</b>。此时 K8S 层面一切正常，决策树走到底也找不到答案——你必须到<b>应用层指标</b>去排查：TTFT P99 飙高？队列积压？Prefix Cache 命中率骤降？GPU 有 ECC uncorrectable error 导致降频？排障决策树<b>不能止步于"Pod 状态正常"</b>。
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：GPU 节点常见故障及排查</button>
+<div class="expand-content">
+<table>
+<thead><tr><th>现象</th><th>kubectl 看到什么</th><th>根因</th><th>排查/解法</th></tr></thead>
+<tbody>
+<tr><td>Pod 一直 Pending</td><td>Event: <code>Insufficient nvidia.com/gpu</code></td><td>GPU 被占满 或 device-plugin 未注册</td><td>kubectl describe node 看 allocatable GPU 数 / 检查 nvidia-device-plugin DaemonSet</td></tr>
+<tr><td>Pod OOMKilled</td><td>Exit code 137 + OOMKilled reason</td><td>GPU 显存溢出触发 host memory OOM</td><td>减 max_batch_size / 用量化模型 / 加大 memory limit</td></tr>
+<tr><td>Pod Running 但 GPU Util = 0%</td><td>容器内 nvidia-smi 看到 GPU 但无进程</td><td>CUDA 版本不匹配 / 模型加载失败静默退出</td><td>kubectl exec 进容器查应用日志 / 检查 CUDA 驱动兼容性</td></tr>
+<tr><td>节点变 NotReady</td><td>Node Condition: <code>Ready=False</code></td><td>GPU 驱动崩溃 / Xid 错误 / kubelet 被 OOM 杀</td><td>SSH 到节点查 dmesg / journalctl -u kubelet</td></tr>
+<tr><td>推理突然变慢</td><td>Pod 正常但 TTFT 飙高</td><td>GPU 温度降频 / NVLink 带宽异常 / ECC 错误</td><td>查 DCGM 指标：GPU_TEMP > 83 / ECC_DBE > 0</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="sli-slo"><span class="step">§5</span>推理服务 SLI/SLO 设计</h2>
+
+<div class="card">
+<h3>概念区分</h3>
+<table>
+<thead><tr><th>术语</th><th>定义</th><th>谁负责</th><th>示例</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>SLI</b><br><span style="color:#8b93a7;font-size:11px">Service Level Indicator</span></td><td>量化衡量服务质量的指标</td><td>SRE / 平台开发</td><td>TTFT P99、成功率、错误率</td></tr>
+<tr><td style="color:#fbbf24"><b>SLO</b><br><span style="color:#8b93a7;font-size:11px">Service Level Objective</span></td><td>SLI 的目标值</td><td>SRE + 产品</td><td>TTFT P99 &lt; 2s、可用性 &gt; 99.9%</td></tr>
+<tr><td style="color:#fb7185"><b>SLA</b><br><span style="color:#8b93a7;font-size:11px">Service Level Agreement</span></td><td>对外承诺 + 违约赔偿条款</td><td>商务 + 法务</td><td>可用性 &lt; 99.9% 赔偿月费 10%</td></tr>
+</tbody>
+</table>
+
+<h3>推理服务的 SLI 选择</h3>
+<div class="grid cols-2">
+<div class="card" style="margin:0">
+<h4 style="margin-top:0;color:#6ee7b7">延迟类 SLI</h4>
+<ul class="tight">
+  <li><b>TTFT P99</b>：首 token 延迟，用户"等了多久才看到第一个字"</li>
+  <li><b>ITL P99</b>：token 间延迟，用户"输出是否流畅"</li>
+  <li><b>E2E Latency P99</b>：完整请求端到端耗时</li>
+</ul>
+<p style="color:var(--mute);font-size:12px;margin-top:8px">流式场景重 TTFT + ITL；批量场景重 E2E Latency</p>
+</div>
+<div class="card" style="margin:0">
+<h4 style="margin-top:0;color:#6ee7b7">可用性 / 质量类 SLI</h4>
+<ul class="tight">
+  <li><b>成功率</b>：非 5xx 响应的请求占比</li>
+  <li><b>错误率</b>：返回错误码的请求占比</li>
+  <li><b>截断率</b>：因 KV Cache 溢出/max_tokens 被截断的比例</li>
+</ul>
+<p style="color:var(--mute);font-size:12px;margin-top:8px">注意：HTTP 200 但内容为空/被截断也算"质量问题"</p>
+</div>
+</div>
+
+<h3>SLO 示例</h3>
+<div class="grid cols-3">
+<div class="card" style="margin:0;text-align:center">
+<div style="color:var(--brand);font-size:28px;font-weight:700">&lt; 2s</div>
+<div style="color:var(--mute);font-size:12px">TTFT P99</div>
+<div style="color:var(--mute);font-size:11px;margin-top:4px">99% 请求首 token 延迟低于 2 秒</div>
+</div>
+<div class="card" style="margin:0;text-align:center">
+<div style="color:var(--brand);font-size:28px;font-weight:700">99.9%</div>
+<div style="color:var(--mute);font-size:12px">月度可用性</div>
+<div style="color:var(--mute);font-size:11px;margin-top:4px">每月最多允许 43 分钟不可用</div>
+</div>
+<div class="card" style="margin:0;text-align:center">
+<div style="color:var(--brand);font-size:28px;font-weight:700">&lt; 0.1%</div>
+<div style="color:var(--mute);font-size:12px">错误率</div>
+<div style="color:var(--mute);font-size:11px;margin-top:4px">每千次请求最多 1 次 5xx 错误</div>
+</div>
+</div>
+
+<h3>Error Budget 概念</h3>
+<div class="callout info">
+<b>Error Budget = 1 - SLO</b>。如果可用性 SLO 是 99.9%，那你每月有 0.1% = 43 分钟的"出错预算"。这个预算用来做发布、实验、容忍小故障。当 budget 消耗过快时——冻结变更，集中排查稳定性。
+</div>
+
+<h3>告警规则：PromQL 表达式示例</h3>
+<pre><span style="color:#8b93a7"># PrometheusRule CRD：部署到 Prometheus Operator</span>
+<span style="color:#6ee7b7">apiVersion</span>: monitoring.coreos.com/v1
+<span style="color:#6ee7b7">kind</span>: PrometheusRule
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#7dd3fc">name</span>: inference-slo-alerts
+  <span style="color:#7dd3fc">namespace</span>: monitoring
+  <span style="color:#7dd3fc">labels</span>:
+    <span style="color:#fbbf24">release</span>: prometheus             <span style="color:#8b93a7"># 匹配 Prometheus 实例的 ruleSelector</span>
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#7dd3fc">groups</span>:
+  - <span style="color:#7dd3fc">name</span>: inference.slo.rules
+    <span style="color:#7dd3fc">rules</span>:
+
+    <span style="color:#8b93a7"># 告警 1：TTFT P99 超过 SLO 阈值</span>
+    - <span style="color:#7dd3fc">alert</span>: InferenceTTFTP99High
+      <span style="color:#7dd3fc">expr</span>: |
+        histogram_quantile(0.99,
+          sum(rate(sglang_time_to_first_token_seconds_bucket{namespace="inference"}[5m])) by (le)
+        ) > 2
+      <span style="color:#7dd3fc">for</span>: 3m                        <span style="color:#8b93a7"># 持续 3 分钟才触发，避免瞬时毛刺</span>
+      <span style="color:#7dd3fc">labels</span>:
+        <span style="color:#fbbf24">severity</span>: critical
+        <span style="color:#fbbf24">team</span>: inference-platform
+      <span style="color:#7dd3fc">annotations</span>:
+        <span style="color:#fbbf24">summary</span>: "TTFT P99 超过 SLO 2s（当前: {{ $value | humanizeDuration }}）"
+        <span style="color:#fbbf24">runbook</span>: "https://wiki/runbook/inference-high-ttft"
+        <span style="color:#fbbf24">action</span>: "① 查 waiting_queue_length ② 考虑 HPA 扩容 ③ 查 GPU util"
+
+    <span style="color:#8b93a7"># 告警 2：等待队列持续积压 → 需要扩容</span>
+    - <span style="color:#7dd3fc">alert</span>: InferenceQueueBacklog
+      <span style="color:#7dd3fc">expr</span>: sglang_waiting_queue_length{namespace="inference"} > 50
+      <span style="color:#7dd3fc">for</span>: 2m
+      <span style="color:#7dd3fc">labels</span>:
+        <span style="color:#fbbf24">severity</span>: warning
+      <span style="color:#7dd3fc">annotations</span>:
+        <span style="color:#fbbf24">summary</span>: "Pod {{ $labels.pod }} 队列积压 {{ $value }} 个请求"
+
+    <span style="color:#8b93a7"># 告警 3：GPU 显存即将耗尽 → OOM 风险</span>
+    - <span style="color:#7dd3fc">alert</span>: GPUMemoryNearlyFull
+      <span style="color:#7dd3fc">expr</span>: |
+        DCGM_FI_DEV_FB_USED /
+        (DCGM_FI_DEV_FB_USED + DCGM_FI_DEV_FB_FREE) * 100 > 95
+      <span style="color:#7dd3fc">for</span>: 1m
+      <span style="color:#7dd3fc">labels</span>:
+        <span style="color:#fbbf24">severity</span>: critical
+      <span style="color:#7dd3fc">annotations</span>:
+        <span style="color:#fbbf24">summary</span>: "GPU {{ $labels.gpu }} on {{ $labels.node }} 显存超 95%"
+
+    <span style="color:#8b93a7"># 告警 4：Pod 频繁重启</span>
+    - <span style="color:#7dd3fc">alert</span>: InferencePodCrashLooping
+      <span style="color:#7dd3fc">expr</span>: |
+        increase(kube_pod_container_status_restarts_total{
+          namespace="inference", container="sglang-server"
+        }[1h]) > 3
+      <span style="color:#7dd3fc">for</span>: 0m                        <span style="color:#8b93a7"># 立即触发</span>
+      <span style="color:#7dd3fc">labels</span>:
+        <span style="color:#fbbf24">severity</span>: critical
+      <span style="color:#7dd3fc">annotations</span>:
+        <span style="color:#fbbf24">summary</span>: "{{ $labels.pod }} 1h 内重启 {{ $value }} 次"
+
+    <span style="color:#8b93a7"># 告警 5：可用性低于 SLO</span>
+    - <span style="color:#7dd3fc">alert</span>: InferenceAvailabilityBreach
+      <span style="color:#7dd3fc">expr</span>: |
+        (
+          sum(rate(sglang_requests_total{status=~"2.."}[5m]))
+          / sum(rate(sglang_requests_total[5m]))
+        ) < 0.999
+      <span style="color:#7dd3fc">for</span>: 5m
+      <span style="color:#7dd3fc">labels</span>:
+        <span style="color:#fbbf24">severity</span>: critical
+      <span style="color:#7dd3fc">annotations</span>:
+        <span style="color:#fbbf24">summary</span>: "可用性低于 99.9% SLO（当前: {{ $value | humanizePercentage }}）"
+</pre>
+
+<div class="anchor-box">
+<div class="label">实战锚点 · 设计推理服务 SLI/SLO</div>
+<p style="margin:8px 0 0"><b>三条设计原则：</b></p>
+<ul class="tight" style="margin-top:8px">
+<li><b>面向用户体验选 SLI</b>：TTFT 比 GPU Util 更重要。GPU 跑满但用户等 10 秒才看到第一个字 = 服务质量差。</li>
+<li><b>用 Error Budget 管理变更节奏</b>：budget 充足时大胆迭代；budget 告急时冻结发布、集中修复。</li>
+<li><b>告警必须 actionable</b>：每条告警的 annotation 里写清楚"该做什么"（runbook URL）。一天收 200 条没人能处理的告警 = 形同虚设。</li>
+</ul>
+</div>
+
+<div class="callout bad">
+<b>反模式：告警风暴</b><br>
+一台 8×GPU 节点异常 → 8 条 GPU 告警 + 4 条 Pod 告警 + 2 条 Node 告警 = 14 条通知轰炸值班人。<br>
+<b>正确做法</b>：Alertmanager 配置 <code>group_by: [alertname, node]</code>，同一节点的同类告警聚合成一条；配合 <code>group_wait: 30s</code> 等初始告警都到齐再发送。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§6</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① 三层监控模型</div><div>基础设施（node-exporter + DCGM）→ K8S 对象（kube-state-metrics）→ 应用（/metrics）——缺一层就有盲区</div>
+  <div class="k">② Pull 模型</div><div>Prometheus 主动拉 /metrics · ServiceMonitor/PodMonitor 声明式注册 · 目标只需暴露 HTTP 端点</div>
+  <div class="k">③ 六大核心指标</div><div>TTFT P99 / ITL P99 / Token throughput / GPU util / Queue depth / Cache hit rate</div>
+  <div class="k">④ 日志到 stdout</div><div>应用 stdout → containerd → /var/log/containers/ → DaemonSet Agent → 集中存储 · 输出 JSON 结构化</div>
+  <div class="k">⑤ 排障四步</div><div>get pod → describe pod → logs --previous → get events · GPU 节点额外 exec nvidia-smi</div>
+  <div class="k">⑥ SLI/SLO 设计</div><div>面向用户选 SLI · 设 Error Budget · 告警必须 actionable · group_by 防风暴</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——可观测性让你"看见问题"，但生产加固是在问题发生<b>之前</b>就把风险消除。下一章覆盖：PodDisruptionBudget、PriorityClass 优先级抢占、资源超卖策略、节点故障快速响应、镜像预热、安全上下文——把推理服务从"能跑"变成"稳定跑"。→ <a href="15-production-hardening.html" style="color:var(--brand)">15-production-hardening.html</a>
+</div>
+</div>
+
+<div class="foot">
+第四层 · 14 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

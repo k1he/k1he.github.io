@@ -1,0 +1,715 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>07 · CUDA Graph 是什么 / 怎么用</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+
+/* Demo */
+.demo{background:#0f1218;border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}
+.demo-title{font-size:16px;font-weight:600;color:var(--brand);margin:0 0 4px}
+.demo-sub{color:var(--mute);font-size:12.5px;margin-bottom:14px}
+.demo-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
+.demo-btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:7px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:all .12s}
+.demo-btn:hover{border-color:var(--brand);color:var(--brand)}
+.demo-btn.primary{background:var(--brand);color:var(--bg);border-color:var(--brand);font-weight:600}
+.demo-btn.primary:hover{background:#5cd6a4}
+.demo-step{font-family:"SF Mono",monospace;font-size:12px;color:var(--mute);margin-left:auto;background:#1a1f2b;padding:4px 10px;border-radius:6px;border:1px solid var(--line)}
+.demo-narration{background:rgba(110,231,183,.08);border-left:3px solid var(--brand);padding:10px 14px;border-radius:0 8px 8px 0;margin-top:12px;color:#cbd5e1;font-size:13px;min-height:42px;transition:all .3s}
+
+/* Timeline */
+.tl-wrap{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:14px;margin-top:10px}
+.tl-row{display:grid;grid-template-columns:60px 1fr;gap:8px;align-items:center;margin:6px 0}
+.tl-row .lbl{font-family:"SF Mono",monospace;font-size:11px;color:var(--mute)}
+.tl-track{height:30px;background:#11141b;border:1px solid var(--line);border-radius:5px;position:relative;overflow:hidden;display:flex}
+.tl-cell{flex-shrink:0;height:100%;display:flex;align-items:center;justify-content:center;font-size:9px;font-weight:600;color:#0b0d12;border-right:1px solid #0a0d12;transition:all .3s}
+.tl-cell.cpu{background:#fbbf24}
+.tl-cell.gpu{background:#34d399}
+.tl-cell.gap{background:#374151;color:#9ca3af}
+.tl-cell.launch{background:#7dd3fc}
+.legend{display:flex;flex-wrap:wrap;gap:14px;margin:10px 0;font-size:12px;color:#cbd5e1;justify-content:center}
+.legend .lg{display:inline-flex;align-items:center;gap:6px}
+.legend .sw{width:14px;height:14px;border-radius:3px}
+
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.pulse{animation:pulse 1s ease-in-out infinite}
+
+.kpi{display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-top:12px}
+.kpi-card{background:#1a1f2b;border:1px solid var(--line);border-radius:6px;padding:10px;text-align:center}
+.kpi-card .k{color:var(--mute);font-size:11px;margin-bottom:4px}
+.kpi-card .v{color:var(--brand);font-size:18px;font-weight:700;font-family:"SF Mono",monospace}
+.kpi-card .v.bad{color:var(--bad)}
+.kpi-card .v.warn{color:var(--warn)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CUDA Graph 是什么 · 怎么玩 <span class="tag">07</span></h1>
+<div class="sub">"我提交一堆 kernel 让 GPU 跑"为什么会成为 LLM decode 的瓶颈？CUDA Graph 怎么把 launch 开销干掉？mini-sglang 怎么用它？</div>
+
+<div class="toc">
+  <a href="#problem">问题：launch 开销</a>
+  <a href="#what">什么是 CUDA Graph</a>
+  <a href="#why-decode">为啥 decode 才需要</a>
+  <a href="#how">怎么用：3 步走</a>
+  <a href="#minisgl">mini-sglang 实现细节</a>
+  <a href="#caveats">坑点</a>
+  <a href="#anim">🎬 动画对比</a>
+  <a href="#summary">总结</a>
+</div>
+
+<!-- ======================== PART 1 ======================== -->
+<h2 id="problem"><span class="step">PART 1</span>先看问题：CPU launch kernel 是有开销的</h2>
+
+<div class="card">
+<p>很多人想象中"GPU 计算"是这样：</p>
+
+<pre><code><span class="com"># 想象中</span>
+y = matmul(x, w)   <span class="com"># 调用 → GPU 算 → 返回</span></code></pre>
+
+<p>但真实的 CUDA 执行模型是这样的：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1100 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <defs>
+    <marker id="ar1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7dd3fc"/></marker>
+  </defs>
+  <text x="550" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">每次 kernel 调用的真实开销</text>
+
+  <!-- CPU side -->
+  <g>
+    <rect x="40" y="60" width="200" height="160" rx="10" fill="#1f2937" stroke="#fbbf24"/>
+    <text x="140" y="86" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="600">CPU 主线程</text>
+    <text x="140" y="110" text-anchor="middle" fill="#cbd5e1" font-size="11">① Python 解释 matmul(x,w)</text>
+    <text x="140" y="128" text-anchor="middle" fill="#cbd5e1" font-size="11">② 走 PyTorch dispatcher</text>
+    <text x="140" y="146" text-anchor="middle" fill="#cbd5e1" font-size="11">③ 选 CUDA backend</text>
+    <text x="140" y="164" text-anchor="middle" fill="#cbd5e1" font-size="11">④ 准备 kernel 参数</text>
+    <text x="140" y="182" text-anchor="middle" fill="#cbd5e1" font-size="11">⑤ cudaLaunchKernel(...)</text>
+    <text x="140" y="206" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">≈ 5-15 µs / kernel</text>
+  </g>
+
+  <!-- arrow -->
+  <line x1="240" y1="140" x2="380" y2="140" stroke="#7dd3fc" stroke-width="2" marker-end="url(#ar1)"/>
+  <text x="310" y="130" text-anchor="middle" fill="#7dd3fc" font-size="11">提交到 stream queue</text>
+
+  <!-- Driver / queue -->
+  <g>
+    <rect x="380" y="60" width="200" height="160" rx="10" fill="#1f2937" stroke="#a78bfa"/>
+    <text x="480" y="86" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="600">CUDA Driver</text>
+    <text x="480" y="110" text-anchor="middle" fill="#cbd5e1" font-size="11">⑥ 序列化参数</text>
+    <text x="480" y="128" text-anchor="middle" fill="#cbd5e1" font-size="11">⑦ 提交给 GPU</text>
+    <text x="480" y="146" text-anchor="middle" fill="#cbd5e1" font-size="11">⑧ stream 调度</text>
+    <text x="480" y="170" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="600">额外 µs 级开销</text>
+  </g>
+
+  <line x1="580" y1="140" x2="720" y2="140" stroke="#7dd3fc" stroke-width="2" marker-end="url(#ar1)"/>
+  <text x="650" y="130" text-anchor="middle" fill="#7dd3fc" font-size="11">通过 PCIe / 内存映射</text>
+
+  <!-- GPU side -->
+  <g>
+    <rect x="720" y="60" width="240" height="160" rx="10" fill="#1f2937" stroke="#34d399"/>
+    <text x="840" y="86" text-anchor="middle" fill="#34d399" font-size="13" font-weight="600">GPU 真正在算</text>
+    <text x="840" y="110" text-anchor="middle" fill="#cbd5e1" font-size="11">⑨ SM 调度 block</text>
+    <text x="840" y="128" text-anchor="middle" fill="#cbd5e1" font-size="11">⑩ 执行 matmul kernel</text>
+    <text x="840" y="146" text-anchor="middle" fill="#cbd5e1" font-size="11">⑪ 写 output</text>
+    <text x="840" y="170" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600">这才是有用的工作</text>
+    <text x="840" y="200" text-anchor="middle" fill="#8b93a7" font-size="10">decode 时通常 50-200 µs</text>
+  </g>
+</svg>
+</div>
+
+<div class="callout warn">
+<strong>一次 kernel launch 的"管理开销"是 5-15 µs（微秒级，不是纳秒）。</strong>
+<ul class="tight">
+  <li>对一个 1ms 的大 matmul，5µs 占比 0.5% → 完全无所谓</li>
+  <li>对一个 50µs 的小 matmul，5µs 占比 10% → <strong>开始疼了</strong></li>
+  <li>当一次 forward 涉及<u>几百个</u>小 kernel，且每个都很短时 → <strong>CPU launch 会拖慢 GPU</strong></li>
+</ul>
+</div>
+
+<h3>具体到 LLM 推理：一次 forward 有多少个 kernel？</h3>
+
+<div class="card" style="background:var(--code)">
+<table style="font-size:12.5px">
+<tr><th>层组件</th><th>kernel 数（粗略）</th><th>说明</th></tr>
+<tr><td>RMSNorm</td><td>1</td><td>融合 norm</td></tr>
+<tr><td>QKV proj (matmul)</td><td>1</td><td>大 matmul</td></tr>
+<tr><td>RoPE</td><td>1</td><td>融合</td></tr>
+<tr><td>Attention (FlashInfer)</td><td>2-3</td><td>含 softmax 等</td></tr>
+<tr><td>O proj (matmul)</td><td>1</td><td></td></tr>
+<tr><td>NCCL all-reduce (TP>1)</td><td>1</td><td></td></tr>
+<tr><td>RMSNorm</td><td>1</td><td></td></tr>
+<tr><td>MLP gate_up + silu_and_mul</td><td>2</td><td></td></tr>
+<tr><td>MLP down</td><td>1</td><td></td></tr>
+<tr><td>NCCL all-reduce</td><td>1</td><td></td></tr>
+<tr><td><strong>每层小计</strong></td><td><strong>~12</strong></td><td></td></tr>
+<tr><td><strong>Llama-3-70B 80 层 + sampler 等</strong></td><td><strong>~1000+ kernel</strong></td><td>每次 forward</td></tr>
+</table>
+</div>
+
+<p>如果每个 launch 5 µs，1000 个 kernel = <strong>5 ms 纯 CPU 开销</strong>——decode 本身可能也就 5 ms，<u>开销和有用工作 1:1</u>。这就是 CUDA Graph 要解决的事。</p>
+</div>
+
+<!-- ======================== PART 2 ======================== -->
+<h2 id="what"><span class="step">PART 2</span>CUDA Graph 是什么</h2>
+
+<div class="card">
+<p>CUDA Graph = "<strong>把一连串 kernel launch 操作录制成一个对象，之后整体 replay</strong>"。</p>
+
+<p>类比：</p>
+<table>
+<tr><th></th><th>Eager 模式</th><th>CUDA Graph 模式</th></tr>
+<tr><td>类比</td><td>在<u>电话</u>里逐个念菜名给厨房 (1000 通)</td><td>提前把菜单<u>打印</u>好，每次直接递过去 (1 张纸)</td></tr>
+<tr><td>每次 forward</td><td>CPU 重新发起 1000 次 launch 调用</td><td>CPU 调一次 <code>graph.replay()</code></td></tr>
+<tr><td>CPU 开销</td><td>~5 ms</td><td>~5 µs</td></tr>
+<tr><td>灵活性</td><td>每次可以不一样</td><td>形状/路径必须固定</td></tr>
+</table>
+
+<h3>核心 API（PyTorch）</h3>
+<pre><code><span class="kw">import</span> torch
+
+<span class="com"># 1. 创建空 graph 对象</span>
+graph = torch.cuda.<span class="fn">CUDAGraph</span>()
+
+<span class="com"># 2. 准备好 stable 的输入/输出 buffer（地址不变）</span>
+static_input  = torch.<span class="fn">zeros</span>(bs, hidden, device=<span class="str">"cuda"</span>)
+static_output = torch.<span class="fn">empty</span>(bs, vocab, device=<span class="str">"cuda"</span>)
+
+<span class="com"># 3. 录制（capture）</span>
+<span class="kw">with</span> torch.cuda.<span class="fn">graph</span>(graph):
+    static_output[:] = model(static_input)
+    <span class="com"># 这里所有的 kernel launch 都被录进 graph，但不立刻执行</span>
+
+<span class="com"># 4. 之后每次 forward 只需 3 步</span>
+static_input.<span class="fn">copy_</span>(real_input)   <span class="com"># ① 把真实数据 copy 进 stable buffer</span>
+graph.<span class="fn">replay</span>()                 <span class="com"># ② replay（CPU 侧 ~5 µs，GPU 自己跑）</span>
+result = static_output.<span class="fn">clone</span>()    <span class="com"># ③ 取走结果</span></code></pre>
+
+<h3>背后的魔法</h3>
+<div class="callout info">
+CUDA Driver 在 capture 阶段会<u>记录</u>下：
+<ol class="tight">
+  <li>哪些 kernel 被 launch</li>
+  <li>每个 kernel 的参数（包含输入/输出张量的<strong>显存地址</strong>）</li>
+  <li>kernel 之间的依赖关系（哪些可以并行、哪些必须等）</li>
+</ol>
+形成一个"DAG"。replay 时整个 DAG 一口气提交给 GPU，<u>CPU 完全不用再走 dispatch / 参数序列化的流程</u>。
+</div>
+
+<h3>关键约束（理解了就不踩坑）</h3>
+<table>
+<tr><th>约束</th><th>原因</th><th>实际意义</th></tr>
+<tr><td>所有输入/输出张量地址必须固定</td><td>kernel 参数里写死了指针</td><td>必须用预分配的 static buffer，每次 copy_ 进去</td></tr>
+<tr><td>不能有 host-to-device 同步</td><td>graph 是异步执行的</td><td>不能 <code>tensor.item()</code>、<code>print()</code> 中间结果</td></tr>
+<tr><td>shape 必须固定</td><td>每个 kernel 的 grid/block size 录死了</td><td>不同 batch size 要录不同的 graph</td></tr>
+<tr><td>kernel 调用序列必须固定</td><td>没有 if/while/动态分支</td><td>不能根据 tensor value 选不同路径</td></tr>
+<tr><td>不能用 mempool 动态分配</td><td>capture 期间 alloc 会被记录死地址</td><td>Workspace 必须预分配好</td></tr>
+</table>
+</div>
+
+<!-- ======================== PART 3 ======================== -->
+<h2 id="why-decode"><span class="step">PART 3</span>为什么 LLM <strong>decode</strong> 才是 CUDA Graph 的完美场景</h2>
+
+<div class="card">
+<p>CUDA Graph 不是万能药，<u>它只在特定条件下才有意义</u>。LLM 推理里 decode 阶段几乎是教科书式的好场景：</p>
+
+<table>
+<tr><th>条件</th><th>Prefill</th><th>Decode</th></tr>
+<tr><td>shape 是否固定</td><td>❌ 每次 prompt 长度都不同</td><td>✅ 每步 extend_len = 1</td></tr>
+<tr><td>kernel 数量</td><td>少（一批多个 token 摊薄）</td><td>多（每个 token 都要走完整 28-80 层）</td></tr>
+<tr><td>每个 kernel 多大</td><td>大 matmul（compute-bound）</td><td>小 matmul（memory-bound）</td></tr>
+<tr><td>launch 开销占比</td><td>&lt; 1%</td><td><strong>20-50%</strong></td></tr>
+<tr><td>kernel 路径是否固定</td><td>✅ 是</td><td>✅ 是</td></tr>
+<tr><td>CUDA Graph 收益</td><td>~0%</td><td><strong>2-5x throughput</strong></td></tr>
+</table>
+
+<h3>为啥 decode 的 kernel 这么"小"？</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 220" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="450" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">同一个 QKV proj kernel 在 prefill vs decode 的耗时对比</text>
+
+  <!-- Prefill -->
+  <g>
+    <text x="40" y="60" fill="#fbbf24" font-size="12" font-weight="600">Prefill (T=2000 token)</text>
+    <rect x="40" y="70" width="600" height="40" fill="#34d399" rx="4"/>
+    <text x="340" y="95" text-anchor="middle" fill="#0b0d12" font-size="12" font-weight="600">GPU 计算 · ~2000 µs (compute-bound, 算力打满)</text>
+    <rect x="640" y="70" width="20" height="40" fill="#fbbf24" rx="2"/>
+    <text x="690" y="95" fill="#cbd5e1" font-size="11">5µs launch · 占比 0.25%</text>
+  </g>
+
+  <!-- Decode -->
+  <g>
+    <text x="40" y="155" fill="#fbbf24" font-size="12" font-weight="600">Decode (T=1 token)</text>
+    <rect x="40" y="165" width="50" height="40" fill="#34d399" rx="4"/>
+    <text x="65" y="190" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">~30µs</text>
+    <rect x="90" y="165" width="20" height="40" fill="#fbbf24" rx="2"/>
+    <text x="170" y="190" fill="#cbd5e1" font-size="11">5µs launch · <tspan fill="#fbbf24" font-weight="600">占比 14%！</tspan></text>
+  </g>
+</svg>
+</div>
+
+<div class="callout warn">
+<strong>decode 的本质是 memory-bound</strong>：每一步只算 1 个 token 的 Q（很小），但要扫整个 KV cache（很大），瓶颈在显存带宽，不是算力。计算时间随之被压到极短，<u>launch 开销就显得格外突出</u>。
+</div>
+
+<h3>实测：mini-sglang 关掉 CUDA Graph 会怎样？</h3>
+<pre><code><span class="com"># 默认 (CUDA Graph 开启)</span>
+python -m minisgl --model "Qwen/Qwen3-0.6B"
+<span class="com"># decode latency: ~3 ms / token</span>
+
+<span class="com"># 关闭 CUDA Graph</span>
+python -m minisgl --model "Qwen/Qwen3-0.6B" --cuda-graph-max-bs 0
+<span class="com"># decode latency: ~12 ms / token  (慢 4x)</span></code></pre>
+</div>
+
+<!-- ======================== PART 4 ======================== -->
+<h2 id="how"><span class="step">PART 4</span>怎么用：3 步走</h2>
+
+<div class="card">
+
+<h3>Step 1 · 准备 stable buffer</h3>
+<p>因为 graph 录死了"指针"，所以输入/输出必须用预分配好的固定显存。每次推理把<u>真实数据 copy 进去</u>，再 replay。</p>
+
+<pre><code><span class="kw">class</span> <span class="fn">GraphCaptureBuffer</span>:
+    input_ids: torch.Tensor      <span class="com"># [max_bs] int32, 复用</span>
+    out_loc:   torch.Tensor      <span class="com"># [max_bs] int32, 复用</span>
+    positions: torch.Tensor      <span class="com"># [max_bs] int32, 复用</span>
+    logits:    torch.Tensor      <span class="com"># [max_bs, vocab_size] fp32, 复用</span>
+
+    <span class="kw">@classmethod</span>
+    <span class="kw">def</span> <span class="fn">init</span>(cls, bs, vocab_size, device):
+        <span class="kw">return</span> <span class="fn">GraphCaptureBuffer</span>(
+            input_ids=torch.<span class="fn">zeros</span>(bs, dtype=torch.int32, device=device),
+            out_loc=torch.<span class="fn">zeros</span>(bs, dtype=torch.int32, device=device),
+            positions=torch.<span class="fn">zeros</span>(bs, dtype=torch.int32, device=device),
+            logits=torch.<span class="fn">empty</span>(bs, vocab_size, dtype=torch.float32, device=device),
+        )</code></pre>
+
+<h3>Step 2 · 录制（capture）</h3>
+<p>跑一遍 forward，让 driver 记录所有 kernel launch。这一步通常在<strong>启动时</strong>做一次。</p>
+
+<pre><code>graph = torch.cuda.<span class="fn">CUDAGraph</span>()
+batch = <span class="fn">Batch</span>(reqs=[dummy_req] * bs, phase=<span class="str">"decode"</span>)
+
+<span class="com"># 用预分配 buffer 替换 batch 的张量</span>
+buffer.<span class="fn">set_batch</span>(batch)
+
+<span class="kw">with</span> get_global_ctx().<span class="fn">forward_batch</span>(batch):
+    <span class="com"># 先 warmup 一次（避免 capture 时触发 lazy init）</span>
+    buffer.logits[:bs] = model.<span class="fn">forward</span>()
+
+    <span class="com"># 真正的 capture</span>
+    <span class="kw">with</span> torch.cuda.<span class="fn">graph</span>(graph, pool=pool, stream=self.stream):
+        buffer.logits[:bs] = model.<span class="fn">forward</span>()</code></pre>
+
+<h3>Step 3 · Replay（每次推理）</h3>
+<p>这一步发生在每次 decode iteration。3 个动作：copy 进去 → replay → 取出来。</p>
+
+<pre><code><span class="kw">def</span> <span class="fn">replay</span>(self, batch):
+    self.buffer.<span class="fn">copy_from</span>(batch)            <span class="com"># ① 真实数据 → stable buffer</span>
+    g = self.graph_map[batch.padded_size]
+    self.attn_backend.<span class="fn">prepare_for_replay</span>(batch)
+    g.<span class="fn">replay</span>()                              <span class="com"># ② 一次 launch, GPU 跑完整个 graph</span>
+    <span class="kw">return</span> self.buffer.logits[: batch.size]   <span class="com"># ③ 取走结果（切片不复制）</span></code></pre>
+
+<div class="callout">
+<strong>整个流程的"加速来源"：</strong> CPU 从"调用 1000 次 dispatcher" → "调用 1 次 graph.replay()"。GPU 干的活完全一样，但 CPU 那头省下了 99% 的 launch 开销。
+</div>
+
+</div>
+
+<!-- ======================== PART 5 ======================== -->
+<h2 id="minisgl"><span class="step">PART 5</span>mini-sglang 的实现细节</h2>
+
+<div class="card">
+
+<h3>录哪些 batch size？—— 离散粒度</h3>
+
+<pre><code><span class="com"># engine/graph.py:49</span>
+<span class="kw">def</span> <span class="fn">_determine_cuda_graph_bs</span>(cuda_graph_bs, cuda_graph_max_bs, free_memory):
+    <span class="kw">if</span> cuda_graph_bs <span class="kw">is not</span> <span class="kw">None</span>:
+        <span class="kw">return</span> cuda_graph_bs
+    free_memory_gb = free_memory / (1 &lt;&lt; 30)
+    <span class="kw">if</span> cuda_graph_max_bs <span class="kw">is</span> <span class="kw">None</span>:
+        <span class="kw">if</span> free_memory_gb &gt; 80:    <span class="com"># H200</span>
+            cuda_graph_max_bs = 256
+        <span class="kw">else</span>:
+            cuda_graph_max_bs = 160
+    <span class="hl"><span class="kw">return</span> [1, 2, 4] + list(range(8, cuda_graph_max_bs + 1, 8))</span>
+    <span class="com"># [1, 2, 4, 8, 16, 24, 32, ..., 256]  共 ~37 个 batch size</span></code></pre>
+
+<div class="callout warn">
+<strong>为什么不是连续的 1~256？</strong> 录 256 个 graph 内存爆炸，且没必要——上面的离散粒度（1, 2, 4, 8, 16, 24, ...）足够覆盖典型场景。每个 graph 显存占用就是 workspace + cuda graph 本身的元数据，加起来几百 MB 到几 GB 不等。
+</div>
+
+<h3>如何处理"实际 batch size 不在录制列表里"？—— Padding</h3>
+
+<pre><code><span class="com"># engine/graph.py:160</span>
+<span class="kw">def</span> <span class="fn">pad_batch</span>(self, batch):
+    padded_size = (
+        next(bs <span class="kw">for</span> bs <span class="kw">in</span> self.graph_bs_list <span class="kw">if</span> bs &gt;= batch.size)
+        <span class="kw">if</span> self.<span class="fn">can_use_cuda_graph</span>(batch)
+        <span class="kw">else</span> batch.size
+    )
+    <span class="hl">batch.padded_reqs = batch.reqs + [self.dummy_req] * (padded_size - batch.size)</span></code></pre>
+
+<p>实际 batch size = 5 时，找到最近的录制粒度 8，用 dummy_req 凑到 8。</p>
+
+<table>
+<tr><th>实际 batch.size</th><th>选用 graph 粒度</th><th>需要 padding</th></tr>
+<tr><td>1</td><td>1</td><td>0 个</td></tr>
+<tr><td>3</td><td>4</td><td>1 个 dummy</td></tr>
+<tr><td>5</td><td>8</td><td>3 个 dummy</td></tr>
+<tr><td>17</td><td>24</td><td>7 个 dummy</td></tr>
+<tr><td>257</td><td>—</td><td>超过 max_bs，回落 eager</td></tr>
+</table>
+
+<div class="callout">
+<strong>为什么需要 dummy_req？</strong> 因为 graph 录的是 "处理 8 个 token" 的 kernel 序列，<u>shape 是写死的</u>。实际只有 5 个真实请求时，剩下 3 个槽位必须有数据（不能是 NaN/无效地址），否则 attention 读 KV pool 时会越界。dummy_req 指向一个 dummy_page（<code>num_tokens</code> 处的合法地址），算出垃圾结果但不会崩溃，最后切片丢掉。
+</div>
+
+<h3>Engine 里 dummy_req 是怎么准备的？</h3>
+<pre><code><span class="com"># engine/engine.py:89</span>
+self.dummy_req = <span class="fn">Req</span>(
+    input_ids=torch.<span class="fn">tensor</span>([0], dtype=torch.int32, device=<span class="str">"cpu"</span>),
+    <span class="hl">table_idx=config.max_running_req,</span>     <span class="com"># ← 多预留的槽位 (page_table 比真实槽多 1 行)</span>
+    cached_len=0,
+    output_len=1,
+    uid=-1,
+    sampling_params=<span class="kw">None</span>,
+    cache_handle=<span class="kw">None</span>,
+)
+<span class="hl">self.page_table[self.dummy_req.table_idx].<span class="fn">fill_</span>(num_tokens)  <span class="com"># 全部指向"dummy 页"</span></span></code></pre>
+
+<p>这就是为什么 <code>page_table</code> 形状是 <code>[max_running_req + 1, max_seq_len]</code>——多出来那 1 行专门给 dummy_req 用。</p>
+
+<h3>Capture 阶段的 3 个聪明做法</h3>
+
+<pre><code><span class="com"># engine/graph.py:122  _capture_graphs</span>
+pbar = tqdm(
+    sorted(self.graph_bs_list, <span class="hl">reverse=<span class="kw">True</span></span>),     <span class="com">★ 1. 从大到小录</span>
+    desc=<span class="str">"Preparing for capturing CUDA graphs..."</span>,
+    disable=<span class="kw">not</span> get_tp_info().<span class="fn">is_primary</span>(),
+)
+pool = <span class="kw">None</span>
+<span class="kw">for</span> bs <span class="kw">in</span> pbar:
+    graph = torch.cuda.<span class="fn">CUDAGraph</span>()
+    batch = <span class="fn">Batch</span>(reqs=[self.dummy_req] * bs, phase=<span class="str">"decode"</span>)
+    batch.padded_reqs = batch.reqs
+    self.attn_backend.<span class="fn">prepare_for_capture</span>(batch)
+    self.buffer.<span class="fn">set_batch</span>(batch)
+    <span class="kw">with</span> get_global_ctx().<span class="fn">forward_batch</span>(batch):
+        <span class="hl">self.buffer.logits[:bs] = model.<span class="fn">forward</span>()         <span class="com">★ 2. warmup 一次</span></span>
+        <span class="kw">with</span> torch.cuda.<span class="fn">graph</span>(graph, pool=<span class="hl">pool</span>, stream=self.stream):
+            self.buffer.logits[:bs] = model.<span class="fn">forward</span>()
+    <span class="kw">if</span> pool <span class="kw">is</span> <span class="kw">None</span>:
+        <span class="hl">pool = graph.<span class="fn">pool</span>()                                <span class="com">★ 3. 共享 mempool</span></span>
+    self.graph_map[bs] = graph</code></pre>
+
+<div class="grid cols-3">
+  <div class="card">
+    <h3>从大到小</h3>
+    <p>先录 bs=256 占的显存最大。如果连最大的都装不下，立刻报错；后面小的自然能装下。这种顺序避免"录到一半发现 OOM"。</p>
+  </div>
+  <div class="card">
+    <h3>warmup 一次</h3>
+    <p>capture 之前先正常 forward 一次。原因：第一次 forward 会触发 cuBLAS workspace 分配、JIT 编译等"一次性副作用"，必须把它们排出去，否则会污染 graph。</p>
+  </div>
+  <div class="card">
+    <h3>共享 mempool</h3>
+    <p>第一个 graph capture 时分配的中间 buffer 池，让后续所有 graph 都<u>共用</u>同一个池。否则每个 graph 都自己分配一份 workspace，显存占用倍增。</p>
+  </div>
+</div>
+
+<h3>什么时候用 / 不用 graph？</h3>
+
+<pre><code><span class="com"># engine/graph.py:149</span>
+<span class="kw">def</span> <span class="fn">can_use_cuda_graph</span>(self, batch):
+    <span class="kw">return</span> batch.is_decode <span class="kw">and</span> batch.size &lt;= self.max_graph_bs</code></pre>
+
+<table>
+<tr><th>场景</th><th>是否走 graph</th><th>原因</th></tr>
+<tr><td>纯 decode batch, bs ≤ max_bs</td><td>✅ replay</td><td>shape 固定 + bs 在录制范围</td></tr>
+<tr><td>prefill batch</td><td>❌ eager</td><td>extend_len 不固定，shape 不可预测</td></tr>
+<tr><td>decode bs &gt; max_graph_bs</td><td>❌ eager</td><td>没录这么大的 graph</td></tr>
+<tr><td>--cuda-graph-max-bs 0</td><td>❌ eager</td><td>用户主动关闭</td></tr>
+</table>
+</div>
+
+<!-- ======================== PART 6 ======================== -->
+<h2 id="caveats"><span class="step">PART 6</span>3 个常见坑</h2>
+
+<div class="card">
+
+<h3>坑 1 · 显存占用爆涨</h3>
+<p>录 37 个 graph，每个都自带 workspace。如果不用<code>shared mempool</code>，显存占用会翻倍。即使共享，CUDA Graph 元数据（block 描述、参数序列）本身也要占几百 MB。</p>
+<p><strong>对策</strong>：<code>--cuda-graph-max-bs</code> 调小（比如限制到 64），或者直接关掉换更多 KV cache 空间。</p>
+
+<h3>坑 2 · capture 时的"隐式同步"</h3>
+<p>如果 capture 期间有 CPU-GPU 同步操作（比如 <code>tensor.item()</code>、<code>print(tensor)</code>、检查 NaN），CUDA 会立即报错。</p>
+<p><strong>对策</strong>：调试 model.forward 时用 eager 跑，等正确了再开 graph。<code>MINISGL_DISABLE_CUDA_GRAPH=1</code> 之类环境变量在这里救命。</p>
+
+<h3>坑 3 · attention backend 的额外配合</h3>
+<p>FlashInfer / FlashAttention 都有"plan"阶段（参考 05 章）。这个 plan 通常在 CPU 上做、写到 GPU workspace。如果不做特殊处理，capture 时的 plan 会变成 graph 的一部分——但 plan 的输入（cu_seqlens 之类）每次 batch 都不同！</p>
+<p>所以 mini-sglang 的 attention backend 都有 <code>prepare_for_capture / prepare_for_replay</code> 两个钩子：</p>
+<pre><code><span class="com"># attention/base.py:18</span>
+<span class="kw">class</span> <span class="fn">BaseAttnBackend</span>(ABC):
+    <span class="kw">@abstractmethod</span>
+    <span class="kw">def</span> <span class="fn">init_capture_graph</span>(self, max_seq_len, bs_list): ...
+    <span class="kw">@abstractmethod</span>
+    <span class="kw">def</span> <span class="fn">prepare_for_capture</span>(self, batch): ...    <span class="com"># capture 时调一次</span>
+    <span class="kw">@abstractmethod</span>
+    <span class="kw">def</span> <span class="fn">prepare_for_replay</span>(self, batch): ...     <span class="com"># 每次 replay 前调</span></code></pre>
+<p>具体到 FlashInfer：用 <code>CUDAGraphBatchDecodeWithPagedKVCacheWrapper</code> 这种特化包装器，它的 plan 阶段不会被录进 graph，replay 前用<u>预分配的 indirect buffer</u> 做"参数注入"。</p>
+
+</div>
+
+<!-- ======================== PART 7 Animation ======================== -->
+<h2 id="anim"><span class="step">PART 7</span>🎬 动画演示：Eager vs CUDA Graph</h2>
+
+<div class="demo">
+<div class="demo-title">⚡ 一次 decode 的 CPU 时间线对比</div>
+<div class="demo-sub">同一个 12-kernel 序列在两种模式下的执行时间。CPU 槽位 = 真实操作；GPU 槽位 = 实际计算（理想化简化）</div>
+
+<div class="demo-controls">
+  <button class="demo-btn primary" id="cg-play">▶ 播放</button>
+  <button class="demo-btn" id="cg-reset">↻ 重置</button>
+  <span class="demo-step" id="cg-step">step 0 / 14</span>
+</div>
+
+<div class="legend">
+  <div class="lg"><span class="sw" style="background:#fbbf24"></span>CPU launch (~5µs)</div>
+  <div class="lg"><span class="sw" style="background:#34d399"></span>GPU compute</div>
+  <div class="lg"><span class="sw" style="background:#7dd3fc"></span>graph.replay() 单次 launch</div>
+  <div class="lg"><span class="sw" style="background:#374151"></span>GPU 等待 / idle</div>
+</div>
+
+<div class="tl-wrap">
+  <div style="font-size:13px;color:var(--bad);font-weight:600;margin-bottom:6px">❌ Eager 模式</div>
+  <div class="tl-row"><div class="lbl">CPU</div><div class="tl-track" id="eager-cpu"></div></div>
+  <div class="tl-row"><div class="lbl">GPU</div><div class="tl-track" id="eager-gpu"></div></div>
+  <div style="font-size:11.5px;color:var(--mute);margin-top:4px">每个 kernel CPU 都要做 dispatch + launch，GPU 经常在等下一个指令</div>
+</div>
+
+<div class="tl-wrap">
+  <div style="font-size:13px;color:var(--brand);font-weight:600;margin-bottom:6px">✅ CUDA Graph 模式</div>
+  <div class="tl-row"><div class="lbl">CPU</div><div class="tl-track" id="graph-cpu"></div></div>
+  <div class="tl-row"><div class="lbl">GPU</div><div class="tl-track" id="graph-gpu"></div></div>
+  <div style="font-size:11.5px;color:var(--mute);margin-top:4px">CPU 只调一次 replay()，GPU 一口气跑完所有 kernel 几乎无 gap</div>
+</div>
+
+<div class="kpi" id="cg-kpi">
+  <div class="kpi-card"><div class="k">Eager 总时间</div><div class="v bad" id="kpi-eager">— µs</div></div>
+  <div class="kpi-card"><div class="k">Graph 总时间</div><div class="v" id="kpi-graph">— µs</div></div>
+  <div class="kpi-card"><div class="k">加速比</div><div class="v warn" id="kpi-ratio">—</div></div>
+</div>
+
+<div class="demo-narration" id="cg-narration">点 ▶ 看一次 12-kernel 的 decode 在两种模式下的对比。注意 CPU 行的差异——这就是加速的来源。</div>
+</div>
+
+<script>
+(function(){
+  // 12 个 kernel，每个 GPU 计算 8µs, CPU launch 5µs
+  const KERNELS = 12;
+  const CPU_LAUNCH = 5;
+  const GPU_COMPUTE = 8;
+  const TOTAL_STEPS = KERNELS + 2;  // +2: replay launch + summary
+
+  const eagerCpu = document.getElementById('eager-cpu');
+  const eagerGpu = document.getElementById('eager-gpu');
+  const graphCpu = document.getElementById('graph-cpu');
+  const graphGpu = document.getElementById('graph-gpu');
+
+  // total cells = sum of (CPU + GPU max overlapping). For visual: each kernel = 13 cell width
+  const CELLS_PER_KERNEL = 13;
+
+  function buildBaseline(){
+    [eagerCpu, eagerGpu, graphCpu, graphGpu].forEach(el => el.innerHTML='');
+    // pre-fill 168 gap cells
+    [eagerCpu, eagerGpu, graphCpu, graphGpu].forEach(el=>{
+      for(let i=0; i<CELLS_PER_KERNEL*KERNELS; i++){
+        const c = document.createElement('div');
+        c.className = 'tl-cell gap';
+        c.style.width = (100/(CELLS_PER_KERNEL*KERNELS)) + '%';
+        el.appendChild(c);
+      }
+    });
+  }
+  buildBaseline();
+
+  let cur=0, timer=null;
+  let totalEager = 0, totalGraph = 0;
+
+  function paint(el, start, len, klass, label){
+    const cells = el.children;
+    for(let i=start; i<start+len && i<cells.length; i++){
+      cells[i].className = 'tl-cell ' + klass;
+      if(i === start && label) cells[i].textContent = label;
+      else cells[i].textContent = '';
+    }
+  }
+
+  function render(step){
+    document.getElementById('cg-step').textContent = `step ${step} / ${TOTAL_STEPS}`;
+
+    if(step === 0){
+      buildBaseline();
+      totalEager = 0; totalGraph = 0;
+      document.getElementById('kpi-eager').textContent = '— µs';
+      document.getElementById('kpi-graph').textContent = '— µs';
+      document.getElementById('kpi-ratio').textContent = '—';
+      document.getElementById('cg-narration').innerHTML = '点 ▶ 开始播放。先看 Eager 模式的 12 个 kernel 一个个 launch...';
+      return;
+    }
+
+    // step 1..12 → eager: launch i-th kernel
+    if(step >= 1 && step <= KERNELS){
+      const i = step - 1;
+      paint(eagerCpu, i*CELLS_PER_KERNEL, 5, 'cpu', i===0?'launch':'');
+      paint(eagerGpu, i*CELLS_PER_KERNEL+5, 8, 'gpu', i===0?'compute':'');
+      totalEager = (i+1) * (CPU_LAUNCH + GPU_COMPUTE);
+      document.getElementById('kpi-eager').textContent = totalEager + ' µs';
+      document.getElementById('cg-narration').innerHTML = `Eager · 第 ${i+1}/${KERNELS} 个 kernel：CPU 花 ${CPU_LAUNCH}µs launch，GPU 花 ${GPU_COMPUTE}µs 算。<u>CPU 和 GPU 串行</u>，加起来 ${(i+1)*13}µs。`;
+    }
+
+    // step 13: graph mode 1 single launch
+    if(step === KERNELS + 1){
+      paint(graphCpu, 0, 5, 'launch', 'replay');
+      // GPU runs all 12 kernels back-to-back
+      for(let i=0; i<KERNELS; i++){
+        paint(graphGpu, 5 + i*8, 8, 'gpu', i===0?'all-in-1':'');
+      }
+      totalGraph = CPU_LAUNCH + KERNELS * GPU_COMPUTE;
+      document.getElementById('kpi-graph').textContent = totalGraph + ' µs';
+      document.getElementById('cg-narration').innerHTML = `CUDA Graph · CPU 只调一次 <code>graph.replay()</code> (${CPU_LAUNCH}µs)，然后 GPU 一口气跑完所有 ${KERNELS} 个 kernel (${KERNELS}×${GPU_COMPUTE}=${KERNELS*GPU_COMPUTE}µs)，<u>无任何 launch 间隙</u>。`;
+    }
+
+    // step 14: summary
+    if(step === KERNELS + 2){
+      const ratio = (totalEager / totalGraph).toFixed(2);
+      document.getElementById('kpi-ratio').textContent = ratio + 'x';
+      document.getElementById('cg-narration').innerHTML = `<strong>对比：</strong> Eager ${totalEager}µs vs Graph ${totalGraph}µs = <strong>${ratio}x 加速</strong>。kernel 越小、越多，加速比越高——LLM decode 正是这种场景。`;
+    }
+  }
+
+  render(0);
+
+  document.getElementById('cg-play').addEventListener('click', ()=>{
+    if(timer) return;
+    timer = setInterval(()=>{
+      cur++;
+      render(cur);
+      if(cur >= TOTAL_STEPS){clearInterval(timer); timer=null;}
+    }, 600);
+  });
+  document.getElementById('cg-reset').addEventListener('click', ()=>{
+    if(timer){clearInterval(timer); timer=null;}
+    cur = 0; render(0);
+  });
+})();
+</script>
+
+<!-- ======================== PART 8 ======================== -->
+<h2 id="summary"><span class="step">SUM</span>三句话总结 + 自查清单</h2>
+
+<div class="grid cols-3">
+  <div class="card">
+    <h3>① 解决什么问题</h3>
+    <p>CPU launch kernel 有 µs 级开销。LLM decode 阶段单次 forward 几百到上千个小 kernel，<strong>launch 开销吃掉 20-50% 时间</strong>。</p>
+  </div>
+  <div class="card">
+    <h3>② 怎么解决</h3>
+    <p>把 kernel 序列<strong>录</strong>成一个 graph 对象，之后整体 replay：CPU 只 launch 1 次，GPU 一口气跑完。本质是把 CPU dispatch 开销摊到启动时一次性付清。</p>
+  </div>
+  <div class="card">
+    <h3>③ 代价</h3>
+    <p>shape 必须固定（按 bs 分粒度录多份）+ 显存占用增加（workspace + graph 元数据）+ 不能用动态控制流。</p>
+  </div>
+</div>
+
+<div class="card">
+<h3>是否适合用 CUDA Graph 的自查清单</h3>
+<table>
+<tr><th>问题</th><th>能用 Graph 吗</th></tr>
+<tr><td>shape/dtype 是否固定？</td><td>必须 ✅</td></tr>
+<tr><td>kernel 序列是否每次相同？</td><td>必须 ✅</td></tr>
+<tr><td>能否预分配输入/输出 buffer？</td><td>必须 ✅</td></tr>
+<tr><td>kernel 数量大且每个都很短？</td><td>越是 ✅ 收益越大</td></tr>
+<tr><td>需要根据 tensor value 选不同分支？</td><td>❌ 不行</td></tr>
+<tr><td>需要 <code>tensor.item()</code> / <code>print</code>？</td><td>❌ 不行</td></tr>
+<tr><td>显存非常紧张？</td><td>⚠️ 谨慎，graph 占内存</td></tr>
+</table>
+
+<h3>调试小技巧</h3>
+<ul class="tight">
+  <li>怀疑 graph 有问题时，先 <code>--cuda-graph-max-bs 0</code> 关掉对比 eager 结果</li>
+  <li>capture 报错"detected illegal stream synchronization" → 检查模型里是不是有 <code>.item()</code> / <code>.tolist()</code></li>
+  <li>用 nsys profile 抓 timeline，能直观看到 launch gap 是不是真消失了</li>
+  <li>graph 越多越占内存，看显存吃紧就把 <code>--cuda-graph-max-bs</code> 调小到刚好覆盖业务高峰即可</li>
+</ul>
+</div>
+
+<div class="callout">
+<strong>建议自己动手验证：</strong>
+<pre><code><span class="com"># 1. 默认 (graph 开启)</span>
+python -m minisgl --model "Qwen/Qwen3-0.6B"
+<span class="com">→ 用 curl 发 100 个并发请求, 记录 token/s</span>
+
+<span class="com"># 2. 关闭 graph</span>
+python -m minisgl --model "Qwen/Qwen3-0.6B" --cuda-graph-max-bs 0
+<span class="com">→ 同样的负载, 对比 token/s</span>
+
+<span class="com"># 3. 用 nsys 抓 timeline 对比</span>
+nsys profile --trace=cuda,nvtx python -m minisgl ...</code></pre>
+</div>
+
+<div class="foot">
+<a href="index.html" style="color:var(--brand2)">← 回到学习手册首页</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,347 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C3 · Vector Add · 第一个完整 CUDA Kernel</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.type{color:#fb7185}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+svg text{font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.svg-wrap{margin:20px 0;text-align:center}
+.svg-wrap svg{max-width:100%}
+.compare{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+.compare .col{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto}
+.compare .col h4{margin:0 0 10px;font-size:14px}
+@media(max-width:800px){.compare{grid-template-columns:1fr}}
+.anno{display:inline-block;color:var(--mute);font-size:12px;margin-left:8px}
+.pipeline-step{display:flex;align-items:center;gap:12px;margin:8px 0}
+.pipeline-step .num-badge{min-width:28px;height:28px;background:var(--brand);color:var(--bg);border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:13px}
+.pipeline-step .desc{flex:1}
+.pipeline-step .api{color:var(--brand2);font-family:"SF Mono",monospace;font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>C3 · Vector Add · 第一个完整 CUDA Kernel <span class="tag">CUDA GEMM 系列 · 4/15</span></h1>
+<p class="sub">从头到尾写一个 CUDA vector add：分配内存、传输数据、启动 kernel、验证结果。对比 Triton 版，感受 CUDA "什么都要自己管" 的风格。</p>
+
+<!-- §1 完整流程概览 -->
+<h2><span class="step">§1</span>完整流程概览</h2>
+
+<div class="card">
+<p style="margin:0 0 16px;color:var(--mute)">CUDA 编程流水线 — 5 步缺一不可：</p>
+
+<div class="pipeline-step">
+  <div class="num-badge">1</div>
+  <div class="desc"><span class="api">cudaMalloc</span> — 分配 GPU 内存</div>
+</div>
+<div class="pipeline-step">
+  <div class="num-badge">2</div>
+  <div class="desc"><span class="api">cudaMemcpy H→D</span> — 把数据从 CPU 拷到 GPU</div>
+</div>
+<div class="pipeline-step">
+  <div class="num-badge">3</div>
+  <div class="desc"><span class="api">kernel&lt;&lt;&lt;grid, block&gt;&gt;&gt;(...)</span> — 启动计算</div>
+</div>
+<div class="pipeline-step">
+  <div class="num-badge">4</div>
+  <div class="desc"><span class="api">cudaMemcpy D→H</span> — 把结果拷回 CPU</div>
+</div>
+<div class="pipeline-step">
+  <div class="num-badge">5</div>
+  <div class="desc"><span class="api">cudaFree</span> — 释放 GPU 内存</div>
+</div>
+</div>
+
+<div class="callout info">
+<strong>对比 Triton / PyTorch：</strong><br>
+PyTorch 的 <code>torch.rand(n, device='cuda')</code> 帮你做了 1 + 2。Triton 的 <code>kernel[grid](x, y, out, ...)</code> 帮你做了 3。CUDA 全部手动。
+</div>
+
+<!-- §2 Kernel 代码 -->
+<h2><span class="step">§2</span>Kernel 代码</h2>
+
+<pre><span class="kw">__global__</span> <span class="kw">void</span> <span class="fn">vector_add_kernel</span>(<span class="kw">const</span> <span class="type">float</span>* a, <span class="kw">const</span> <span class="type">float</span>* b, <span class="type">float</span>* c, <span class="type">int</span> n) {
+    <span class="type">int</span> idx = blockIdx.x * blockDim.x + threadIdx.x;
+    <span class="kw">if</span> (idx &lt; n) {
+        c[idx] = a[idx] + b[idx];
+    }
+}</pre>
+
+<h3>逐行解释</h3>
+<table>
+<tr><th>代码</th><th>含义</th></tr>
+<tr><td><code>__global__</code></td><td>标记为 kernel — <strong>CPU 调用，GPU 执行</strong></td></tr>
+<tr><td><code>const float*</code></td><td>输入指针（指向 GPU 地址空间，非 CPU 地址）</td></tr>
+<tr><td><code>blockIdx.x * blockDim.x + threadIdx.x</code></td><td>全局线程编号（上一节学的索引公式）</td></tr>
+<tr><td><code>if (idx &lt; n)</code></td><td>边界检查 — 等同于 Triton 的 <code>mask = offs &lt; n</code></td></tr>
+<tr><td><code>c[idx] = a[idx] + b[idx]</code></td><td>每个线程处理一个元素的加法</td></tr>
+</table>
+
+<!-- §3 Host 端完整代码 -->
+<h2><span class="step">§3</span>Host 端完整代码</h2>
+
+<p>可直接编译运行的完整程序：</p>
+
+<pre><span class="com">// vec_add.cu — 第一个完整 CUDA 程序</span>
+<span class="kw">#include</span> <span class="str">&lt;cuda_runtime.h&gt;</span>
+<span class="kw">#include</span> <span class="str">&lt;stdio.h&gt;</span>
+<span class="kw">#include</span> <span class="str">&lt;stdlib.h&gt;</span>
+<span class="kw">#include</span> <span class="str">&lt;math.h&gt;</span>
+
+<span class="com">// 错误检查宏 — 每个 CUDA API 调用都要包裹</span>
+<span class="kw">#define</span> <span class="fn">CHECK_CUDA</span>(call) <span class="kw">do</span> { \
+    cudaError_t err = call; \
+    <span class="kw">if</span> (err != cudaSuccess) { \
+        fprintf(stderr, <span class="str">"CUDA error at %s:%d: %s\n"</span>, __FILE__, __LINE__, \
+                cudaGetErrorString(err)); \
+        exit(<span class="num">1</span>); \
+    } \
+} <span class="kw">while</span>(<span class="num">0</span>)
+
+<span class="kw">__global__</span> <span class="kw">void</span> <span class="fn">vector_add</span>(<span class="kw">const</span> <span class="type">float</span>* a, <span class="kw">const</span> <span class="type">float</span>* b, <span class="type">float</span>* c, <span class="type">int</span> n) {
+    <span class="type">int</span> idx = blockIdx.x * blockDim.x + threadIdx.x;
+    <span class="kw">if</span> (idx &lt; n) {
+        c[idx] = a[idx] + b[idx];
+    }
+}
+
+<span class="type">int</span> <span class="fn">main</span>() {
+    <span class="kw">const</span> <span class="type">int</span> N = <span class="num">1</span> &lt;&lt; <span class="num">20</span>;  <span class="com">// 1M elements</span>
+    <span class="type">size_t</span> bytes = N * <span class="kw">sizeof</span>(<span class="type">float</span>);
+
+    <span class="com">// ① Host 分配 + 初始化</span>
+    <span class="type">float</span> *h_a = (<span class="type">float</span>*)malloc(bytes);
+    <span class="type">float</span> *h_b = (<span class="type">float</span>*)malloc(bytes);
+    <span class="type">float</span> *h_c = (<span class="type">float</span>*)malloc(bytes);
+    <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; N; i++) {
+        h_a[i] = sinf(i) * sinf(i);
+        h_b[i] = cosf(i) * cosf(i);
+    }
+
+    <span class="com">// ② Device 分配</span>
+    <span class="type">float</span> *d_a, *d_b, *d_c;
+    <span class="fn">CHECK_CUDA</span>(cudaMalloc(&amp;d_a, bytes));
+    <span class="fn">CHECK_CUDA</span>(cudaMalloc(&amp;d_b, bytes));
+    <span class="fn">CHECK_CUDA</span>(cudaMalloc(&amp;d_c, bytes));
+
+    <span class="com">// ③ H → D 数据传输</span>
+    <span class="fn">CHECK_CUDA</span>(cudaMemcpy(d_a, h_a, bytes, cudaMemcpyHostToDevice));
+    <span class="fn">CHECK_CUDA</span>(cudaMemcpy(d_b, h_b, bytes, cudaMemcpyHostToDevice));
+
+    <span class="com">// ④ 启动 Kernel</span>
+    <span class="type">int</span> block_size = <span class="num">256</span>;
+    <span class="type">int</span> grid_size = (N + block_size - <span class="num">1</span>) / block_size;
+    vector_add<span class="kw">&lt;&lt;&lt;</span>grid_size, block_size<span class="kw">&gt;&gt;&gt;</span>(d_a, d_b, d_c, N);
+    <span class="fn">CHECK_CUDA</span>(cudaGetLastError());
+
+    <span class="com">// ⑤ D → H 结果拷回</span>
+    <span class="fn">CHECK_CUDA</span>(cudaMemcpy(h_c, d_c, bytes, cudaMemcpyDeviceToHost));
+
+    <span class="com">// ⑥ 验证正确性</span>
+    <span class="type">float</span> max_err = <span class="num">0</span>;
+    <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; N; i++) {
+        max_err = fmaxf(max_err, fabsf(h_c[i] - (h_a[i] + h_b[i])));
+    }
+    printf(<span class="str">"Max error: %e\n"</span>, max_err);
+    printf(max_err &lt; <span class="num">1e-5</span> ? <span class="str">"PASS\n"</span> : <span class="str">"FAIL\n"</span>);
+
+    <span class="com">// ⑦ 释放内存</span>
+    cudaFree(d_a); cudaFree(d_b); cudaFree(d_c);
+    free(h_a); free(h_b); free(h_c);
+    <span class="kw">return</span> <span class="num">0</span>;
+}</pre>
+
+<div class="callout">
+<strong>编译运行：</strong><code>nvcc -o vec_add vec_add.cu && ./vec_add</code><br>
+预期输出：<code>Max error: 0.000000e+00</code> + <code>PASS</code>（sin&sup2; + cos&sup2; = 1，浮点精确）
+</div>
+
+<!-- §4 Triton vs CUDA 对比 -->
+<h2><span class="step">§4</span>Triton vs CUDA 对比</h2>
+
+<div class="compare">
+<div class="col">
+<h4 style="color:var(--brand)">Triton (~15 行)</h4>
+<pre style="border:none;margin:0;padding:0;background:transparent"><span class="kw">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">add_kernel</span>(x_ptr, y_ptr, out_ptr, n,
+               BLOCK: tl.constexpr):
+    pid = tl.program_id(<span class="num">0</span>)
+    offs = pid * BLOCK + tl.arange(<span class="num">0</span>, BLOCK)
+    mask = offs &lt; n
+    x = tl.load(x_ptr + offs, mask=mask)
+    y = tl.load(y_ptr + offs, mask=mask)
+    tl.store(out_ptr + offs, x + y, mask=mask)
+
+<span class="com"># 启动 — 内存由 PyTorch 管理</span>
+x = torch.rand(N, device=<span class="str">'cuda'</span>)
+y = torch.rand(N, device=<span class="str">'cuda'</span>)
+out = torch.empty_like(x)
+grid = <span class="kw">lambda</span> m: (triton.cdiv(N, m[<span class="str">'BLOCK'</span>]),)
+add_kernel[grid](x, y, out, N, BLOCK=<span class="num">1024</span>)</pre>
+</div>
+<div class="col">
+<h4 style="color:var(--warn)">CUDA (~50 行)</h4>
+<pre style="border:none;margin:0;padding:0;background:transparent"><span class="com">// 需要手动做的事情：</span>
+float *h_a = malloc(bytes);       <span class="com">// Host 分配</span>
+float *d_a;
+cudaMalloc(&amp;d_a, bytes);          <span class="com">// Device 分配</span>
+cudaMemcpy(d_a, h_a, ...H2D);    <span class="com">// 手动传输</span>
+
+<span class="com">// 手动计算 grid/block</span>
+int block = <span class="num">256</span>;
+int grid = (N + block - <span class="num">1</span>) / block;
+kernel&lt;&lt;&lt;grid, block&gt;&gt;&gt;(...);
+
+cudaMemcpy(h_c, d_c, ...D2H);    <span class="com">// 手动拷回</span>
+cudaFree(d_a);                    <span class="com">// 手动释放</span>
+free(h_a);                        <span class="com">// Host 也要释放</span>
+
+<span class="com">// 还要检查每个调用的错误...</span>
+CHECK_CUDA(cudaMalloc(...));
+CHECK_CUDA(cudaMemcpy(...));
+CHECK_CUDA(cudaGetLastError());</pre>
+</div>
+</div>
+
+<table>
+<tr><th>维度</th><th>Triton</th><th>CUDA</th></tr>
+<tr><td>内存管理</td><td>PyTorch 代劳</td><td>全部手动 malloc/free</td></tr>
+<tr><td>数据传输</td><td>自动（tensor 创建在 cuda）</td><td>手动 cudaMemcpy 两次</td></tr>
+<tr><td>错误处理</td><td>Python 异常</td><td>每行都要 CHECK_CUDA</td></tr>
+<tr><td>Block size</td><td>编译期常量，自动调优</td><td>手动选，手动算 grid</td></tr>
+<tr><td>代码量</td><td>~15 行</td><td>~50 行</td></tr>
+<tr><td>控制粒度</td><td>Block 级</td><td>Thread 级（完全控制）</td></tr>
+</table>
+
+<div class="callout">
+<strong>总结：</strong>这就是为什么先学 Triton — 它让你专注于算法。但 CUDA 给你完全控制权，在需要极致优化时不可替代。
+</div>
+
+<!-- §5 CUDA Error Handling -->
+<h2><span class="step">§5</span>CUDA Error Handling</h2>
+
+<h3>方式 1：检查每个 API 调用</h3>
+<pre>cudaError_t err = cudaMalloc(&amp;ptr, size);
+<span class="kw">if</span> (err != cudaSuccess) {
+    fprintf(stderr, <span class="str">"Error: %s\n"</span>, cudaGetErrorString(err));
+    exit(<span class="num">1</span>);
+}</pre>
+
+<h3>方式 2：检查 Kernel Launch（异步！）</h3>
+<pre><span class="com">// Kernel 启动是异步的 — 不会立即报告执行错误</span>
+kernel<span class="kw">&lt;&lt;&lt;</span>grid, block<span class="kw">&gt;&gt;&gt;</span>(...);
+
+<span class="com">// 检查 launch 配置错误（如 block 太大）</span>
+cudaError_t err = cudaGetLastError();
+
+<span class="com">// 等 kernel 真正执行完</span>
+cudaDeviceSynchronize();
+
+<span class="com">// 检查 execution 错误（如越界访问）</span>
+err = cudaGetLastError();</pre>
+
+<div class="callout warn">
+<strong>注意：</strong>Kernel 启动是异步的！<code>kernel&lt;&lt;&lt;&gt;&gt;&gt;()</code> 立即返回，不等 kernel 执行完。要用 <code>cudaDeviceSynchronize()</code> 或 <code>cudaMemcpy</code>（隐式同步）来等待。如果不等待就检查错误，可能漏掉 kernel 内部的崩溃。
+</div>
+
+<!-- §6 性能计时 -->
+<h2><span class="step">§6</span>性能计时</h2>
+
+<pre>cudaEvent_t start, stop;
+cudaEventCreate(&amp;start);
+cudaEventCreate(&amp;stop);
+
+cudaEventRecord(start);
+vector_add<span class="kw">&lt;&lt;&lt;</span>grid_size, block_size<span class="kw">&gt;&gt;&gt;</span>(d_a, d_b, d_c, N);
+cudaEventRecord(stop);
+cudaEventSynchronize(stop);
+
+<span class="type">float</span> ms = <span class="num">0</span>;
+cudaEventElapsedTime(&amp;ms, start, stop);
+printf(<span class="str">"Kernel time: %.3f ms\n"</span>, ms);
+
+<span class="com">// 带宽计算：读 a + 读 b + 写 c = 3N 次 float 访存</span>
+<span class="type">float</span> gb = <span class="num">3.0f</span> * N * <span class="kw">sizeof</span>(<span class="type">float</span>) / <span class="num">1e9</span>;
+printf(<span class="str">"Effective BW: %.1f GB/s\n"</span>, gb / (ms / <span class="num">1000</span>));</pre>
+
+<div class="callout info">
+<strong>为什么用 cudaEvent 而不是 CPU 计时器？</strong><br>
+因为 kernel 启动是异步的。CPU 的 <code>clock()</code> 只能测到 launch 开销（微秒级），测不到 kernel 真正执行时间。<code>cudaEvent</code> 是 GPU 时间戳，精度 ~0.5 微秒。
+</div>
+
+<div class="callout">
+<strong>预期结果：</strong>Vector add 的理论带宽利用率应该接近 100% — 因为它是纯 memory-bound 的（计算：访存 = 1:12 bytes）。在 A100 上预期 ~1.5 TB/s。
+</div>
+
+<!-- §7 编译选项 -->
+<h2><span class="step">§7</span>编译选项</h2>
+
+<pre><span class="com"># 基本编译</span>
+nvcc -o vec_add vec_add.cu
+
+<span class="com"># 指定 GPU 架构 (A100 = sm_80, H100 = sm_90, H20 = sm_89)</span>
+nvcc -arch=sm_80 -o vec_add vec_add.cu
+
+<span class="com"># 优化等级（生产用 -O3）</span>
+nvcc -O3 -arch=sm_80 -o vec_add vec_add.cu
+
+<span class="com"># 调试模式（-g: host debug, -G: device debug）</span>
+nvcc -g -G -o vec_add_debug vec_add.cu</pre>
+
+<table>
+<tr><th>选项</th><th>含义</th><th>场景</th></tr>
+<tr><td><code>-arch=sm_XX</code></td><td>指定目标 GPU 架构</td><td>确保生成对应指令集</td></tr>
+<tr><td><code>-O3</code></td><td>最高优化</td><td>性能测试 / 生产</td></tr>
+<tr><td><code>-g -G</code></td><td>开启 host + device 调试信息</td><td>配合 cuda-gdb 使用</td></tr>
+<tr><td><code>-lineinfo</code></td><td>保留行号（不影响优化）</td><td>profiler 定位热点</td></tr>
+<tr><td><code>--ptxas-options=-v</code></td><td>打印寄存器 / shared mem 使用量</td><td>占用率分析</td></tr>
+</table>
+
+<!-- §8 带走 -->
+<h2><span class="step">§8</span>带走</h2>
+
+<div class="card">
+<ol style="margin:0;padding-left:20px;line-height:2.2">
+<li><strong>CUDA 完整流程：</strong><code>malloc</code> → <code>memcpy H2D</code> → <code>kernel&lt;&lt;&lt;&gt;&gt;&gt;</code> → <code>memcpy D2H</code> → <code>free</code></li>
+<li><strong>Kernel = <code>__global__ void</code> 函数</strong>，每个 thread 执行一遍函数体</li>
+<li><strong>边界检查</strong> <code>if (idx &lt; n)</code> 等同于 Triton 的 <code>mask</code></li>
+<li><strong>Kernel 启动是异步的</strong> — 需要 <code>cudaDeviceSynchronize()</code> 或隐式同步来等待</li>
+<li><strong>用 <code>cudaEvent</code> 计时</strong> — 不要用 CPU 计时器测 kernel 性能</li>
+</ol>
+</div>
+
+<p class="foot">C3 · Vector Add — CUDA GEMM 系列 4/15</p>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

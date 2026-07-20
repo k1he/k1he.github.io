@@ -1,0 +1,214 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>多卡互联 NVLink/NVSwitch · 第一章 08/08</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218;}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}.sub{color:var(--mute);margin-bottom:30px;font-size:15px}h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}.grid{display:grid;gap:16px}.cols-2{grid-template-columns:1fr 1fr}.cols-3{grid-template-columns:repeat(3,1fr)}@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}.svg-wrap svg{max-width:100%;height:auto}.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}.toc a:hover{border-color:var(--brand);color:var(--brand)}table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13px}th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mute);font-weight:500;background:#151a25}.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}.nav{display:flex;justify-content:space-between;margin:40px 0 0;padding-top:20px;border-top:1px solid var(--line);font-size:13px}.nav a{color:var(--brand2);text-decoration:none}.nav a:hover{color:var(--brand)}.num-big{font-size:22px;color:var(--brand);font-family:"SF Mono",monospace;font-weight:600}.chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);color:var(--brand2);padding:2px 8px;border-radius:6px;font-size:11.5px;font-family:"SF Mono",monospace;margin:2px}
+</style>
+</head>
+<body><div class="wrap">
+<h1>多卡互联 NVLink/NVSwitch · LLM 为什么需要“卡间高速公路” <span class="tag">第一章 · 08/08</span></h1>
+<div class="sub">当模型大到一张卡放不下，或 batch/吞吐需要多卡，性能瓶颈就从 SM/HBM 扩展到互联网络。Tensor Parallel 的 all-reduce、Pipeline Parallel 的 activation 传递、MoE 的 expert dispatch，全都在考验 PCIe/NVLink/NVSwitch/NCCL。本篇建立多卡通信的硬件与软件全图。</div>
+
+<div class="toc">
+  <a href="#why">§1 为什么需要互联</a>
+  <a href="#pcie">§2 PCIe vs NVLink</a>
+  <a href="#switch">§3 NVSwitch 拓扑</a>
+  <a href="#collective">§4 NCCL 集合通信</a>
+  <a href="#tp">§5 Tensor Parallel 通信</a>
+  <a href="#serving">§6 推理服务影响</a>
+  <a href="#debug">§7 排障指标</a>
+  <a href="#takeaway">§8 带走的八句话</a>
+</div>
+
+<h2 id="why"><span class="step">§1</span>为什么 LLM 需要 GPU 互联</h2>
+<div class="card">
+<p>单卡性能再强，也会遇到三类墙：</p>
+<table>
+<thead><tr><th>墙</th><th>表现</th><th>多卡方案</th><th>通信代价</th></tr></thead>
+<tbody>
+<tr><td>显存墙</td><td>模型权重/KV Cache 放不下</td><td>Tensor Parallel、Pipeline Parallel、Expert Parallel</td><td>层内 all-reduce、层间 activation 传输、expert dispatch</td></tr>
+<tr><td>吞吐墙</td><td>单卡 tokens/s 不够</td><td>Data Parallel、continuous batching 分散</td><td>推理 DP 通信少，训练 DP 需要梯度同步</td></tr>
+<tr><td>延迟墙</td><td>单请求必须拆多卡才能跑</td><td>TP/PP 组合</td><td>每层或每 stage 通信进入关键路径</td></tr>
+</tbody>
+</table>
+<div class="callout warn"><b>多卡不是免费扩容</b>：一旦模型层内切到多卡，每层 forward 都可能有通信。互联带宽/延迟不够，Tensor Core 再快也会等通信。</div>
+</div>
+
+<h2 id="pcie"><span class="step">§2</span>PCIe vs NVLink：一条通用路，一条 GPU 专用高速路</h2>
+<div class="card">
+<table>
+<thead><tr><th>互联</th><th>典型带宽量级</th><th>拓扑</th><th>优势</th><th>短板</th></tr></thead>
+<tbody>
+<tr><td>PCIe Gen4 x16</td><td>约 32GB/s 单向</td><td>GPU → PCIe switch/root complex → GPU</td><td>通用、成本低</td><td>带宽远低于 NVLink，延迟更高</td></tr>
+<tr><td>PCIe Gen5 x16</td><td>约 64GB/s 单向</td><td>同上</td><td>新平台通用互联</td><td>仍难支撑高 TP all-reduce</td></tr>
+<tr><td>NVLink 3(A100)</td><td>约 600GB/s 双向/卡</td><td>GPU 直连或经 NVSwitch</td><td>GPU 专用高带宽</td><td>需要 SXM/HGX 平台</td></tr>
+<tr><td>NVLink 4(H100)</td><td>约 900GB/s 双向/卡</td><td>HGX 8 卡 NVSwitch</td><td>支撑大模型 TP</td><td>节点内为主</td></tr>
+<tr><td>NVLink 5(B200)</td><td>约 1.8TB/s 双向/卡</td><td>NVL72 机柜级 fabric</td><td>rack-scale 加速域</td><td>系统复杂、成本高</td></tr>
+</tbody>
+</table>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 330" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="480" y="28" fill="#6ee7b7" text-anchor="middle" font-size="16">PCIe 路径 vs NVLink 路径</text>
+<g transform="translate(70,80)">
+  <text x="170" y="0" fill="#f87171" text-anchor="middle">PCIe</text>
+  <rect x="0" y="35" width="90" height="55" rx="6" fill="#1f3328" stroke="#6ee7b7"/><text x="45" y="68" fill="#6ee7b7" text-anchor="middle">GPU0</text>
+  <rect x="250" y="35" width="90" height="55" rx="6" fill="#1f3328" stroke="#6ee7b7"/><text x="295" y="68" fill="#6ee7b7" text-anchor="middle">GPU1</text>
+  <rect x="105" y="130" width="130" height="45" rx="6" fill="#39252b" stroke="#fb7185"/><text x="170" y="158" fill="#fb7185" text-anchor="middle">PCIe switch</text>
+  <path d="M45 90 L135 130" stroke="#fb7185" stroke-width="2"/><path d="M295 90 L205 130" stroke="#fb7185" stroke-width="2"/>
+  <text x="170" y="220" fill="#8b93a7" text-anchor="middle">绕 switch/root，带宽低</text>
+</g>
+<g transform="translate(550,80)">
+  <text x="170" y="0" fill="#7dd3fc" text-anchor="middle">NVLink/NVSwitch</text>
+  <rect x="0" y="35" width="90" height="55" rx="6" fill="#1f3328" stroke="#6ee7b7"/><text x="45" y="68" fill="#6ee7b7" text-anchor="middle">GPU0</text>
+  <rect x="250" y="35" width="90" height="55" rx="6" fill="#1f3328" stroke="#6ee7b7"/><text x="295" y="68" fill="#6ee7b7" text-anchor="middle">GPU1</text>
+  <rect x="105" y="130" width="130" height="45" rx="6" fill="#2b2135" stroke="#a78bfa"/><text x="170" y="158" fill="#a78bfa" text-anchor="middle">NVSwitch</text>
+  <path d="M45 90 L135 130" stroke="#a78bfa" stroke-width="3"/><path d="M295 90 L205 130" stroke="#a78bfa" stroke-width="3"/>
+  <text x="170" y="220" fill="#8b93a7" text-anchor="middle">GPU 专用 fabric，高带宽低延迟</text>
+</g>
+</svg>
+</div>
+</div>
+
+<h2 id="switch"><span class="step">§3</span>NVSwitch：让任意两张 GPU 都像“邻居”</h2>
+<div class="card">
+<p>如果只是 GPU 之间点对点直连，8 张卡会遇到拓扑不均匀：有些卡近，有些卡远。NVSwitch 的目标是提供高带宽 crossbar，让任意 GPU-GPU 通信路径尽量均匀。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 940 390" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="470" y="26" fill="#6ee7b7" text-anchor="middle" font-size="15">HGX 8-GPU NVSwitch 逻辑拓扑</text>
+<rect x="315" y="150" width="310" height="75" rx="10" fill="#2b2135" stroke="#a78bfa"/>
+<text x="470" y="182" fill="#a78bfa" text-anchor="middle">NVSwitch fabric</text><text x="470" y="205" fill="#cbd5e1" text-anchor="middle">全互联交换层</text>
+<g fill="#1f3328" stroke="#6ee7b7">
+  <rect x="70" y="65" width="90" height="48" rx="6"/><rect x="285" y="65" width="90" height="48" rx="6"/><rect x="565" y="65" width="90" height="48" rx="6"/><rect x="780" y="65" width="90" height="48" rx="6"/>
+  <rect x="70" y="285" width="90" height="48" rx="6"/><rect x="285" y="285" width="90" height="48" rx="6"/><rect x="565" y="285" width="90" height="48" rx="6"/><rect x="780" y="285" width="90" height="48" rx="6"/>
+</g>
+<g fill="#6ee7b7" text-anchor="middle"><text x="115" y="94">GPU0</text><text x="330" y="94">GPU1</text><text x="610" y="94">GPU2</text><text x="825" y="94">GPU3</text><text x="115" y="314">GPU4</text><text x="330" y="314">GPU5</text><text x="610" y="314">GPU6</text><text x="825" y="314">GPU7</text></g>
+<g stroke="#7dd3fc" stroke-width="2" opacity=".8"><line x1="115" y1="113" x2="350" y2="150"/><line x1="330" y1="113" x2="410" y2="150"/><line x1="610" y1="113" x2="530" y2="150"/><line x1="825" y1="113" x2="590" y2="150"/><line x1="115" y1="285" x2="350" y2="225"/><line x1="330" y1="285" x2="410" y2="225"/><line x1="610" y1="285" x2="530" y2="225"/><line x1="825" y1="285" x2="590" y2="225"/></g>
+</svg>
+</div>
+
+<div class="callout info"><b>NCCL 会读拓扑</b>：实际通信路径由 NCCL 根据 NVLink/NVSwitch/PCIe/NUMA 拓扑选择 ring/tree/channel。相同 8 卡，PCIe 机器和 HGX SXM 机器的 TP 性能完全不是一个量级。</div>
+</div>
+
+<h2 id="collective"><span class="step">§4</span>NCCL 集合通信：all-reduce 不只是“大家加一下”</h2>
+<div class="card">
+<table>
+<thead><tr><th>Collective</th><th>语义</th><th>LLM 中出现在哪里</th></tr></thead>
+<tbody>
+<tr><td>all-reduce</td><td>所有 GPU 的张量求和，结果返回所有 GPU</td><td>Tensor Parallel row-parallel linear 输出汇总</td></tr>
+<tr><td>all-gather</td><td>每 GPU 一片，拼完整结果给所有 GPU</td><td>列切分结果拼接、sequence parallel</td></tr>
+<tr><td>reduce-scatter</td><td>先 reduce，再把结果分片给各 GPU</td><td>训练梯度、某些 TP 优化</td></tr>
+<tr><td>broadcast</td><td>一张卡发给所有卡</td><td>参数/metadata 同步</td></tr>
+<tr><td>all-to-all</td><td>每张卡给每张卡不同数据</td><td>MoE expert parallel token dispatch</td></tr>
+</tbody>
+</table>
+
+<h3>Ring all-reduce 的两阶段</h3>
+<pre>1. reduce-scatter: 每张卡把数据分块，沿 ring 传递并累加
+2. all-gather: 每张卡把累加后的分块沿 ring 分发给所有卡
+
+通信量近似：2 * (N-1)/N * tensor_size
+N 越大，总步数越多；带宽够高还要看延迟。</pre>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 850 260" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="425" y="28" fill="#6ee7b7" text-anchor="middle" font-size="15">Ring all-reduce · 4 GPU 简化</text>
+<g fill="#1f3328" stroke="#6ee7b7"><circle cx="170" cy="80" r="38"/><circle cx="680" cy="80" r="38"/><circle cx="680" cy="190" r="38"/><circle cx="170" cy="190" r="38"/></g>
+<g fill="#6ee7b7" text-anchor="middle"><text x="170" y="85">GPU0</text><text x="680" y="85">GPU1</text><text x="680" y="195">GPU2</text><text x="170" y="195">GPU3</text></g>
+<g stroke="#fbbf24" stroke-width="3" marker-end="url(#m)"><defs><marker id="m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#fbbf24"/></marker></defs><path d="M208 80 L638 80"/><path d="M680 118 L680 148"/><path d="M642 190 L212 190"/><path d="M170 152 L170 122"/></g>
+<text x="425" y="136" fill="#8b93a7" text-anchor="middle">chunk 沿环传递：边传边加，最后每卡拿到完整 reduce 结果</text>
+</svg>
+</div>
+</div>
+
+<h2 id="tp"><span class="step">§5</span>Tensor Parallel 中通信到底在哪里</h2>
+<div class="card">
+<p>以 Transformer MLP/Attention 的 Linear 为例，常见两种切法：</p>
+<table>
+<thead><tr><th>切法</th><th>权重形状</th><th>每卡做什么</th><th>是否通信</th></tr></thead>
+<tbody>
+<tr><td>Column Parallel</td><td><code>W[:, shard_n]</code></td><td>每卡算一部分输出 channel</td><td>下一层若能吃 shard，可暂不 gather</td></tr>
+<tr><td>Row Parallel</td><td><code>W[shard_k, :]</code></td><td>每卡算 partial sum</td><td>需要 all-reduce 求和</td></tr>
+</tbody>
+</table>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 360" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="480" y="26" fill="#6ee7b7" text-anchor="middle" font-size="15">TP=4 单层 Linear 通信位置</text>
+<rect x="50" y="90" width="110" height="70" rx="8" fill="#1e2d36" stroke="#7dd3fc"/><text x="105" y="120" fill="#7dd3fc" text-anchor="middle">Input X</text><text x="105" y="142" fill="#cbd5e1" text-anchor="middle">replicated</text>
+<g transform="translate(240,60)">
+  <rect x="0" y="0" width="120" height="55" rx="6" fill="#1f3328" stroke="#6ee7b7"/><text x="60" y="32" fill="#6ee7b7" text-anchor="middle">GPU0 shard</text>
+  <rect x="0" y="70" width="120" height="55" rx="6" fill="#1f3328" stroke="#6ee7b7"/><text x="60" y="102" fill="#6ee7b7" text-anchor="middle">GPU1 shard</text>
+  <rect x="0" y="140" width="120" height="55" rx="6" fill="#1f3328" stroke="#6ee7b7"/><text x="60" y="172" fill="#6ee7b7" text-anchor="middle">GPU2 shard</text>
+  <rect x="0" y="210" width="120" height="55" rx="6" fill="#1f3328" stroke="#6ee7b7"/><text x="60" y="242" fill="#6ee7b7" text-anchor="middle">GPU3 shard</text>
+</g>
+<rect x="490" y="120" width="170" height="80" rx="8" fill="#2b2135" stroke="#a78bfa"/><text x="575" y="150" fill="#a78bfa" text-anchor="middle">Partial outputs</text><text x="575" y="175" fill="#cbd5e1" text-anchor="middle">需要合并/求和</text>
+<rect x="760" y="120" width="140" height="80" rx="8" fill="#352b18" stroke="#fbbf24"/><text x="830" y="150" fill="#fbbf24" text-anchor="middle">NCCL</text><text x="830" y="175" fill="#cbd5e1" text-anchor="middle">all-reduce</text>
+<g stroke="#fbbf24" stroke-width="2" marker-end="url(#m)"><defs><marker id="m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#fbbf24"/></marker></defs><path d="M160 125 L235 88"/><path d="M160 125 L235 158"/><path d="M360 160 L485 160"/><path d="M660 160 L755 160"/></g>
+<text x="480" y="320" fill="#8b93a7" text-anchor="middle">每层都通信 → 互联延迟进入 token latency，尤其 decode batch 小时更明显</text>
+</svg>
+</div>
+
+<h3>一个粗略 all-reduce 时间估算</h3>
+<pre>tensor_size = 64 MB
+H100 NVLink 有效带宽假设 600 GB/s
+ring all-reduce 通信量 ≈ 2*(N-1)/N*64MB, N=8 → 112MB
+纯带宽时间 ≈ 112MB / 600GB/s ≈ 0.19 ms
+再加 latency、NCCL launch、拓扑损耗、同步等待
+→ 每层 0.2ms 量级就足以影响 decode latency</pre>
+</div>
+
+<h2 id="serving"><span class="step">§6</span>推理服务影响：互联决定 TP 度数和 batch 策略</h2>
+<div class="card">
+<table>
+<thead><tr><th>选择</th><th>互联好时</th><th>互联差时</th></tr></thead>
+<tbody>
+<tr><td>TP 度数</td><td>可以提高 TP，降低单卡显存压力</td><td>TP 太高通信吞吐/延迟爆炸</td></tr>
+<tr><td>Batch 大小</td><td>大 batch 摊薄通信固定开销</td><td>小 batch decode 延迟被通信放大</td></tr>
+<tr><td>模型放置</td><td>优先放在同 NVSwitch 域内</td><td>跨 PCIe/跨节点尽量避免层内 TP</td></tr>
+<tr><td>MoE</td><td>all-to-all 可接受，expert parallel 更灵活</td><td>expert dispatch 成为瓶颈</td></tr>
+<tr><td>长上下文</td><td>可考虑跨卡 KV/上下文并行</td><td>远程 KV 访问会拖垮 decode</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn"><b>实践原则</b>：层内通信（TP all-reduce）必须放在最快互联域内；跨节点更适合 pipeline/data parallel，不适合频繁层内 all-reduce，除非有非常强的网络和专门优化。</div>
+</div>
+
+<h2 id="debug"><span class="step">§7</span>排障指标：怎么判断卡在互联</h2>
+<div class="card">
+<ul class="tight">
+<li><b>NCCL 时间占比</b>：profile 中 <code>ncclAllReduce</code>/<code>ncclAllGather</code> 占比高。</li>
+<li><b>SM 利用率低但 GPU 忙</b>：Tensor Core 空等通信。</li>
+<li><b>batch 增大吞吐不线性</b>：通信或 KV 带宽成为 shared bottleneck。</li>
+<li><b>不同卡 step 时间不一致</b>：拓扑不均、NUMA、某张卡链路退化。</li>
+<li><b>NCCL 日志显示走 PCIe</b>：没有走 NVLink/NVSwitch，或拓扑识别异常。</li>
+</ul>
+<pre># 常见排查方向（示意）
+nvidia-smi topo -m        # 看 GPU-GPU 是 NVLink 还是 PCIe
+NCCL_DEBUG=INFO           # 看 NCCL 选择的 ring/tree/channel
+nsys profile              # 看 compute 与 nccl 是否重叠
+nccl-tests all_reduce_perf # 测实际互联带宽</pre>
+<div class="callout bad"><b>不要只看理论带宽</b>：实际有效带宽受消息大小、并发 channel、ring/tree 算法、GPU affinity、CPU NUMA、驱动/NCCL 版本影响。服务端要用真实模型 workload profile。</div>
+</div>
+
+<h2 id="takeaway"><span class="step">§8</span>带走的八句话</h2>
+<div class="card"><div class="callout"><ol>
+<li><b>多卡扩容的代价是通信</b>，通信进入关键路径后，FLOPS 不是唯一指标。</li>
+<li><b>PCIe 是通用路，NVLink 是 GPU 高速路</b>，TP 推理强依赖后者。</li>
+<li><b>NVSwitch 让 8 卡/72 卡形成更均匀的高带宽域</b>，减少拓扑不均。</li>
+<li><b>NCCL collective 是多卡程序的真实执行层</b>，all-reduce/all-gather/all-to-all 要逐个看。</li>
+<li><b>Row Parallel Linear 通常需要 all-reduce</b>，这是 TP 每层通信的核心来源。</li>
+<li><b>Decode 小 batch 时通信更伤延迟</b>，因为固定延迟难以摊薄。</li>
+<li><b>跨节点层内 TP 要非常谨慎</b>，除非网络和框架都为此优化。</li>
+<li><b>排障要看实际 profile</b>：NCCL 时间、SM 利用率、topo、NCCL_DEBUG、nccl-tests 缺一不可。</li>
+</ol></div></div>
+
+<div class="nav"><a href="07-blackwell.html">← 上一章：Blackwell 架构详解</a><a href="index.html">回到目录 →</a></div>
+<div class="foot">第一章 · GPU 硬件深度 · 08/08</div>
+</div>  <script src="../course-nav.js"></script>
+</body></html>

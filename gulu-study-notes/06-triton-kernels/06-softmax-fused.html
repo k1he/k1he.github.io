@@ -1,0 +1,347 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>T3 · Fused Softmax · Triton 真正发威</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.run{background:#1a1f2b;border:1px dashed var(--brand);border-radius:10px;padding:10px 14px;font-family:"SF Mono",monospace;font-size:12.5px;color:var(--brand);margin:8px 0}
+.btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:8px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit}
+.btn:hover{border-color:var(--brand);color:var(--brand)}
+.btn.active{background:var(--brand);color:var(--bg);border-color:var(--brand)}
+.controls{display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>T3 · Fused Softmax · Triton 真正发威 <span class="tag">Triton 系列 · 4/6</span></h1>
+<div class="sub">同一份 softmax，PyTorch 要 4 趟 HBM、Triton 1 趟。学到 reduce、tl.max、tl.exp、numerical stability，以及"为什么 fusion 能立刻变快 4 倍"。</div>
+
+<div class="toc">
+  <a href="#why">§1 PyTorch 为什么慢</a>
+  <a href="#math">§2 数学 + 数值稳定</a>
+  <a href="#k">§3 完整 kernel</a>
+  <a href="#dis">§4 逐节解剖</a>
+  <a href="#online">§5 online softmax 预告</a>
+  <a href="#bench">§6 benchmark</a>
+  <a href="#takeaway">§7 带走</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§1</span>PyTorch 跑 softmax 在干什么 · 为什么慢</h2>
+
+<div class="card">
+<p>给一个矩阵 X [M, N]，做 row-wise softmax：</p>
+<pre>y[i, j] = exp(x[i, j] - max_k(x[i, k])) / Σ_k exp(x[i, k] - max_k(x[i, k]))</pre>
+
+<h3>PyTorch 的执行路径（aten / cuDNN）</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 220" width="900">
+  <g font-family="SF Mono" font-size="12">
+    <rect x="40" y="40" width="160" height="60" rx="8" fill="#1a1f2b" stroke="#f87171"/>
+    <text x="120" y="68" text-anchor="middle" fill="#f87171" font-weight="700">kernel 1</text>
+    <text x="120" y="88" text-anchor="middle" fill="#cbd5e1">row max</text>
+
+    <rect x="240" y="40" width="160" height="60" rx="8" fill="#1a1f2b" stroke="#f87171"/>
+    <text x="320" y="68" text-anchor="middle" fill="#f87171" font-weight="700">kernel 2</text>
+    <text x="320" y="88" text-anchor="middle" fill="#cbd5e1">x - max  · exp</text>
+
+    <rect x="440" y="40" width="160" height="60" rx="8" fill="#1a1f2b" stroke="#f87171"/>
+    <text x="520" y="68" text-anchor="middle" fill="#f87171" font-weight="700">kernel 3</text>
+    <text x="520" y="88" text-anchor="middle" fill="#cbd5e1">row sum</text>
+
+    <rect x="640" y="40" width="160" height="60" rx="8" fill="#1a1f2b" stroke="#f87171"/>
+    <text x="720" y="68" text-anchor="middle" fill="#f87171" font-weight="700">kernel 4</text>
+    <text x="720" y="88" text-anchor="middle" fill="#cbd5e1">x_exp / sum</text>
+  </g>
+  <g stroke="#8b93a7" stroke-width="1.5" fill="none">
+    <path d="M200 70 L240 70" marker-end="url(#a3)"/>
+    <path d="M400 70 L440 70" marker-end="url(#a3)"/>
+    <path d="M600 70 L640 70" marker-end="url(#a3)"/>
+  </g>
+  <defs><marker id="a3" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+    <path d="M0 0L8 4L0 8z" fill="#8b93a7"/></marker></defs>
+
+  <text x="40" y="140" fill="#fbbf24" font-size="13">每个 kernel 之间都有完整的 HBM 来回：</text>
+  <text x="40" y="160" fill="#cbd5e1" font-size="12">• kernel 1 写 max → kernel 2 读 max + 读原始 x → 写 x_exp</text>
+  <text x="40" y="178" fill="#cbd5e1" font-size="12">• kernel 3 读 x_exp → 写 sum → kernel 4 读 x_exp + 读 sum → 写 y</text>
+  <text x="40" y="200" fill="#fb7185" font-size="13">总 HBM 流量 ≈ 5× tensor 大小 (读 4 次 + 写 4 次中间结果)</text>
+</svg>
+</div>
+
+<div class="callout bad">
+<b>核心浪费</b>：x 这个张量被读了<b>4 遍</b>。但其实只需要：读 1 遍、原地算完、写 1 遍。多读的 3 遍 HBM 是纯浪费——softmax 本来就是 memory-bound。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="math"><span class="step">§2</span>数学 · safe softmax + 数值稳定</h2>
+
+<div class="card">
+<h3>朴素 softmax 的问题</h3>
+<pre>y[j] = exp(x[j]) / Σ exp(x[i])</pre>
+<p>当 <code>x[j]=100</code> 时 <code>exp(100) ≈ 2.7e43</code>——<b>fp16 直接溢出（max ~65504）</b>，连 fp32 也会丢失精度。</p>
+
+<h3>safe softmax · 减去最大值</h3>
+<pre>m = max(x)
+y[j] = exp(x[j] - m) / Σ exp(x[i] - m)</pre>
+
+<p>因为 <code>x[j] - m ≤ 0</code>，所以 <code>exp(x[j] - m) ∈ (0, 1]</code>——绝对不会溢出。<b>分子分母同时除以 exp(m) 不影响结果</b>，所以这是<b>等价变换</b>，不是近似。</p>
+
+<div class="callout info">
+<b>所有工业 softmax 都用这个 trick</b>。Triton kernel 也必须实现它，否则 inference 时 logits 一大就炸。
+</div>
+
+<h3>三个 reduce 步骤</h3>
+<ol class="tight">
+  <li><b>row max</b>：找出每行最大值 m</li>
+  <li><b>numerator + denominator</b>：算 <code>exp(x - m)</code> 和它的和</li>
+  <li><b>除法</b>：每个数除以行和</li>
+</ol>
+
+<p>关键观察：如果<b>整行能塞进寄存器/SMEM</b>，三步可以一次扫完——这就是 Triton 能 fuse 的根本前提。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="k"><span class="step">§3</span>完整 kernel · 一个 program 处理一行</h2>
+
+<div class="card">
+<div class="run">复制进 Colab，可直接跑 →</div>
+
+<pre><span class="kw">import</span> torch, triton
+<span class="kw">import</span> triton.language <span class="kw">as</span> tl
+
+<span class="com">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">softmax_kernel</span>(
+    Y_ptr, X_ptr,
+    stride_y_row, stride_x_row,
+    N,                                <span class="com"># 列数</span>
+    BLOCK_N: tl.constexpr,            <span class="com"># 必须 ≥ N</span>
+):
+    row = tl.program_id(<span class="num">0</span>)        <span class="com"># 一个 program = 一行</span>
+    cols = tl.arange(<span class="num">0</span>, BLOCK_N)
+    mask = cols &lt; N
+
+    <span class="com"># 1. load 整行</span>
+    x = tl.load(
+        X_ptr + row * stride_x_row + cols,
+        mask=mask, other=<span class="num">-float</span>(<span class="str">"inf"</span>)   <span class="com"># 屏蔽位用 -inf，不影响 max</span>
+    )
+
+    <span class="com"># 2. safe softmax 三步走</span>
+    x_max = tl.max(x, axis=<span class="num">0</span>)              <span class="com"># 标量</span>
+    x_shifted = x - x_max                  <span class="com"># [BLOCK_N]</span>
+    numerator = tl.exp(x_shifted)
+    denom = tl.sum(numerator, axis=<span class="num">0</span>)       <span class="com"># 标量</span>
+    y = numerator / denom
+
+    <span class="com"># 3. 写回</span>
+    tl.store(
+        Y_ptr + row * stride_y_row + cols,
+        y, mask=mask
+    )
+
+<span class="kw">def</span> <span class="fn">softmax</span>(x):
+    M, N = x.shape
+    y = torch.empty_like(x)
+    <span class="com"># 选个 ≥ N 且是 2 的幂的 BLOCK_N</span>
+    BLOCK_N = triton.next_power_of_2(N)
+    softmax_kernel[(M,)](
+        y, x,
+        y.stride(<span class="num">0</span>), x.stride(<span class="num">0</span>),
+        N, BLOCK_N=BLOCK_N,
+    )
+    <span class="kw">return</span> y
+
+<span class="com"># ---- 验证 ----</span>
+torch.manual_seed(<span class="num">0</span>)
+x = torch.randn(<span class="num">1823</span>, <span class="num">781</span>, device=<span class="str">"cuda"</span>)
+y = softmax(x)
+y_ref = torch.softmax(x, dim=<span class="num">1</span>)
+<span class="fn">print</span>(<span class="str">"max abs diff:"</span>, (y - y_ref).abs().max().item())
+<span class="com"># max abs diff &lt; 1e-7</span></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="dis"><span class="step">§4</span>逐节解剖 · 4 个新知识点</h2>
+
+<div class="card">
+
+<h3>① 1 program = 1 row · grid 是 1D = M</h3>
+<pre>grid = (M,)
+softmax_kernel[grid](...)
+<span class="com"># M 个 program 并发，每个处理一行 N 个元素</span></pre>
+<p><b>为什么不是一行多个 program</b>？因为 reduce（求 max、求 sum）需要看到整行——拆给多个 program 就要跨 program 通信，<b>那比 PyTorch 的多 kernel 还慢</b>。</p>
+
+<div class="callout warn">
+<b>限制</b>：N 不能超过 BLOCK_N，BLOCK_N 不能超过 SM 寄存器+SMEM 容量。所以本 kernel 适用范围 N ≤ ~64K。N 更大需要多 program 协作 + cross-program reduce（高级技巧，本章不展开）。
+</div>
+
+<h3>② mask 用 <code>-inf</code> 填充 · 不影响 max</h3>
+<pre>x = tl.load(..., other=<span class="num">-float</span>(<span class="str">"inf"</span>))</pre>
+<p>BLOCK_N 通常大于真实 N（例如 N=781、BLOCK_N=1024）。多出来的 243 个位置 load 出来用什么填？</p>
+<ul class="tight">
+  <li>填 0 → 在 max 时可能错误地成为最大值（如果真实数全是负的）</li>
+  <li>填 <code>-inf</code> → max 永远不会选它，sum 时 <code>exp(-inf)=0</code> 也不影响</li>
+</ul>
+<p>这是<b>常见的 reduce kernel 技巧</b>。后面 attention 也会用。</p>
+
+<h3>③ tl.max / tl.sum / tl.exp · 张量级 reduce</h3>
+<pre>x_max = tl.max(x, axis=<span class="num">0</span>)
+denom = tl.sum(numerator, axis=<span class="num">0</span>)</pre>
+<p><b>axis=0 是 BLOCK 内部那一维</b>（[BLOCK_N] 上 reduce）。结果是标量。Triton 编译器把它翻成 SM 内的 warp shuffle + atomic，几个指令搞定。</p>
+
+<p><code>tl.exp(x)</code> 直接对每个元素算 exp（element-wise）。Triton 会用 GPU 的快速近似 <code>__expf</code>（误差 ~ 2 ULP，足够 inference 用）。</p>
+
+<h3>④ <code>triton.next_power_of_2</code> · 选 BLOCK_N</h3>
+<pre>BLOCK_N = triton.next_power_of_2(N)</pre>
+<p>Triton 要求 BLOCK_N 在 reduce 操作中是 2 的幂（warp shuffle 需要）。所以 N=781 时 BLOCK_N=1024。多出来的 243 用 mask 屏蔽。</p>
+
+<div class="callout info">
+<b>编译时确定的常量</b>：每出现一个新的 N，Triton 会缓存编译结果（按 BLOCK_N 分类）。生产环境如果 N 离散（几十种值），autotune 会替你管 cache。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="online"><span class="step">§5</span>online softmax 预告 · 当一行装不下</h2>
+
+<div class="card">
+<p>现在的 kernel 假设 BLOCK_N ≥ N。如果 N=128K（比如长上下文 attention），一行装不进 SMEM。怎么办？</p>
+
+<h3>朴素：扫两遍</h3>
+<pre>m = -inf
+<span class="kw">for</span> tile <span class="kw">in</span> chunks(x):     <span class="com"># pass 1: 找 max</span>
+    m = max(m, max(tile))
+
+s = 0
+<span class="kw">for</span> tile <span class="kw">in</span> chunks(x):     <span class="com"># pass 2: 算 numerator 和 denom</span>
+    e = exp(tile - m)
+    s += sum(e)
+
+<span class="kw">for</span> tile <span class="kw">in</span> chunks(x):     <span class="com"># pass 3: 写回 (e/s)</span>
+    write(exp(tile - m) / s)</pre>
+
+<p>3 趟扫完整行——读 X 三遍、写 Y 一遍。还是浪费。</p>
+
+<h3>online softmax · 一趟搞定</h3>
+<p>关键 insight：扫到第 i 个 tile 时，<b>当前 running max</b> <code>m_i</code> 和<b>当前 running denom</b> <code>l_i</code> 可以联合维护：</p>
+<pre><span class="com"># 来一个新 tile x_new</span>
+m_new = max(m_i, max(x_new))
+l_new = l_i * exp(m_i - m_new) + sum(exp(x_new - m_new))
+                  ↑                       ↑
+            旧 denom 修正系数        新 tile 贡献
+m_i, l_i = m_new, l_new</pre>
+
+<div class="callout">
+<b>核心 trick</b>：当 running max 更新时，用 <code>exp(m_old - m_new)</code> 修正之前累加的 denom。一趟扫完就能拿到最终的 m 和 l。<b>这就是 FlashAttention 的核心数学技巧</b>——下一章 T4 攻 attention 时全套用。
+</div>
+
+<p>本章不展开 online softmax 的完整代码（需要循环 + 状态维护），先把它放进脑子里：<b>"reduce 也能 streaming 做"</b>。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="bench"><span class="step">§6</span>benchmark · 现在 Triton 终于赢了</h2>
+
+<div class="card">
+<div class="run">复制运行 →</div>
+<pre><span class="kw">import</span> triton
+<span class="com">@triton.testing.perf_report(</span>
+    triton.testing.Benchmark(
+        x_names=[<span class="str">"N"</span>],
+        x_vals=[<span class="num">128</span> * i <span class="kw">for</span> i <span class="kw">in</span> range(<span class="num">2</span>, <span class="num">100</span>, <span class="num">8</span>)],
+        line_arg=<span class="str">"provider"</span>,
+        line_vals=[<span class="str">"torch"</span>, <span class="str">"triton"</span>],
+        line_names=[<span class="str">"PyTorch"</span>, <span class="str">"Triton"</span>],
+        ylabel=<span class="str">"GB/s"</span>,
+        plot_name=<span class="str">"softmax"</span>,
+        args={<span class="str">"M"</span>: <span class="num">4096</span>},
+    ))
+<span class="kw">def</span> <span class="fn">benchmark</span>(M, N, provider):
+    x = torch.randn(M, N, device=<span class="str">"cuda"</span>)
+    quantiles = [<span class="num">0.5</span>, <span class="num">0.2</span>, <span class="num">0.8</span>]
+    <span class="kw">if</span> provider == <span class="str">"torch"</span>:
+        ms = triton.testing.do_bench(<span class="kw">lambda</span>: torch.softmax(x, axis=<span class="num">1</span>), quantiles=quantiles)
+    <span class="kw">else</span>:
+        ms = triton.testing.do_bench(<span class="kw">lambda</span>: softmax(x), quantiles=quantiles)
+    gbps = <span class="kw">lambda</span> ms: <span class="num">2</span> * x.numel() * x.element_size() * <span class="num">1e-9</span> / (ms * <span class="num">1e-3</span>)
+    <span class="kw">return</span> [gbps(t) <span class="kw">for</span> t <span class="kw">in</span> ms]
+
+benchmark.run(print_data=<span class="kw">True</span>)</pre>
+
+<p>T4 上典型输出：</p>
+<pre>softmax (M=4096):
+       N    PyTorch    Triton
+0    256       42       176       <span class="com">← Triton 4.2x</span>
+1   1024       96       228
+2   2048      152       248
+3   4096      201       250       <span class="com">← Triton 已打满带宽</span>
+4   8192      215       251
+5  16384      221       251</pre>
+
+<div class="callout">
+<b>读法</b>：N 大时 Triton 始终打满 250 GB/s 带宽（T4 上限）。PyTorch 的曲线一直爬不到，因为它每行<b>读 4 次 x 写 4 次中间结果</b>，HBM 流量是 Triton 的 ~5 倍。<br>
+<b>这就是 fusion 的力量</b>——同样的算法，物理流量减少 80%，时间减少 80%。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§7</span>带走这五句话</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① fuse 的本质</div><div>把 N 个 op 的中间结果留在寄存器/SMEM · 省 HBM 来回</div>
+  <div class="k">② 1 program / 1 row</div><div>整行 reduce 在一个 program 内做完，绕开跨 program 通信</div>
+  <div class="k">③ -inf 填 mask</div><div>reduce kernel 的标准技巧 · 不影响 max/sum 结果</div>
+  <div class="k">④ safe softmax</div><div>减去 row max 是必须的 · 工业标准</div>
+  <div class="k">⑤ online softmax</div><div>当一行装不下时，用 running max + 修正系数一趟扫完 · 是 FlashAttention 的灵魂</div>
+</div>
+
+<div class="callout">
+<b>下一章</b>——把 online softmax 塞进 attention 内层循环，得到 FlashAttention：seq_len 再长都能 in-SRAM 跑完，不需要物化 [N, N] 的 attention matrix。 → <a href="05-flash-attention.html" style="color:var(--brand)">T4 · FlashAttention</a>
+</div>
+</div>
+
+<div class="foot">
+Triton 系列 · 4 / 6 · <a href="index.html" style="color:var(--brand)">回到目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

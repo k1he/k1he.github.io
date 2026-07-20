@@ -1,0 +1,902 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>15 · PrefillManager & DecodeManager · 调度策略全解</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.var{color:#fda4af}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>PrefillManager &amp; DecodeManager · 调度策略全解 <span class="tag">15</span></h1>
+<div class="sub">这俩是调度核心。PrefillManager 决定"下一批算什么"，DecodeManager 记账"谁在 decode"。看似简单但藏着最多的设计决策。</div>
+
+<div class="toc">
+  <a href="#arch">两者分工</a>
+  <a href="#prefill-state">PrefillManager 的状态</a>
+  <a href="#prefill-schedule">schedule_next_batch 全流程</a>
+  <a href="#adder">PrefillAdder · 装箱器</a>
+  <a href="#reserved">reserved_size 的博弈</a>
+  <a href="#chunk">chunk 接续的状态保持</a>
+  <a href="#decode">DecodeManager · 40 行的艺术</a>
+  <a href="#inflight">inflight_tokens 的计算</a>
+  <a href="#filter">filter_reqs · 状态转移</a>
+  <a href="#interactions">两者如何协作</a>
+  <a href="#gotchas">踩坑合集</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="arch"><span class="step">PART 1</span>两者的分工（vs CacheManager / TableManager）</h2>
+
+<div class="card">
+
+<p>调度层的四个 Manager 分工清晰：</p>
+
+<table>
+<tr><th>Manager</th><th>类比</th><th>职责</th><th>调用时机</th></tr>
+<tr><td><strong>TableManager</strong></td><td>"号码牌发放处"</td><td>分配 table_idx，持有 page_table/token_pool</td><td>req 进入/离开时</td></tr>
+<tr><td><strong>CacheManager</strong></td><td>"仓库管理员"</td><td>管 KV 物理页 + Radix Tree</td><td>match, allocate, cache_req</td></tr>
+<tr><td><strong>PrefillManager</strong></td><td>"接待员 + 装箱工"</td><td>pending_list 队列，决定"下批装哪些"</td><td>每 iter, 优先级高</td></tr>
+<tr><td><strong>DecodeManager</strong></td><td>"跟踪进度的记账本"</td><td>running_reqs 集合，为 decode batch 服务</td><td>每 iter, 优先级低</td></tr>
+</table>
+
+<h3>数据流</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">一个 req 在四个 Manager 里的完整旅程</text>
+
+  <defs>
+    <marker id="a15" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7dd3fc"/></marker>
+  </defs>
+
+  <!-- UserMsg entry -->
+  <rect x="40" y="60" width="140" height="50" fill="#1f2937" stroke="#a78bfa" rx="8"/>
+  <text x="110" y="85" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="700">UserMsg</text>
+  <text x="110" y="100" text-anchor="middle" fill="#8b93a7" font-size="10">(tokenizer 推来)</text>
+
+  <!-- PrefillManager.pending_list -->
+  <rect x="220" y="50" width="200" height="70" fill="#0a1812" stroke="#6ee7b7" stroke-width="2" rx="8"/>
+  <text x="320" y="75" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="700">PrefillManager</text>
+  <text x="320" y="93" text-anchor="middle" fill="#cbd5e1" font-size="11">.pending_list</text>
+  <text x="320" y="110" text-anchor="middle" fill="#8b93a7" font-size="10">PendingReq 排队</text>
+
+  <line x1="180" y1="85" x2="220" y2="85" stroke="#7dd3fc" stroke-width="2" marker-end="url(#a15)"/>
+  <text x="200" y="78" fill="#7dd3fc" font-size="9" text-anchor="middle">add</text>
+
+  <!-- PrefillAdder box -->
+  <rect x="460" y="50" width="220" height="70" fill="#2a1f0b" stroke="#fbbf24" stroke-width="2" rx="8"/>
+  <text x="570" y="75" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">PrefillAdder</text>
+  <text x="570" y="93" text-anchor="middle" fill="#cbd5e1" font-size="11">_try_allocate_one</text>
+  <text x="570" y="110" text-anchor="middle" fill="#8b93a7" font-size="10">容量检查 + 装箱</text>
+
+  <line x1="420" y1="85" x2="460" y2="85" stroke="#7dd3fc" stroke-width="2" marker-end="url(#a15)"/>
+
+  <!-- Table / Cache  -->
+  <rect x="720" y="20" width="200" height="50" fill="#0f1218" stroke="#fb7185" rx="8"/>
+  <text x="820" y="42" text-anchor="middle" fill="#fb7185" font-size="11" font-weight="700">TableManager</text>
+  <text x="820" y="58" text-anchor="middle" fill="#8b93a7" font-size="9">allocate → table_idx</text>
+
+  <rect x="720" y="80" width="200" height="50" fill="#0f1218" stroke="#34d399" rx="8"/>
+  <text x="820" y="102" text-anchor="middle" fill="#34d399" font-size="11" font-weight="700">CacheManager</text>
+  <text x="820" y="118" text-anchor="middle" fill="#8b93a7" font-size="9">match + lock handle</text>
+
+  <line x1="680" y1="75" x2="720" y2="45" stroke="#7dd3fc" stroke-width="2" marker-end="url(#a15)"/>
+  <line x1="680" y1="90" x2="720" y2="105" stroke="#7dd3fc" stroke-width="2" marker-end="url(#a15)"/>
+
+  <!-- Batch (prefill)  -->
+  <rect x="960" y="50" width="200" height="70" fill="#0b1f2a" stroke="#7dd3fc" rx="8"/>
+  <text x="1060" y="75" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="700">Batch("prefill")</text>
+  <text x="1060" y="93" text-anchor="middle" fill="#cbd5e1" font-size="11">→ forward</text>
+
+  <line x1="920" y1="85" x2="960" y2="85" stroke="#7dd3fc" stroke-width="2" marker-end="url(#a15)"/>
+
+  <!-- DecodeManager -->
+  <rect x="460" y="200" width="220" height="70" fill="#1a0f2a" stroke="#a78bfa" stroke-width="2" rx="8"/>
+  <text x="570" y="225" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="700">DecodeManager</text>
+  <text x="570" y="243" text-anchor="middle" fill="#cbd5e1" font-size="11">.running_reqs (Set)</text>
+  <text x="570" y="260" text-anchor="middle" fill="#8b93a7" font-size="10">已 prefill 完的 req 集合</text>
+
+  <line x1="1060" y1="120" x2="680" y2="230" stroke="#fbbf24" stroke-width="2" marker-end="url(#a15)" stroke-dasharray="4 3"/>
+  <text x="880" y="180" fill="#fbbf24" font-size="10">filter_reqs (forward 完后)</text>
+
+  <!-- Batch (decode) -->
+  <rect x="960" y="200" width="200" height="70" fill="#0b1f2a" stroke="#7dd3fc" rx="8"/>
+  <text x="1060" y="225" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="700">Batch("decode")</text>
+  <text x="1060" y="243" text-anchor="middle" fill="#cbd5e1" font-size="11">→ forward</text>
+
+  <line x1="680" y1="235" x2="960" y2="235" stroke="#7dd3fc" stroke-width="2" marker-end="url(#a15)"/>
+  <text x="820" y="228" fill="#7dd3fc" font-size="10" text-anchor="middle">schedule_next_batch</text>
+
+  <!-- Done -->
+  <rect x="40" y="200" width="200" height="70" fill="#2a0f0f" stroke="#fb7185" rx="8"/>
+  <text x="140" y="228" text-anchor="middle" fill="#fb7185" font-size="12" font-weight="700">完成/abort</text>
+  <text x="140" y="245" text-anchor="middle" fill="#8b93a7" font-size="10">_free_req_resources</text>
+  <text x="140" y="262" text-anchor="middle" fill="#8b93a7" font-size="10">table.free + cache_req</text>
+
+  <line x1="460" y1="250" x2="240" y2="245" stroke="#fb7185" stroke-width="2" marker-end="url(#a15)"/>
+</svg>
+</div>
+
+<div class="callout info">
+<strong>记忆锚点：</strong>
+<ul class="tight">
+  <li><strong>PrefillManager</strong> = <u>生产者</u>（接 UserMsg，生产 prefill Batch）</li>
+  <li><strong>DecodeManager</strong> = <u>消费者</u>（接收已 prefill 的 req，生产 decode Batch）</li>
+  <li><strong>Table/Cache</strong> = <u>资源仓库</u>（两者都会去取）</li>
+</ul>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="prefill-state"><span class="step">PART 2</span>PrefillManager 的状态</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># scheduler/prefill.py:116</span>
+<span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="fn">PrefillManager</span>:
+    cache_manager: CacheManager          <span class="com"># 持有引用, 不是"拥有"</span>
+    table_manager: TableManager
+    decode_manager: DecodeManager
+    pending_list: List[PendingReq] = field(default_factory=list)</code></pre>
+
+<h3>字段的演化推导</h3>
+
+<p><strong>v1:</strong> 就一个 pending_list — 但没有资源管理器就装不了箱</p>
+<pre><code>pending_list: List[PendingReq]</code></pre>
+
+<p><strong>v2:</strong> 需要访问 cache + table — 加依赖注入</p>
+<pre><code>pending_list: List[PendingReq]
+<span class="hl">cache_manager: CacheManager</span>      <span class="com"># 问"能不能装", 分配资源</span>
+<span class="hl">table_manager: TableManager</span>      <span class="com"># 分配 table_idx</span></code></pre>
+
+<p><strong>v3:</strong> 需要感知 decode 占用 — 加 decode_manager</p>
+<pre><code>pending_list: List[PendingReq]
+cache_manager: CacheManager
+table_manager: TableManager
+<span class="hl">decode_manager: DecodeManager</span>    <span class="com"># 读 inflight_tokens 避免 OOM</span></code></pre>
+
+<div class="callout warn">
+<strong>关键设计：PrefillManager 知道 DecodeManager，但反过来不成立</strong>。<br>
+这是因为 prefill 需要 <u>为 decode 预留</u>——prefill 必须知道 decode 在占多少 KV。而 decode 不需要知道 prefill（它只是消费 filter_reqs 塞进来的 req）。<br>
+这种<strong>单向依赖</strong>防止循环引用。
+</div>
+
+<h3>为什么 pending_list 用 List 而不是 Queue？</h3>
+<ul class="tight">
+  <li>List 支持随机访问（abort 时按 uid 遍历找）</li>
+  <li>List 支持 slicing（<code>self.pending_list = chunked_list + self.pending_list[len(reqs):]</code>）</li>
+  <li>append / pop 都是 O(1)</li>
+  <li>Scheduler 单线程 → 不需要线程安全的 Queue</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="prefill-schedule"><span class="step">PART 3</span>schedule_next_batch · 全流程解剖</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># scheduler/prefill.py:126</span>
+<span class="kw">def</span> <span class="fn">schedule_next_batch</span>(self, prefill_budget: <span class="kw">int</span>) -&gt; Batch | <span class="kw">None</span>:
+    <span class="kw">if</span> <span class="fn">len</span>(self.pending_list) == <span class="num">0</span>:
+        <span class="kw">return</span> <span class="kw">None</span>
+
+    adder = <span class="fn">PrefillAdder</span>(
+        token_budget=prefill_budget,
+        <span class="hl">reserved_size=self.decode_manager.inflight_tokens,</span>    <span class="com">★ 给 decode 留地</span>
+        cache_manager=self.cache_manager,
+        table_manager=self.table_manager,
+    )
+    reqs: List[Req] = []
+    chunked_list: List[PendingReq] = []
+    <span class="kw">for</span> pending_req <span class="kw">in</span> self.pending_list:
+        <span class="kw">if</span> req := adder.<span class="fn">try_add_one</span>(pending_req):
+            pending_req.chunked_req = <span class="kw">None</span>
+            <span class="kw">if</span> isinstance(req, ChunkedReq):
+                pending_req.chunked_req = req
+                chunked_list.<span class="fn">append</span>(pending_req)
+            reqs.<span class="fn">append</span>(req)
+        <span class="kw">else</span>:
+            <span class="hl"><span class="kw">break</span></span>                                    <span class="com">★ 失败就停, 保持 FIFO</span>
+    <span class="kw">if</span> <span class="fn">len</span>(reqs) == <span class="num">0</span>:
+        <span class="kw">return</span> <span class="kw">None</span>
+    <span class="hl">self.pending_list = chunked_list + self.pending_list[<span class="fn">len</span>(reqs) :]</span>    <span class="com">★ 队列重排</span>
+    <span class="kw">return</span> <span class="fn">Batch</span>(reqs=reqs, phase=<span class="str">"prefill"</span>)</code></pre>
+
+<h3>每一行在做什么</h3>
+
+<table>
+<tr><th>步骤</th><th>做什么</th><th>设计决策</th></tr>
+<tr><td>pending_list 空 → return None</td><td>没活儿，让 scheduler 走 decode</td><td>短路优化</td></tr>
+<tr><td>创建 PrefillAdder</td><td>装箱器，预算 + 预留</td><td>每次 schedule 新建，不复用</td></tr>
+<tr><td>循环 try_add_one</td><td>逐个尝试装箱</td><td>FIFO 顺序，不 reorder</td></tr>
+<tr><td>失败就 break（不 continue）</td><td>head-of-line 阻塞</td><td>保证先来的不饿死</td></tr>
+<tr><td>chunked 记下来</td><td>未完成的放 chunked_list</td><td>下轮继续</td></tr>
+<tr><td>队列重排</td><td><u>chunked 放队首</u>, 未装的仍排其后</td><td>未完成的优先接续</td></tr>
+<tr><td>return Batch</td><td>交给 scheduler</td><td>phase="prefill"</td></tr>
+</table>
+
+<h3>chunked_list 重排的意义</h3>
+<pre><code>self.pending_list = chunked_list + self.pending_list[<span class="fn">len</span>(reqs):]
+                    ^^^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+                    下轮优先接续   没装上的保持原顺序</code></pre>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1100 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="550" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">队列重排示例：这轮 3 个请求，R4 被切成 chunk</text>
+
+  <!-- Before: pending_list -->
+  <text x="80" y="65" fill="#cbd5e1" font-size="12" font-weight="600">本轮进入时</text>
+  <g font-family="SF Mono" font-size="11">
+    <rect x="40" y="80" width="70" height="32" fill="#fbbf24"/>
+    <text x="75" y="100" text-anchor="middle" fill="#0b0d12" font-weight="600">R1</text>
+    <rect x="110" y="80" width="70" height="32" fill="#7dd3fc"/>
+    <text x="145" y="100" text-anchor="middle" fill="#0b0d12" font-weight="600">R2</text>
+    <rect x="180" y="80" width="70" height="32" fill="#a78bfa"/>
+    <text x="215" y="100" text-anchor="middle" fill="#0b0d12" font-weight="600">R3</text>
+    <rect x="250" y="80" width="70" height="32" fill="#34d399"/>
+    <text x="285" y="100" text-anchor="middle" fill="#0b0d12" font-weight="600">R4</text>
+    <rect x="320" y="80" width="70" height="32" fill="#fb7185"/>
+    <text x="355" y="100" text-anchor="middle" fill="#0b0d12" font-weight="600">R5</text>
+    <rect x="390" y="80" width="70" height="32" fill="#f59e0b"/>
+    <text x="425" y="100" text-anchor="middle" fill="#0b0d12" font-weight="600">R6</text>
+  </g>
+
+  <!-- During: scheduler 处理 -->
+  <text x="80" y="150" fill="#cbd5e1" font-size="12" font-weight="600">处理：R1 (成功), R2 (成功), R3 (成功), R4 (chunk 切), R5 (装不下, break)</text>
+
+  <!-- After: pending_list -->
+  <text x="80" y="200" fill="#cbd5e1" font-size="12" font-weight="600">本轮结束后 pending_list =</text>
+  <g font-family="SF Mono" font-size="11">
+    <rect x="300" y="215" width="70" height="32" fill="#34d399"/>
+    <text x="335" y="235" text-anchor="middle" fill="#0b0d12" font-weight="600">R4</text>
+    <text x="335" y="260" text-anchor="middle" fill="#34d399" font-size="10">chunked</text>
+    <rect x="370" y="215" width="70" height="32" fill="#fb7185"/>
+    <text x="405" y="235" text-anchor="middle" fill="#0b0d12" font-weight="600">R5</text>
+    <rect x="440" y="215" width="70" height="32" fill="#f59e0b"/>
+    <text x="475" y="235" text-anchor="middle" fill="#0b0d12" font-weight="600">R6</text>
+    <text x="600" y="240" fill="#8b93a7" font-size="11">chunked (R4) 放队首, R5/R6 顺序不变</text>
+  </g>
+</svg>
+</div>
+
+<p>这样设计的好处：</p>
+<ul class="tight">
+  <li>chunked 的请求下一轮会被<u>第一个</u>尝试接续（继续 chunk 2）</li>
+  <li>避免新来的请求插队 chunked 中的 req</li>
+  <li>R5 虽然这轮没装上，但保持 FIFO，下轮仍排在 R6 前</li>
+</ul>
+
+<h3>prefill_budget 从哪里来？</h3>
+<pre><code><span class="com"># scheduler/scheduler.py:48</span>
+self.prefill_budget = config.max_extend_tokens   <span class="com"># 默认 8192</span></code></pre>
+
+<p>这是<strong>单次 prefill batch 里新算的 token 数上限</strong>。超过就触发 chunk。决定了长 prompt 的 chunk 粒度。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="adder"><span class="step">PART 4</span>PrefillAdder · 装箱器</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># scheduler/prefill.py:32</span>
+<span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="fn">PrefillAdder</span>:
+    token_budget: <span class="kw">int</span>           <span class="com"># 剩余可装 token 数 (初值 = prefill_budget)</span>
+    reserved_size: <span class="kw">int</span>         <span class="com"># 为 decode 预留的 token 数</span>
+    cache_manager: CacheManager
+    table_manager: TableManager</code></pre>
+
+<h3>try_add_one · 两条路径</h3>
+<pre><code><span class="com"># scheduler/prefill.py:92</span>
+<span class="kw">def</span> <span class="fn">try_add_one</span>(self, pending_req: PendingReq) -&gt; Req | <span class="kw">None</span>:
+    <span class="kw">if</span> self.token_budget &lt;= <span class="num">0</span>:
+        <span class="kw">return</span> <span class="kw">None</span>
+
+    <span class="com"># 路径 A: 这个 req 上轮有未完成的 chunk</span>
+    <span class="kw">if</span> chunked_req := pending_req.chunked_req:
+        <span class="kw">return</span> self.<span class="fn">_add_one_req</span>(
+            pending_req=pending_req,
+            <span class="hl">cache_handle=chunked_req.cache_handle,</span>     <span class="com"># 复用上轮</span>
+            <span class="hl">table_idx=chunked_req.table_idx,</span>           <span class="com"># 复用上轮</span>
+            <span class="hl">cached_len=chunked_req.cached_len,</span>         <span class="com"># 接续</span>
+        )
+
+    <span class="com"># 路径 B: 新 req, 要全新分配</span>
+    <span class="kw">if</span> resource := self.<span class="fn">_try_allocate_one</span>(pending_req):
+        cache_handle, table_idx = resource
+        <span class="kw">return</span> self.<span class="fn">_add_one_req</span>(
+            pending_req=pending_req,
+            cache_handle=cache_handle,
+            table_idx=table_idx,
+            cached_len=cache_handle.cached_len,
+        )
+    <span class="kw">return</span> <span class="kw">None</span></code></pre>
+
+<h3>_try_allocate_one · 4 步资源申请</h3>
+
+<pre><code><span class="com"># scheduler/prefill.py:39</span>
+<span class="kw">def</span> <span class="fn">_try_allocate_one</span>(self, req) -&gt; Tuple[BaseCacheHandle, <span class="kw">int</span>] | <span class="kw">None</span>:
+    <span class="com"># ① 表满了直接失败</span>
+    <span class="kw">if</span> self.table_manager.available_size == <span class="num">0</span>:
+        <span class="kw">return</span> <span class="kw">None</span>
+
+    <span class="com"># ② Radix 查命中</span>
+    handle = self.cache_manager.<span class="fn">match_req</span>(req).cuda_handle
+    cached_len = handle.cached_len
+    extend_len = req.input_len - cached_len
+    estimated_len = extend_len + req.output_len
+
+    <span class="com"># ③ 第一次容量 check (未 lock 时)</span>
+    <span class="kw">if</span> estimated_len + self.reserved_size &gt; self.cache_manager.available_size:
+        <span class="kw">return</span> <span class="kw">None</span>
+
+    <span class="com"># ④ lock 这个 handle (会让 available_size 变小因为 ref+1 → 从 evictable 变 protected)</span>
+    self.cache_manager.<span class="fn">lock</span>(handle)
+    <span class="com"># ⑤ 第二次容量 check (lock 之后)</span>
+    <span class="kw">if</span> estimated_len + self.reserved_size &gt; self.cache_manager.available_size:
+        <span class="kw">return</span> self.cache_manager.<span class="fn">unlock</span>(handle)   <span class="com"># 回滚, 返回 None</span>
+
+    <span class="com"># ⑥ 分配 table_idx</span>
+    table_idx = self.table_manager.<span class="fn">allocate</span>()
+
+    <span class="com"># ⑦ 把命中的 token ids 和 page indices 写到 token_pool 和 page_table</span>
+    <span class="kw">if</span> cached_len &gt; <span class="num">0</span>:
+        device_ids = self.table_manager.token_pool[table_idx][:cached_len]
+        page_entry = self.table_manager.page_table[table_idx][:cached_len]
+        device_ids.<span class="fn">copy_</span>(req.input_ids[:cached_len].<span class="fn">pin_memory</span>(), non_blocking=<span class="kw">True</span>)
+        page_entry.<span class="fn">copy_</span>(handle.<span class="fn">get_matched_indices</span>())
+
+    <span class="kw">return</span> handle, table_idx</code></pre>
+
+<h3>为什么要"两次 check"？</h3>
+
+<div class="callout warn">
+<strong>lock 会改变 available_size！</strong>
+<ul class="tight">
+  <li>lock 前：命中的 Radix 节点处于 evictable 状态，计入 available</li>
+  <li>lock 后：变成 protected 状态，不再 evictable，<u>available_size 减小</u></li>
+  <li>因此 lock 后原本通过的 check 可能失败——需要再 check 一次</li>
+</ul>
+
+<p>例：available=100, estimated=80, reserved=10 → 第一次 check 通过 (80+10 ≤ 100)。lock 后命中的 30 page 变 protected，available 降到 70 → 第二次 check 失败 (80+10 &gt; 70)，立刻 unlock 回滚。</p>
+</div>
+
+<h3>_add_one_req · 创建 Req 对象</h3>
+
+<pre><code><span class="com"># scheduler/prefill.py:65</span>
+<span class="kw">def</span> <span class="fn">_add_one_req</span>(self, pending_req, cache_handle, table_idx, cached_len) -&gt; Req:
+    remain_len = pending_req.input_len - cached_len
+    <span class="hl">chunk_size = <span class="fn">min</span>(self.token_budget, remain_len)</span>       <span class="com"># 最多装多少</span>
+    <span class="hl">is_chunked = chunk_size &lt; remain_len</span>                     <span class="com"># 装不下 → chunked</span>
+    CLS = ChunkedReq <span class="kw">if</span> is_chunked <span class="kw">else</span> Req
+
+    <span class="hl">self.token_budget -= chunk_size</span>                          <span class="com"># 扣预算</span>
+    <span class="hl">self.reserved_size += remain_len + pending_req.output_len</span>  <span class="com"># 为这个 req 预留</span>
+
+    <span class="com"># 把本 chunk 的 token ids 写到 token_pool</span>
+    _slice = slice(cached_len, cached_len + chunk_size)
+    device_ids = self.table_manager.token_pool[table_idx, _slice]
+    device_ids.<span class="fn">copy_</span>(pending_req.input_ids[_slice].<span class="fn">pin_memory</span>(), non_blocking=<span class="kw">True</span>)
+
+    <span class="kw">return</span> <span class="fn">CLS</span>(
+        input_ids=pending_req.input_ids[: cached_len + chunk_size],   <span class="com"># 注意 slice!</span>
+        table_idx=table_idx,
+        cached_len=cached_len,
+        ...
+    )</code></pre>
+
+<h3>input_ids 为什么 slice 到 cached_len + chunk_size？</h3>
+
+<div class="callout info">
+Req 的 input_ids 表示"本步 forward 要算到哪"。<br>
+对 chunked req，只算 chunk_size 个 token，所以 input_ids 只包含 <u>cached_len + chunk_size</u> 个 token。<br>
+这也保证了 Req 的不变式 <code>cached_len &lt; device_len = len(input_ids)</code>。<br>
+pending_req.input_ids 仍然完整（后续 chunk 还要用），没有被修改。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="reserved"><span class="step">PART 5</span>reserved_size 的博弈 · 不让 prefill 饿死 decode</h2>
+
+<div class="card">
+
+<p>这是整个调度的核心权衡。</p>
+
+<h3>没有 reserved_size 会怎样？</h3>
+
+<pre><code>假设 KV 池容量 100, 当前:
+- 3 个 req 在 decode, 已用 60, 还会用 15 (remain_len sum)
+- available = 40 (free + evictable)
+
+来一个新 req, input_len=30, output_len=10 → estimated=40
+check: estimated (40) &lt; available (40)? ... 刚好! 装!
+
+prefill 完, 用掉 30 页 → free 剩 10
+decode 继续算下一 token:
+  - 3 个 req 各需 1 新 page → 需要 3, 有 10, ok
+  - 新 req 也开始 decode → 需要 1
+- 再下一轮 decode, 继续消耗...
+- 几步后 KV 池满 → 新 req 要 allocate 找不到页 → OOM</code></pre>
+
+<h3>加上 reserved_size 后</h3>
+
+<pre><code>相同场景:
+- decode_manager.inflight_tokens = 15 + 3*(page_size-1)    <span class="com"># remain + page 冗余</span>
+  假设 page_size=1 → inflight = 15
+- adder.reserved_size 初始 = 15
+
+新 req check: estimated (40) + reserved (15) = 55 &gt; available (40)?
+  是! 装不下 → 不装
+
+等 decode 消化些 inflight_tokens 后, reserved 减小, 才能装新 req</code></pre>
+
+<h3>reserved_size 累加策略</h3>
+
+<pre><code><span class="com"># PrefillAdder._add_one_req:</span>
+self.reserved_size += remain_len + pending_req.output_len
+<span class="com">#                     ^^^^^^^^^^   ^^^^^^^^^^^^^^^^^^^^^^</span>
+<span class="com">#                     本 req 的     本 req 的</span>
+<span class="com">#                     新 prefill    所有 decode</span>
+<span class="com">#                     token         output token</span></code></pre>
+
+<p>装进一个 req 后，立刻把<u>这个 req 的总 token 预算</u>加到 reserved_size。下一个 req 尝试装时面对的 check 是：</p>
+
+<pre><code>estimated_len (新 req 需要) + reserved_size (之前所有 req 预留)
+&gt; available_size (总容量)? → 不装</code></pre>
+
+<p>所以同一批 prefill 里的请求是<strong>串行排除</strong>——前面装进去的占地一部分，后面的要在剩余空间里装。</p>
+
+<h3>inflight_tokens 的精确公式</h3>
+
+<pre><code><span class="com"># scheduler/decode.py:27</span>
+<span class="kw">@property</span>
+<span class="kw">def</span> <span class="fn">inflight_tokens</span>(self) -&gt; <span class="kw">int</span>:
+    tokens_reserved = (self.page_size - <span class="num">1</span>) * <span class="fn">len</span>(self.running_reqs)   <span class="com"># 每 req 多留 page-1 个</span>
+    <span class="kw">return</span> <span class="fn">sum</span>(req.remain_len <span class="kw">for</span> req <span class="kw">in</span> self.running_reqs) + tokens_reserved</code></pre>
+
+<div class="callout warn">
+<strong>为什么要额外留 <code>(page_size - 1) × N</code>？</strong>
+<br>
+想象 page_size=16, 一个 req 当前 cached_len=100 (用了 7 页), remain_len=20。<br>
+它还会消耗 20 个 token。但这 20 个不一定都在新页上——可能前 12 个补满当前页 (page 7 的剩余 12 格), 后 8 个开新页。<br>
+<u>最坏情况</u>: 所有 req 的每个 new token 都开新页 → 需要 remain_len + (page_size-1) 个 token 的 KV<br>
+这个 <code>(page_size-1) * N</code> 就是 "最坏情况的对齐浪费" 保守估计。<br>
+对 page_size=1 这项 = 0。对 page_size=16, 256 个 req 在 decode 时多留 256×15=3840 token 的空间。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="chunk"><span class="step">PART 6</span>chunk 接续的状态保持 · 跨 iter 不释放资源</h2>
+
+<div class="card">
+
+<p>Chunked prefill 最关键的性质：<strong>cache_handle 和 table_idx 在 chunk 之间保持不变</strong>。</p>
+
+<h3>时序示例</h3>
+
+<pre><code>场景: R4 prompt 10000 token, prefill_budget=8192
+</span>
+
+<span class="com"># ============ iter 1 ============</span>
+PrefillAdder.<span class="fn">try_add_one</span>(R4):
+  R4.chunked_req is <span class="kw">None</span>  → 走 _try_allocate_one
+  _try_allocate_one:
+    match_req → cached_len=0
+    lock(handle), table.allocate() → table_idx=<span class="num">5</span>
+  _add_one_req:
+    remain_len=<span class="num">10000</span>, token_budget=<span class="num">8192</span>
+    chunk_size = <span class="fn">min</span>(<span class="num">8192</span>, <span class="num">10000</span>) = <span class="num">8192</span>
+    is_chunked = <span class="kw">True</span>  → CLS = ChunkedReq
+    <span class="hl">return ChunkedReq(input_ids=R4[:8192], cached_len=0, table_idx=5, cache_handle=handle)</span>
+
+PrefillManager 把 R4 留在 pending_list, pending.chunked_req = 刚创建的 ChunkedReq
+
+<span class="com"># iter 1 forward: GPU 算 prefill 0..8192</span>
+<span class="com"># forward 完成后 ChunkedReq.cached_len=8192, device_len=8193</span>
+
+<span class="com"># ============ iter 2 ============</span>
+PrefillAdder.<span class="fn">try_add_one</span>(R4):
+  R4.chunked_req is <span class="kw">not None</span>  → 走接续分支
+  _add_one_req(
+    cache_handle=上次的 handle,   <span class="com">★ 复用</span>
+    table_idx=5,                   <span class="com">★ 复用</span>
+    cached_len=8192,               <span class="com">★ 复用</span>
+  ):
+    remain_len = <span class="num">10000</span> - <span class="num">8192</span> = <span class="num">1808</span>
+    chunk_size = <span class="fn">min</span>(<span class="num">8192</span>, <span class="num">1808</span>) = <span class="num">1808</span>
+    is_chunked = <span class="kw">False</span>  → CLS = Req (普通的!)
+    <span class="hl">return Req(input_ids=R4[:10000], cached_len=8192, table_idx=5, ...)</span>
+
+PrefillManager 把 R4 从 pending_list 移除 (装完了)</code></pre>
+
+<h3>关键观察</h3>
+
+<table>
+<tr><th>观察</th><th>含义</th></tr>
+<tr><td>iter 1 的 ChunkedReq.cache_handle 从没 unlock</td><td>那段命中的前缀在 iter 2 还被锁着，不会被 evict</td></tr>
+<tr><td>iter 1 的 table_idx=5 从没 free</td><td>page_table[5] 的所有写入都对 iter 2 仍有效</td></tr>
+<tr><td>iter 2 的 cached_len 从 chunked_req.cached_len 继承</td><td>= iter 1 forward 结束后的 8192</td></tr>
+<tr><td>iter 2 的 is_chunked=False → 变 Req</td><td>最后一 chunk 跑完就是完整 Req, 可以进 decode</td></tr>
+</table>
+
+<h3>abort 时的特别处理</h3>
+
+<pre><code><span class="com"># scheduler/prefill.py:153</span>
+<span class="kw">def</span> <span class="fn">abort_req</span>(self, uid):
+    <span class="kw">for</span> i, req <span class="kw">in</span> enumerate(self.pending_list):
+        <span class="kw">if</span> req.uid == uid:
+            self.pending_list.<span class="fn">pop</span>(i)
+            <span class="hl"><span class="kw">return</span> req.chunked_req</span>              <span class="com"># ★ 返回 ChunkedReq (或 None)</span>
+    <span class="kw">return</span> <span class="kw">None</span></code></pre>
+
+<p>关键点：abort 一个<u>处于 chunked 状态的 PendingReq</u> 时，<code>req.chunked_req</code> 指向上次 forward 产出的 ChunkedReq。这个 ChunkedReq 持有 cache_handle + table_idx，<u>这些资源需要被释放</u>。</p>
+
+<p>所以 abort_req 返回 ChunkedReq，调用方看到返回值不为 None 就调 <code>_free_req_resources</code>：</p>
+
+<pre><code><span class="com"># scheduler/scheduler.py (abort 分支)</span>
+req_to_free = self.prefill_manager.<span class="fn">abort_req</span>(uid)   <span class="com"># 可能返回 ChunkedReq</span>
+req_to_free = req_to_free <span class="kw">or</span> self.decode_manager.<span class="fn">abort_req</span>(uid)
+<span class="kw">if</span> req_to_free:
+    self.<span class="fn">_free_req_resources</span>(req_to_free)              <span class="com"># table.free + cache_req(finished=True)</span></code></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="decode"><span class="step">PART 7</span>DecodeManager · 40 行的艺术</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># scheduler/decode.py 全文</span>
+<span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="fn">DecodeManager</span>:
+    page_size: <span class="kw">int</span>
+    running_reqs: Set[Req] = field(default_factory=<span class="kw">set</span>)
+
+    <span class="kw">def</span> <span class="fn">filter_reqs</span>(self, reqs: Iterable[Req]) -&gt; <span class="kw">None</span>:
+        self.running_reqs = {req <span class="kw">for</span> req <span class="kw">in</span> self.running_reqs.<span class="fn">union</span>(reqs) <span class="kw">if</span> req.can_decode}
+
+    <span class="kw">def</span> <span class="fn">remove_req</span>(self, req: Req) -&gt; <span class="kw">None</span>:
+        self.running_reqs.<span class="fn">discard</span>(req)
+
+    <span class="kw">def</span> <span class="fn">abort_req</span>(self, uid: <span class="kw">int</span>) -&gt; Req | <span class="kw">None</span>:
+        <span class="kw">for</span> req <span class="kw">in</span> self.running_reqs:
+            <span class="kw">if</span> req.uid == uid:
+                self.running_reqs.<span class="fn">remove</span>(req)
+                <span class="kw">return</span> req
+        <span class="kw">return</span> <span class="kw">None</span>
+
+    <span class="kw">@property</span>
+    <span class="kw">def</span> <span class="fn">inflight_tokens</span>(self) -&gt; <span class="kw">int</span>:
+        tokens_reserved = (self.page_size - <span class="num">1</span>) * <span class="fn">len</span>(self.running_reqs)
+        <span class="kw">return</span> <span class="fn">sum</span>(req.remain_len <span class="kw">for</span> req <span class="kw">in</span> self.running_reqs) + tokens_reserved
+
+    <span class="kw">def</span> <span class="fn">schedule_next_batch</span>(self) -&gt; Batch | <span class="kw">None</span>:
+        <span class="kw">if</span> <span class="kw">not</span> self.runnable:
+            <span class="kw">return</span> <span class="kw">None</span>
+        <span class="kw">return</span> <span class="fn">Batch</span>(reqs=<span class="fn">list</span>(self.running_reqs), phase=<span class="str">"decode"</span>)
+
+    <span class="kw">@property</span>
+    <span class="kw">def</span> <span class="fn">runnable</span>(self) -&gt; <span class="kw">bool</span>:
+        <span class="kw">return</span> <span class="fn">len</span>(self.running_reqs) &gt; <span class="num">0</span></code></pre>
+
+<h3>为什么这么简单？</h3>
+
+<p>DecodeManager 只做<u>记账</u>——它不决定谁该 decode（所有满足 <code>can_decode</code> 的 req 都一起 decode），也不管资源分配（那是 CacheManager 的事）。</p>
+
+<h3>为什么 Set 而不是 List？</h3>
+
+<table>
+<tr><th>操作</th><th>Set 复杂度</th><th>List 复杂度</th></tr>
+<tr><td>add</td><td>O(1) avg</td><td>O(1) append</td></tr>
+<tr><td>remove</td><td>O(1) avg</td><td>O(n)</td></tr>
+<tr><td>contains</td><td>O(1) avg</td><td>O(n)</td></tr>
+<tr><td>去重</td><td>自动</td><td>需手动</td></tr>
+</table>
+
+<p><strong>最关键是去重</strong>：<code>filter_reqs</code> 会 union 新进来的 reqs 和已有的 running_reqs，<u>同一个 req 不会重复</u>——Set 自动保证。</p>
+
+<div class="callout info">
+<strong>回顾 13 章：</strong>Req 用 <code>@dataclass(eq=False)</code> 让 hash 基于 id，所以同一个对象放进 set 只有一份，不同对象即使内容相同也算不同元素。这是 DecodeManager 能用 Set 的前提。
+</div>
+
+<h3>schedule_next_batch 为什么不挑 req？</h3>
+<pre><code><span class="kw">def</span> <span class="fn">schedule_next_batch</span>(self) -&gt; Batch | <span class="kw">None</span>:
+    <span class="kw">if</span> <span class="kw">not</span> self.runnable: <span class="kw">return</span> <span class="kw">None</span>
+    <span class="kw">return</span> <span class="fn">Batch</span>(reqs=<span class="fn">list</span>(self.running_reqs), phase=<span class="str">"decode"</span>)   <span class="com"># 全部打包</span></code></pre>
+
+<p>decode batch <strong>一锅端</strong>：所有 running_reqs 都进这一个 batch。</p>
+
+<p><strong>为什么不分批？</strong></p>
+<ul class="tight">
+  <li>decode 阶段每 req 只算 1 token，各 req 算力成本相同</li>
+  <li>分成多个小 batch 反而降低 GPU 利用率（decode 是 memory-bound，bs 大才有效率）</li>
+  <li>容量由 CacheManager.allocate_paged 检查，不够会触发 evict</li>
+  <li>bs 上限由 <code>max_running_req</code> 隐式控制（TableManager.allocate 失败时 prefill 就装不进了）</li>
+</ul>
+
+<p>这是 mini-sglang 的<strong>"简单策略"</strong>——可能不是最优，但 99% 场景下够用。SGLang 主线在极端场景下有更精细的 decode 批策略。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="filter"><span class="step">PART 8</span>filter_reqs · 状态转移的精妙时机</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># scheduler/decode.py:14</span>
+<span class="kw">def</span> <span class="fn">filter_reqs</span>(self, reqs: Iterable[Req]) -&gt; <span class="kw">None</span>:
+    self.running_reqs = {req <span class="kw">for</span> req <span class="kw">in</span> self.running_reqs.<span class="fn">union</span>(reqs) <span class="kw">if</span> req.can_decode}</code></pre>
+
+<h3>这一行做了三件事</h3>
+
+<ol>
+<li><strong>合集</strong>：把 <code>reqs</code>（本轮 forward 完的 batch 里的 reqs）加进 running_reqs</li>
+<li><strong>过滤</strong>：只保留 <code>can_decode=True</code> 的（排除 ChunkedReq、remain_len=0 的）</li>
+<li><strong>覆盖</strong>：结果赋回 running_reqs</li>
+</ol>
+
+<h3>它在哪被调用？</h3>
+
+<pre><code><span class="com"># scheduler/scheduler.py:230 (_forward 内部)</span>
+<span class="kw">def</span> <span class="fn">_forward</span>(self, forward_input):
+    batch, sample_args, ... = forward_input
+    ...
+    forward_output = self.engine.<span class="fn">forward_batch</span>(batch, sample_args)
+    ...
+    <span class="hl">self.decode_manager.<span class="fn">filter_reqs</span>(forward_input.batch.reqs)</span>   <span class="com">★ 在这里</span>
+    <span class="kw">return</span> forward_output</code></pre>
+
+<div class="callout warn">
+<strong>时机：forward 刚 launch 完（异步）就调用。</strong><br>
+此时 GPU 还在算，但 req 的 <code>device_len</code> 已经通过 <code>complete_one()</code> 推进过（见 13 章 PART 4）。所以 <code>can_decode</code> 反映的是<u>下一轮想算什么</u>。
+</div>
+
+<h3>幂等性</h3>
+<p>filter_reqs 对同一个 req 可以重复调用——union 的去重特性保证 set 里只有一份。这对某些重入场景（例如 overlap 下同一 req 跨 iter）很友好。</p>
+
+<h3>跨状态转移的细节</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">filter_reqs 如何导致 req 状态转移</text>
+
+  <defs>
+    <marker id="af" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7dd3fc"/></marker>
+  </defs>
+
+  <!-- Before -->
+  <g>
+    <text x="200" y="60" fill="#cbd5e1" font-size="12" font-weight="600">forward 前 running_reqs</text>
+    <rect x="80" y="80" width="250" height="80" fill="#0a0d12" stroke="#a78bfa" rx="6"/>
+    <text x="100" y="104" fill="#cbd5e1" font-size="11" font-family="SF Mono">{D1, D2}</text>
+    <text x="100" y="126" fill="#8b93a7" font-size="10">D1: remain_len=3, can_decode=T</text>
+    <text x="100" y="142" fill="#8b93a7" font-size="10">D2: remain_len=1, can_decode=T</text>
+  </g>
+
+  <!-- batch.reqs (prefill just done) -->
+  <g>
+    <text x="500" y="60" fill="#cbd5e1" font-size="12" font-weight="600">本次 batch.reqs</text>
+    <rect x="400" y="80" width="280" height="80" fill="#0a0d12" stroke="#fbbf24" rx="6"/>
+    <text x="420" y="104" fill="#cbd5e1" font-size="11" font-family="SF Mono">[P1, P2, P3_chunked]</text>
+    <text x="420" y="126" fill="#8b93a7" font-size="10">P1: prefill 完, remain=5, can_decode=T</text>
+    <text x="420" y="140" fill="#8b93a7" font-size="10">P2: prefill 完, remain=2, can_decode=T</text>
+    <text x="420" y="155" fill="#fb7185" font-size="10">P3_chunked: can_decode=F (重写)</text>
+  </g>
+
+  <line x1="330" y1="120" x2="400" y2="120" stroke="#7dd3fc" stroke-width="2" marker-end="url(#af)"/>
+  <text x="365" y="113" fill="#7dd3fc" font-size="9" text-anchor="middle">union</text>
+
+  <line x1="680" y1="120" x2="750" y2="120" stroke="#7dd3fc" stroke-width="2" marker-end="url(#af)"/>
+  <text x="715" y="113" fill="#7dd3fc" font-size="9" text-anchor="middle">filter</text>
+
+  <!-- After -->
+  <g>
+    <text x="880" y="60" fill="#cbd5e1" font-size="12" font-weight="600">新 running_reqs</text>
+    <rect x="750" y="80" width="410" height="80" fill="#0a0d12" stroke="#34d399" rx="6"/>
+    <text x="770" y="104" fill="#cbd5e1" font-size="11" font-family="SF Mono">{D1, P1, P2}</text>
+    <text x="770" y="122" fill="#8b93a7" font-size="10">D1 留下 · D2 被过滤（complete_one 后 remain=0）</text>
+    <text x="770" y="140" fill="#8b93a7" font-size="10">P1, P2 加入（prefill 完转 decode）</text>
+    <text x="770" y="156" fill="#fb7185" font-size="10">P3_chunked 被过滤（can_decode=F）</text>
+  </g>
+
+  <!-- state transitions -->
+  <g>
+    <text x="600" y="200" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">3 种状态转移同时发生：</text>
+    <text x="200" y="230" text-anchor="middle" fill="#34d399" font-size="11">① prefill→decode: P1, P2 加入</text>
+    <text x="600" y="230" text-anchor="middle" fill="#fb7185" font-size="11">② decode→finished: D2 离开</text>
+    <text x="1000" y="230" text-anchor="middle" fill="#fbbf24" font-size="11">③ chunked 被忽略: P3 不加</text>
+  </g>
+</svg>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="interactions"><span class="step">PART 9</span>两者如何协作 · 完整调度一轮</h2>
+
+<div class="card">
+
+<h3>scheduler 里这两个 manager 被串起来</h3>
+
+<pre><code><span class="com"># scheduler/scheduler.py:219</span>
+<span class="kw">def</span> <span class="fn">_schedule_next_batch</span>(self) -&gt; ForwardInput | <span class="kw">None</span>:
+    <span class="com"># TODO: support other policies: e.g. DECODE first</span>
+    batch = (
+        self.prefill_manager.<span class="fn">schedule_next_batch</span>(self.prefill_budget)
+        <span class="hl"><span class="kw">or</span></span> self.decode_manager.<span class="fn">schedule_next_batch</span>()
+    )
+    <span class="kw">return</span> self.<span class="fn">_prepare_batch</span>(batch) <span class="kw">if</span> batch <span class="kw">else</span> <span class="kw">None</span></code></pre>
+
+<h3>Prefill-First 策略</h3>
+
+<p><code>or</code> 短路：先试 prefill，组得出就走 prefill batch；组不出才走 decode。</p>
+
+<div class="callout info">
+<strong>为什么 prefill 优先？</strong>
+<ul class="tight">
+  <li>用户感知：新请求的 TTFT（首 token 延迟）比已有请求的 ITL（间 token 延迟）更敏感——先把新请求的 prefill 做了，TTFT 就开始减少</li>
+  <li>吞吐考虑：decode 是 memory-bound，算力利用率低；prefill 是 compute-bound，trade-off 上 prefill 先做能打满 GPU</li>
+  <li>负面：长 prompt 的 prefill 会"堵住" decode —— 这就是为什么要 chunked prefill（控制单次 prefill 的最大时长）</li>
+</ul>
+</div>
+
+<h3>一轮调度的完整决策树</h3>
+
+<pre><code>iter N:
+  <span class="kw">if</span> pending_list 有 req:
+    PrefillAdder 装箱:
+      <span class="kw">for</span> pending <span class="kw">in</span> pending_list:
+        <span class="kw">if</span> token_budget &lt;= 0: <span class="kw">break</span>
+        resources check:
+          table 有空位?
+          radix match, estimated + reserved &lt;= available?
+          lock 后再 check?
+        <span class="kw">if</span> 都通过:
+          分配 table_idx, lock handle
+          创建 (Chunked)Req
+          扣预算, 累加 reserved
+          <span class="kw">if</span> ChunkedReq: chunked_list.append
+          reqs.append
+        <span class="kw">else</span>: <span class="kw">break</span>
+    重排 pending_list (chunked 优先)
+    <span class="kw">return</span> Batch(prefill)
+  <span class="kw">else</span>:
+    <span class="kw">if</span> running_reqs 非空:
+      <span class="kw">return</span> Batch(decode, reqs=list(running_reqs))
+    <span class="kw">else</span>:
+      <span class="kw">return</span> <span class="kw">None</span>     <span class="com"># 没活儿, 阻塞等 ZMQ</span>
+
+forward(batch):
+  complete_one 推长度
+  <span class="hl">filter_reqs(batch.reqs)</span>        <span class="com">→ DecodeManager 更新</span>
+  sample → next_tokens
+
+_process_last_data(上一批):
+  <span class="kw">for</span> req <span class="kw">in</span> last_batch:
+    <span class="kw">if</span> ChunkedReq: <span class="kw">continue</span>
+    append_host
+    check finished
+    <span class="kw">if</span> finished:
+      <span class="hl">decode_manager.remove_req(req)</span>
+      free table + cache_req(finished=True)
+    <span class="kw">elif</span> prefill batch:
+      cache_req(finished=False)      <span class="com"># 插入 Radix Tree</span></code></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gotchas"><span class="step">PART 10</span>踩坑合集</h2>
+
+<div class="card">
+
+<h3>坑 1 · Prefill-First 的 starvation 风险</h3>
+<div class="callout warn">
+持续有新请求进 pending_list 时，<u>decode 可能长时间得不到调度</u>。只有 pending_list 真正空时才会走 decode。<br>
+实际系统靠 <strong>prefill_budget</strong> 限制单次 prefill 大小来避免：每次 prefill 最多 8192 token，不会霸占 GPU 太久（~10ms 级）。如果还想更公平，需要改成 "轮询" 或 "加权" 策略——mini-sglang 的 TODO 注释指向这个方向。
+</div>
+
+<h3>坑 2 · pending_list 的 break 导致的 HOL 阻塞</h3>
+<p>当队首的大 req 装不下时，整个 pending_list 都 break 掉。<br>
+这是<u>故意的</u>——避免小 req 插队让大 req 饿死（head-of-line 公平）。<br>
+但<u>代价</u>是：如果队首有个 10000 token 的请求，而此时系统 KV 池紧张装不下，但后面有个 100 token 的小请求<u>本可以装下</u>——它也会被阻塞。要缓解需要改用 "work conserving" 策略。</p>
+
+<h3>坑 3 · reserved_size 未归零的隐患</h3>
+<p>注意 reserved_size 在每次 <code>schedule_next_batch</code> 开始时<strong>重新从 inflight_tokens 初始化</strong>——PrefillAdder 是每次新建的，不跨 iter 保持状态。<br>
+这意味着：<u>单次 schedule 内装完的 req 的 reserved 会累加</u>；但下一 iter 这些 req 还没出现在 decode_manager.running_reqs 里（filter_reqs 还没执行），<u>它们的 KV 占用暂时 "不计入" reserved_size</u>。</p>
+
+<div class="callout bad">
+<strong>会不会导致 OOM？</strong><br>
+不会——因为本轮装进来的 req 的 page 在 PrefillAdder 内部就扣了 (通过 <code>available_size</code> 检查)。lock 让它们的 KV 从 evictable 移到 protected，<u>available_size 自动下降</u>。下一 iter 的 schedule 看到的是新的 available_size，已经反映了上轮装进来的占用。<br>
+所以 reserved_size 只需覆盖"decode_manager 里已在跑的"，不需要覆盖"本轮刚装进来的"——后者已通过 available_size 自动跟踪。这是一个非常精妙的协议。
+</div>
+
+<h3>坑 4 · filter_reqs 的时机关系到正确性</h3>
+<pre><code><span class="com"># scheduler.py</span>
+self.engine.stream.<span class="fn">wait_stream</span>(self.stream)
+ongoing_data = (forward_input, self.<span class="fn">_forward</span>(forward_input))   <span class="com"># _forward 里调 filter_reqs</span>
+...
+self.<span class="fn">_process_last_data</span>(last_data)   <span class="com"># 处理上轮结果</span></code></pre>
+<p>filter_reqs 在 <code>_forward</code> 里调用——<u>本轮 batch 刚 launch 完立刻执行</u>。此时 GPU 可能还在算，但 CPU 端已经更新了 running_reqs。<br>
+所以下一 iter 的 <code>schedule_next_batch</code> 看到的 running_reqs 是<u>最新的</u>——已经包括本轮 prefill 完的 req，已经排除本轮完成的 req。这是 overlap scheduling 能正确运转的关键。</p>
+
+<h3>坑 5 · abort 的 chunked 清理</h3>
+<p>abort 一个 chunked req 时，如果只从 pending_list 删除会<strong>泄露资源</strong>——ChunkedReq 持有的 table_idx 和 cache_handle 永远不会释放。<br>
+所以 <code>prefill_manager.abort_req(uid)</code> <u>必须返回 chunked_req</u>，让 scheduler 调 <code>_free_req_resources</code> 把资源清理掉。</p>
+
+<h3>坑 6 · DecodeManager.Set 的 iteration 可能慢</h3>
+<p><code>inflight_tokens</code> 和 <code>schedule_next_batch</code> 都要遍历 running_reqs。bs=256 时，每 iter 都要遍历 256 个 req。<br>
+解决方案：把 inflight_tokens 做成增量维护（add 时 +remain_len, remove 时 -remain_len）。<br>
+但 mini-sglang 没这么做——因为 per-iter 遍历 256 个对象在 Python 里也就几十 µs，相比 forward 时间可忽略。<strong>简单代码 &gt; 提前优化</strong>。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2>总结 · 记住这 5 点</h2>
+
+<div class="card">
+<ol>
+<li><strong>PrefillManager 是生产者，DecodeManager 是消费者</strong>——前者从 UserMsg 生成 Req，后者管理"已经 prefill 过的 req"</li>
+<li><strong>Prefill-First 策略</strong>：优先调度 prefill，组不出才 decode。背后有 TTFT 和算力打满的考虑</li>
+<li><strong>reserved_size 是防 OOM 的关键</strong>：prefill 为正在跑的 decode 留好 KV 空间。adder 累加式预算确保同一批 prefill 里的 req 依次受约束</li>
+<li><strong>chunked 接续靠 cache_handle + table_idx 跨 iter 保持</strong>：ChunkedReq 作为"进度书签"挂在 PendingReq 上</li>
+<li><strong>DecodeManager 只 40 行</strong>，它就是一个 Set + 几个查询方法。decode 的复杂度在 CacheManager（allocate_paged）而不是在它</li>
+</ol>
+
+<p><strong>从这里看到 sglang 的设计哲学：</strong>职责分解极其清晰，每个 manager 只管一件事，状态转移靠显式调用（filter_reqs / cache_req / free）而不是隐式事件。代码行数很少（总共不到 200 行），但每一行都有用——删任何一行都会破坏某条不变式。这正是 05 章那种"演化推导"方法论的真实体现：字段和方法是一个一个加出来的，每一条都有确切的动机。</p>
+
+<h3>学习建议</h3>
+<ol class="tight">
+  <li>把 13 章的 Req 生命周期和本章的两个 Manager 对照着看</li>
+  <li>打开 logger，看真实调度中 pending_list 和 running_reqs 的变化</li>
+  <li>改 <code>max_extend_tokens</code>（prefill_budget）看 chunk 行为变化</li>
+  <li>把 prefill_manager.schedule_next_batch 改成 "decode first"，对比 TTFT 和吞吐（这就是代码里那个 TODO）</li>
+</ol>
+</div>
+
+<div class="foot">
+<a href="03-cache-manager.html" style="color:var(--brand2)">← 上一篇 CacheManager</a> &nbsp;·&nbsp;
+<a href="index.html" style="color:var(--brand2)">回到首页</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

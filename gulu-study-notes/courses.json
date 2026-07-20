@@ -1,0 +1,1266 @@
+{
+  "groups": [
+    {
+      "id": "path-foundations",
+      "title": "01 · 基础与硬件",
+      "description": "先建立 Transformer、GPU 和推理两阶段的共同语言",
+      "sections": ["00-foundations", "01-gpu-deep-dive"]
+    },
+    {
+      "id": "path-kernels",
+      "title": "02 · Kernel 与性能工程",
+      "description": "从 CUDA/Triton 编程到系统级性能分析",
+      "sections": ["09-cuda-gemm", "06-triton-kernels", "11-pytorch-profiler"]
+    },
+    {
+      "id": "path-sglang",
+      "title": "03 · SGLang 推理引擎",
+      "description": "沿请求生命周期理解架构、调度、显存与执行优化",
+      "sections": ["02-architecture", "03-scheduling", "04-memory-and-cache", "05-optimizations", "10-moe-deep-dive"]
+    },
+    {
+      "id": "path-distributed",
+      "title": "04 · 分布式推理与 KV 基础设施",
+      "description": "从 P/D 分离进入 KV 传输、缓存与 Mooncake 源码",
+      "sections": ["07-pd-disaggregation", "12-mooncake-deep-dive"]
+    },
+    {
+      "id": "path-cloud",
+      "title": "05 · 云原生部署",
+      "description": "把 GPU 推理系统部署到 Kubernetes 并完成生产治理",
+      "sections": ["08-k8s-from-zero"]
+    }
+  ],
+  "sections": [
+    {
+      "id": "00-foundations",
+      "title": "基础 · Transformer 与推理",
+      "icon": "0",
+      "color": "#6ee7b7",
+      "courses": [
+        {
+          "id": "f1",
+          "title": "GPU 硬件架构",
+          "path": "00-foundations/01-gpu-hardware.html",
+          "duration": "30min",
+          "difficulty": 1,
+          "tags": [
+            "SM/Warp",
+            "内存层级",
+            "Tensor Core"
+          ]
+        },
+        {
+          "id": "f2",
+          "title": "Roofline · decode 为什么 memory-bound",
+          "path": "00-foundations/02-roofline.html",
+          "duration": "30min",
+          "difficulty": 2,
+          "tags": [
+            "算术强度",
+            "batch 原理"
+          ]
+        },
+        {
+          "id": "f3",
+          "title": "Attention 从零推导",
+          "path": "00-foundations/03-attention.html",
+          "duration": "30min",
+          "difficulty": 1,
+          "tags": [
+            "Q/K/V",
+            "softmax"
+          ]
+        },
+        {
+          "id": "f4",
+          "title": "MHA → MQA → GQA · KV 省 4 倍",
+          "path": "00-foundations/04-mha-to-gqa.html",
+          "duration": "30min",
+          "difficulty": 2,
+          "tags": [
+            "KV Cache",
+            "GQA"
+          ]
+        },
+        {
+          "id": "f5",
+          "title": "Prefill vs Decode · 两副面孔",
+          "path": "00-foundations/05-prefill-vs-decode.html",
+          "duration": "40min",
+          "difficulty": 2,
+          "tags": [
+            "两阶段",
+            "优化动机"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "01-gpu-deep-dive",
+      "title": "GPU 硬件原理",
+      "icon": "G",
+      "color": "#c084fc",
+      "courses": [
+        {
+          "id": "g1",
+          "title": "GPU 总体架构与演进史",
+          "path": "01-gpu-deep-dive/01-overview-and-evolution.html",
+          "duration": "30min",
+          "difficulty": 1,
+          "tags": [
+            "GH100",
+            "演进"
+          ]
+        },
+        {
+          "id": "g2",
+          "title": "SM 内部解剖",
+          "path": "01-gpu-deep-dive/02-sm-anatomy.html",
+          "duration": "30min",
+          "difficulty": 2,
+          "tags": [
+            "SM",
+            "Register",
+            "Shared Memory"
+          ]
+        },
+        {
+          "id": "g3",
+          "title": "Warp 执行模型",
+          "path": "01-gpu-deep-dive/03-warp-execution.html",
+          "duration": "30min",
+          "difficulty": 2,
+          "tags": [
+            "SIMT",
+            "Divergence",
+            "Occupancy"
+          ]
+        },
+        {
+          "id": "g4",
+          "title": "内存层次与 HBM",
+          "path": "01-gpu-deep-dive/04-memory-hierarchy.html",
+          "duration": "30min",
+          "difficulty": 2,
+          "tags": [
+            "HBM",
+            "L2/SMEM"
+          ]
+        },
+        {
+          "id": "g5",
+          "title": "Tensor Core 深度解析",
+          "path": "01-gpu-deep-dive/05-tensor-core-deep.html",
+          "duration": "30min",
+          "difficulty": 3,
+          "tags": [
+            "MMA",
+            "FP8",
+            "tiling"
+          ]
+        },
+        {
+          "id": "g6",
+          "title": "Hopper 架构 (H100)",
+          "path": "01-gpu-deep-dive/06-hopper.html",
+          "duration": "25min",
+          "difficulty": 3,
+          "tags": [
+            "TMA",
+            "Cluster"
+          ]
+        },
+        {
+          "id": "g7",
+          "title": "Blackwell 架构 (B200)",
+          "path": "01-gpu-deep-dive/07-blackwell.html",
+          "duration": "20min",
+          "difficulty": 2,
+          "tags": [
+            "Dual Die",
+            "FP4",
+            "NVL72"
+          ]
+        },
+        {
+          "id": "g8",
+          "title": "多卡互联 NVLink / NVSwitch",
+          "path": "01-gpu-deep-dive/08-interconnect.html",
+          "duration": "25min",
+          "difficulty": 2,
+          "tags": [
+            "NVLink",
+            "NVSwitch",
+            "NCCL"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "02-architecture",
+      "title": "SGLang · 系统架构",
+      "icon": "1",
+      "color": "#7dd3fc",
+      "courses": [
+        {
+          "id": "a1",
+          "title": "整体架构 · 4 进程 12 模块",
+          "path": "02-architecture/01-system-overview.html",
+          "duration": "40min",
+          "difficulty": 2,
+          "tags": [
+            "4 进程",
+            "ZMQ"
+          ]
+        },
+        {
+          "id": "a2",
+          "title": "单请求全流程 · 14 步时序图",
+          "path": "02-architecture/02-request-lifecycle.html",
+          "duration": "50min",
+          "difficulty": 2,
+          "tags": [
+            "时序图",
+            "生命线"
+          ]
+        },
+        {
+          "id": "a3",
+          "title": "Scheduler 核心 · 700 行深入",
+          "path": "02-architecture/03-scheduler-core.html",
+          "duration": "60min",
+          "difficulty": 3,
+          "tags": [
+            "状态机",
+            "连续批处理"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "03-scheduling",
+      "title": "SGLang · 调度与状态机",
+      "icon": "2",
+      "color": "#fb923c",
+      "courses": [
+        {
+          "id": "s1",
+          "title": "多请求调度 · Continuous Batching",
+          "path": "03-scheduling/01-multi-request.html",
+          "duration": "70min",
+          "difficulty": 3,
+          "tags": [
+            "Radix Cache",
+            "Chunked Prefill"
+          ]
+        },
+        {
+          "id": "s2",
+          "title": "Req 状态机 · TableManager",
+          "path": "03-scheduling/02-table-manager.html",
+          "duration": "60min",
+          "difficulty": 3,
+          "tags": [
+            "3 个 len",
+            "状态机"
+          ]
+        },
+        {
+          "id": "s3",
+          "title": "CacheManager · 分配 / 回收 / 驱逐",
+          "path": "03-scheduling/03-cache-manager.html",
+          "duration": "60min",
+          "difficulty": 4,
+          "tags": [
+            "驱逐策略",
+            "4 不变量"
+          ]
+        },
+        {
+          "id": "s4",
+          "title": "PrefillManager / DecodeManager",
+          "path": "03-scheduling/04-prefill-decode.html",
+          "duration": "60min",
+          "difficulty": 4,
+          "tags": [
+            "打包算法",
+            "prefill-first"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "04-memory-and-cache",
+      "title": "SGLang · KV Cache 与显存",
+      "icon": "3",
+      "color": "#c084fc",
+      "courses": [
+        {
+          "id": "m1",
+          "title": "KV Cache Pool · 6D 张量分页",
+          "path": "04-memory-and-cache/01-kv-cache-pool.html",
+          "duration": "50min",
+          "difficulty": 3,
+          "tags": [
+            "Paged Attention",
+            "6D tensor"
+          ]
+        },
+        {
+          "id": "m2",
+          "title": "Attention 元数据演进",
+          "path": "04-memory-and-cache/02-attention-metadata.html",
+          "duration": "40min",
+          "difficulty": 3,
+          "tags": [
+            "元数据",
+            "FlashInfer"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "05-optimizations",
+      "title": "SGLang · 执行与优化",
+      "icon": "O",
+      "color": "#fbbf24",
+      "courses": [
+        {
+          "id": "o1",
+          "title": "CUDA Graph · 录制与回放",
+          "path": "05-optimizations/01-cuda-graph.html",
+          "duration": "40min",
+          "difficulty": 3,
+          "tags": [
+            "10-20% 加速",
+            "decode only"
+          ]
+        },
+        {
+          "id": "o2",
+          "title": "Overlap Scheduling · 双 Stream",
+          "path": "05-optimizations/02-overlap-scheduling.html",
+          "duration": "40min",
+          "difficulty": 3,
+          "tags": [
+            "dual stream",
+            "30% 吞吐"
+          ]
+        },
+        {
+          "id": "o3",
+          "title": "Tensor Parallelism · TP=4",
+          "path": "05-optimizations/03-tensor-parallel.html",
+          "duration": "50min",
+          "difficulty": 3,
+          "tags": [
+            "ColParallel",
+            "RowParallel",
+            "NCCL"
+          ]
+        },
+        {
+          "id": "o4",
+          "title": "Weight Loading · safetensors → GPU",
+          "path": "05-optimizations/04-weight-loading.html",
+          "duration": "35min",
+          "difficulty": 2,
+          "tags": [
+            "safetensors",
+            "shard rules"
+          ]
+        },
+        {
+          "id": "o5",
+          "title": "Token Sampler",
+          "path": "05-optimizations/05-sampler.html",
+          "duration": "25min",
+          "difficulty": 2,
+          "tags": [
+            "top-k",
+            "top-p"
+          ]
+        },
+        {
+          "id": "o6",
+          "title": "Mixture of Experts (MoE)",
+          "path": "05-optimizations/06-moe.html",
+          "duration": "40min",
+          "difficulty": 3,
+          "tags": [
+            "Qwen3-MoE",
+            "Fused kernel"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "06-triton-kernels",
+      "title": "Triton Kernel · 从零到 FlashAttention",
+      "icon": "T",
+      "color": "#f87171",
+      "courses": [
+        {
+          "id": "t1",
+          "title": "T0 · 为什么用 Triton",
+          "path": "06-triton-kernels/01-why-triton.html",
+          "duration": "25min",
+          "difficulty": 2,
+          "tags": [
+            "vs CUDA",
+            "编译器"
+          ]
+        },
+        {
+          "id": "t2",
+          "title": "T1 · 编程模型 · Grid / Program / Block",
+          "path": "06-triton-kernels/02-programming-model.html",
+          "duration": "25min",
+          "difficulty": 1,
+          "tags": [
+            "program_id",
+            "grid"
+          ]
+        },
+        {
+          "id": "t3",
+          "title": "T2 · 基础语法 · 六个核心 API",
+          "path": "06-triton-kernels/03-basic-syntax.html",
+          "duration": "30min",
+          "difficulty": 1,
+          "tags": [
+            "tl.arange",
+            "mask"
+          ]
+        },
+        {
+          "id": "t4",
+          "title": "T3 · Tile 可视化",
+          "path": "06-triton-kernels/04-tile-visualization.html",
+          "duration": "35min",
+          "difficulty": 2,
+          "tags": [
+            "交互式",
+            "tile 映射"
+          ]
+        },
+        {
+          "id": "t5",
+          "title": "T4 · Vector Add · 第一个完整 kernel",
+          "path": "06-triton-kernels/05-vector-add.html",
+          "duration": "25min",
+          "difficulty": 2,
+          "tags": [
+            "Hello World",
+            "grid"
+          ]
+        },
+        {
+          "id": "t6",
+          "title": "T5 · Fused Softmax · 5x 加速",
+          "path": "06-triton-kernels/06-softmax-fused.html",
+          "duration": "35min",
+          "difficulty": 3,
+          "tags": [
+            "fusion",
+            "online softmax"
+          ]
+        },
+        {
+          "id": "t7",
+          "title": "T6 · GEMM 数学",
+          "path": "06-triton-kernels/07-matmul-math.html",
+          "duration": "30min",
+          "difficulty": 2,
+          "tags": [
+            "AI",
+            "Roofline"
+          ]
+        },
+        {
+          "id": "t8",
+          "title": "T7 · GEMM Naive",
+          "path": "06-triton-kernels/08-matmul-naive.html",
+          "duration": "30min",
+          "difficulty": 2,
+          "tags": [
+            "naive",
+            "外积"
+          ]
+        },
+        {
+          "id": "t9",
+          "title": "T8 · GEMM Tiled · BLOCK_K + tl.dot",
+          "path": "06-triton-kernels/09-matmul-tiled.html",
+          "duration": "35min",
+          "difficulty": 3,
+          "tags": [
+            "tl.dot",
+            "tiling"
+          ]
+        },
+        {
+          "id": "t10",
+          "title": "T9 · GEMM K-Loop · 完整 kernel",
+          "path": "06-triton-kernels/10-matmul-k-loop.html",
+          "duration": "40min",
+          "difficulty": 3,
+          "tags": [
+            "完整实现",
+            "85% cuBLAS"
+          ]
+        },
+        {
+          "id": "t11",
+          "title": "T10 · GEMM L2 Swizzle",
+          "path": "06-triton-kernels/11-matmul-l2-swizzle.html",
+          "duration": "35min",
+          "difficulty": 3,
+          "tags": [
+            "L2 cache",
+            "swizzle"
+          ]
+        },
+        {
+          "id": "t12",
+          "title": "T11 · GEMM Split-K",
+          "path": "06-triton-kernels/12-matmul-split-k.html",
+          "duration": "30min",
+          "difficulty": 3,
+          "tags": [
+            "Split-K",
+            "decode"
+          ]
+        },
+        {
+          "id": "t13",
+          "title": "T12 · GEMM Autotuning",
+          "path": "06-triton-kernels/13-matmul-autotuning.html",
+          "duration": "25min",
+          "difficulty": 2,
+          "tags": [
+            "autotune",
+            "搜索空间"
+          ]
+        },
+        {
+          "id": "t14",
+          "title": "T13 · 从 Triton 到 CUDA",
+          "path": "06-triton-kernels/14-matmul-to-cuda.html",
+          "duration": "25min",
+          "difficulty": 2,
+          "tags": [
+            "CUTLASS",
+            "对照表"
+          ]
+        },
+        {
+          "id": "t15",
+          "title": "T14 · FlashAttention 完整实现",
+          "path": "06-triton-kernels/15-flash-attention.html",
+          "duration": "50min",
+          "difficulty": 4,
+          "tags": [
+            "FlashAttention",
+            "Expert"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "07-pd-disaggregation",
+      "title": "分布式推理 · SGLang PD 分离",
+      "icon": "P",
+      "color": "#6ee7b7",
+      "courses": [
+        {
+          "id": "pd0",
+          "title": "PD 分离源码深读路线",
+          "path": "07-pd-disaggregation/index.html",
+          "duration": "15min",
+          "difficulty": 2,
+          "tags": [
+            "路线图",
+            "源码索引"
+          ]
+        },
+        {
+          "id": "pd1",
+          "title": "为什么必须 PD 分离",
+          "path": "07-pd-disaggregation/01-why-pd.html",
+          "duration": "30min",
+          "difficulty": 2,
+          "tags": [
+            "动机",
+            "性能模型"
+          ]
+        },
+        {
+          "id": "pd2",
+          "title": "一个请求的全链路源码时序",
+          "path": "07-pd-disaggregation/02-request-lifecycle.html",
+          "duration": "50min",
+          "difficulty": 3,
+          "tags": [
+            "时序图",
+            "14 步"
+          ]
+        },
+        {
+          "id": "pd3",
+          "title": "Router 源码深读",
+          "path": "07-pd-disaggregation/03-router-source.html",
+          "duration": "45min",
+          "difficulty": 3,
+          "tags": [
+            "Rust",
+            "policy"
+          ]
+        },
+        {
+          "id": "pd4",
+          "title": "Prefill Worker 源码逐行",
+          "path": "07-pd-disaggregation/04-prefill-worker.html",
+          "duration": "50min",
+          "difficulty": 3,
+          "tags": [
+            "prefill.py",
+            "mooncake"
+          ]
+        },
+        {
+          "id": "pd5",
+          "title": "Decode Worker 源码逐行",
+          "path": "07-pd-disaggregation/05-decode-worker.html",
+          "duration": "50min",
+          "difficulty": 3,
+          "tags": [
+            "decode.py",
+            "commit"
+          ]
+        },
+        {
+          "id": "pd6",
+          "title": "KV Transfer & Bootstrap 协议",
+          "path": "07-pd-disaggregation/06-kv-transfer-bootstrap.html",
+          "duration": "60min",
+          "difficulty": 4,
+          "tags": [
+            "协议",
+            "Expert"
+          ]
+        },
+        {
+          "id": "pd7",
+          "title": "Router 治理与生产实践",
+          "path": "07-pd-disaggregation/07-router-and-production.html",
+          "duration": "45min",
+          "difficulty": 3,
+          "tags": [
+            "生产",
+            "monitoring"
+          ]
+        },
+        {
+          "id": "pd8",
+          "title": "Tokenizer 全链路 · CPU 热路径解剖",
+          "path": "07-pd-disaggregation/08-tokenizer-deep-dive.html",
+          "duration": "60min",
+          "difficulty": 3,
+          "tags": [
+            "Tokenizer",
+            "性能评估",
+            "PD 对比"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "08-k8s-from-zero",
+      "title": "Kubernetes · GPU 推理部署",
+      "icon": "K",
+      "color": "#7dd3fc",
+      "courses": [
+        {
+          "id": "k1",
+          "title": "集群架构 · 控制平面 + 数据平面",
+          "path": "08-k8s-from-zero/01-architecture.html",
+          "duration": "50min",
+          "difficulty": 2,
+          "tags": [
+            "API Server",
+            "etcd"
+          ]
+        },
+        {
+          "id": "k2",
+          "title": "Pod 生命周期",
+          "path": "08-k8s-from-zero/02-pod-lifecycle.html",
+          "duration": "50min",
+          "difficulty": 2,
+          "tags": [
+            "Probe",
+            "preStop"
+          ]
+        },
+        {
+          "id": "k3",
+          "title": "工作负载控制器",
+          "path": "08-k8s-from-zero/03-workload-controllers.html",
+          "duration": "60min",
+          "difficulty": 2,
+          "tags": [
+            "Deployment",
+            "StatefulSet"
+          ]
+        },
+        {
+          "id": "k4",
+          "title": "Service 与网络基础",
+          "path": "08-k8s-from-zero/04-service-and-networking.html",
+          "duration": "60min",
+          "difficulty": 2,
+          "tags": [
+            "Service",
+            "kube-proxy"
+          ]
+        },
+        {
+          "id": "k5",
+          "title": "存储 · PV / PVC / StorageClass",
+          "path": "08-k8s-from-zero/05-storage.html",
+          "duration": "50min",
+          "difficulty": 2,
+          "tags": [
+            "PV/PVC",
+            "NVMe"
+          ]
+        },
+        {
+          "id": "k6",
+          "title": "调度器深入 · Filter → Score",
+          "path": "08-k8s-from-zero/06-scheduler-deep.html",
+          "duration": "70min",
+          "difficulty": 3,
+          "tags": [
+            "Filter/Score",
+            "binpack"
+          ]
+        },
+        {
+          "id": "k7",
+          "title": "资源模型 · requests / limits / QoS",
+          "path": "08-k8s-from-zero/07-resource-model.html",
+          "duration": "50min",
+          "difficulty": 2,
+          "tags": [
+            "QoS",
+            "OOM"
+          ]
+        },
+        {
+          "id": "k8",
+          "title": "GPU 资源管理 · Device Plugin",
+          "path": "08-k8s-from-zero/08-gpu-device-plugin.html",
+          "duration": "60min",
+          "difficulty": 3,
+          "tags": [
+            "Device Plugin",
+            "MIG"
+          ]
+        },
+        {
+          "id": "k9",
+          "title": "容器网络深入 · CNI",
+          "path": "08-k8s-from-zero/09-cni-deep.html",
+          "duration": "60min",
+          "difficulty": 3,
+          "tags": [
+            "CNI",
+            "Calico"
+          ]
+        },
+        {
+          "id": "k10",
+          "title": "Ingress 与 Gateway API",
+          "path": "08-k8s-from-zero/10-ingress-and-gateway.html",
+          "duration": "50min",
+          "difficulty": 2,
+          "tags": [
+            "Ingress",
+            "Gateway API"
+          ]
+        },
+        {
+          "id": "k11",
+          "title": "高性能网络 · RDMA / SR-IOV",
+          "path": "08-k8s-from-zero/11-rdma-and-hostnetwork.html",
+          "duration": "60min",
+          "difficulty": 3,
+          "tags": [
+            "RDMA",
+            "SR-IOV"
+          ]
+        },
+        {
+          "id": "k12",
+          "title": "自动扩缩容 · HPA / Karpenter",
+          "path": "08-k8s-from-zero/12-hpa-vpa-karpenter.html",
+          "duration": "60min",
+          "difficulty": 3,
+          "tags": [
+            "HPA",
+            "Karpenter"
+          ]
+        },
+        {
+          "id": "k13",
+          "title": "Operator 模式 · CRD + Controller",
+          "path": "08-k8s-from-zero/13-operator-and-crd.html",
+          "duration": "60min",
+          "difficulty": 3,
+          "tags": [
+            "CRD",
+            "Operator",
+            "LWS"
+          ]
+        },
+        {
+          "id": "k14",
+          "title": "可观测性 · 监控 / 日志 / 排障",
+          "path": "08-k8s-from-zero/14-observability.html",
+          "duration": "50min",
+          "difficulty": 2,
+          "tags": [
+            "Prometheus",
+            "SLI/SLO"
+          ]
+        },
+        {
+          "id": "k15",
+          "title": "生产加固 · RBAC / PDB / 安全",
+          "path": "08-k8s-from-zero/15-production-hardening.html",
+          "duration": "60min",
+          "difficulty": 3,
+          "tags": [
+            "RBAC",
+            "PDB"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "09-cuda-gemm",
+      "title": "CUDA GEMM · 从零到高性能",
+      "icon": "C",
+      "color": "#fb923c",
+      "courses": [
+        {
+          "id": "c1",
+          "title": "C0 · CUDA 编程模型",
+          "path": "09-cuda-gemm/01-cuda-programming-model.html",
+          "duration": "40min",
+          "difficulty": 2,
+          "tags": [
+            "blockIdx",
+            "threadIdx"
+          ]
+        },
+        {
+          "id": "c2",
+          "title": "C1 · 线程索引 · 1D/2D/3D 映射",
+          "path": "09-cuda-gemm/02-thread-indexing.html",
+          "duration": "30min",
+          "difficulty": 1,
+          "tags": [
+            "global_id",
+            "stride"
+          ]
+        },
+        {
+          "id": "c3",
+          "title": "C2 · 内存层次",
+          "path": "09-cuda-gemm/03-memory-hierarchy.html",
+          "duration": "40min",
+          "difficulty": 2,
+          "tags": [
+            "__shared__",
+            "bank"
+          ]
+        },
+        {
+          "id": "c4",
+          "title": "C3 · Vector Add · 第一个 CUDA Kernel",
+          "path": "09-cuda-gemm/04-vector-add.html",
+          "duration": "30min",
+          "difficulty": 1,
+          "tags": [
+            "__global__",
+            "cudaEvent"
+          ]
+        },
+        {
+          "id": "c5",
+          "title": "C4 · 矩阵访问模式 · Coalescing",
+          "path": "09-cuda-gemm/05-matrix-access-patterns.html",
+          "duration": "40min",
+          "difficulty": 2,
+          "tags": [
+            "coalesced",
+            "cooperative"
+          ]
+        },
+        {
+          "id": "c6",
+          "title": "C5 · GEMM 数学回顾",
+          "path": "09-cuda-gemm/06-gemm-math-review.html",
+          "duration": "35min",
+          "difficulty": 2,
+          "tags": [
+            "Thread tile",
+            "BM×BN×BK"
+          ]
+        },
+        {
+          "id": "c7",
+          "title": "C6 · GEMM Naive",
+          "path": "09-cuda-gemm/07-gemm-naive.html",
+          "duration": "35min",
+          "difficulty": 2,
+          "tags": [
+            "naive",
+            "1-2%"
+          ]
+        },
+        {
+          "id": "c8",
+          "title": "C7 · GEMM Shared Memory",
+          "path": "09-cuda-gemm/08-gemm-shared-memory.html",
+          "duration": "50min",
+          "difficulty": 3,
+          "tags": [
+            "__shared__",
+            "20%"
+          ]
+        },
+        {
+          "id": "c9",
+          "title": "C8 · GEMM Double Buffer",
+          "path": "09-cuda-gemm/09-gemm-double-buffer.html",
+          "duration": "50min",
+          "difficulty": 3,
+          "tags": [
+            "pipeline",
+            "cp.async"
+          ]
+        },
+        {
+          "id": "c10",
+          "title": "C9 · Tensor Core 基础 · WMMA",
+          "path": "09-cuda-gemm/10-tensor-core-basics.html",
+          "duration": "45min",
+          "difficulty": 3,
+          "tags": [
+            "Tensor Core",
+            "WMMA"
+          ]
+        },
+        {
+          "id": "c11",
+          "title": "C10 · GEMM Tensor Core 完整实现",
+          "path": "09-cuda-gemm/11-gemm-tensor-core.html",
+          "duration": "60min",
+          "difficulty": 4,
+          "tags": [
+            "mma_sync",
+            "Expert"
+          ]
+        },
+        {
+          "id": "c12",
+          "title": "C11 · Bank Conflict 与 Swizzle",
+          "path": "09-cuda-gemm/12-gemm-swizzle-bank.html",
+          "duration": "45min",
+          "difficulty": 3,
+          "tags": [
+            "bank conflict",
+            "XOR"
+          ]
+        },
+        {
+          "id": "c13",
+          "title": "C12 · Split-K 与 Persistent Kernel",
+          "path": "09-cuda-gemm/13-gemm-split-k-persistent.html",
+          "duration": "45min",
+          "difficulty": 3,
+          "tags": [
+            "Split-K",
+            "persistent"
+          ]
+        },
+        {
+          "id": "c14",
+          "title": "C13 · CUTLASS 源码解剖",
+          "path": "09-cuda-gemm/14-cutlass-anatomy.html",
+          "duration": "50min",
+          "difficulty": 4,
+          "tags": [
+            "CUTLASS 3.x",
+            "CuTe"
+          ]
+        },
+        {
+          "id": "c15",
+          "title": "C14 · 性能分析 · NSight + Roofline",
+          "path": "09-cuda-gemm/15-performance-profiling.html",
+          "duration": "45min",
+          "difficulty": 3,
+          "tags": [
+            "NSight",
+            "Roofline"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "10-moe-deep-dive",
+      "title": "SGLang MoE · 原理、源码与并行",
+      "icon": "M",
+      "color": "#a78bfa",
+      "courses": [
+        {
+          "id": "moe0",
+          "title": "MoE 源码深读路线",
+          "path": "10-moe-deep-dive/index.html",
+          "duration": "15min",
+          "difficulty": 2,
+          "tags": [
+            "路线图",
+            "源码索引"
+          ]
+        },
+        {
+          "id": "moe1",
+          "title": "MoE 原理与动机",
+          "path": "10-moe-deep-dive/01-moe-fundamentals.html",
+          "duration": "35min",
+          "difficulty": 2,
+          "tags": [
+            "稀疏激活",
+            "Gate",
+            "负载均衡"
+          ]
+        },
+        {
+          "id": "moe2",
+          "title": "SGLang MoE 架构总览",
+          "path": "10-moe-deep-dive/02-architecture-overview.html",
+          "duration": "40min",
+          "difficulty": 2,
+          "tags": [
+            "5层抽象",
+            "数据流",
+            "权重布局"
+          ]
+        },
+        {
+          "id": "moe3",
+          "title": "TopK & Router 源码",
+          "path": "10-moe-deep-dive/03-topk-and-router.html",
+          "duration": "45min",
+          "difficulty": 3,
+          "tags": [
+            "Triton",
+            "Softmax TopK",
+            "Grouped TopK"
+          ]
+        },
+        {
+          "id": "moe4",
+          "title": "FusedMoE Layer 源码",
+          "path": "10-moe-deep-dive/04-fused-moe-layer.html",
+          "duration": "50min",
+          "difficulty": 3,
+          "tags": [
+            "dispatch",
+            "combine",
+            "CUDA Graph"
+          ]
+        },
+        {
+          "id": "moe5",
+          "title": "Fused MoE Triton Kernel",
+          "path": "10-moe-deep-dive/05-triton-kernel.html",
+          "duration": "50min",
+          "difficulty": 4,
+          "tags": [
+            "fused_experts",
+            "moe_align",
+            "64K chunk"
+          ]
+        },
+        {
+          "id": "moe6",
+          "title": "Expert Parallelism (EP)",
+          "path": "10-moe-deep-dive/06-expert-parallelism.html",
+          "duration": "50min",
+          "difficulty": 3,
+          "tags": [
+            "DeepEP",
+            "All-to-All",
+            "EPLB"
+          ]
+        },
+        {
+          "id": "moe7",
+          "title": "MoE 生产调优",
+          "path": "10-moe-deep-dive/07-production-tuning.html",
+          "duration": "45min",
+          "difficulty": 3,
+          "tags": [
+            "Autotuning",
+            "FP8",
+            "Overlap"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "11-pytorch-profiler",
+      "title": "性能分析 · Nsight Systems",
+      "icon": "N",
+      "color": "#6ee7b7",
+      "courses": [
+        {
+          "id": "nsys1",
+          "title": "基本介绍 · 为什么需要系统级 Profiling",
+          "path": "11-pytorch-profiler/01-nsys-intro.html",
+          "duration": "25min",
+          "difficulty": 1,
+          "tags": [
+            "动机",
+            "工具全景",
+            "核心概念"
+          ]
+        },
+        {
+          "id": "nsys2",
+          "title": "抓取实战 · 从 nsys 命令到完整 Trace",
+          "path": "11-pytorch-profiler/02-nsys-profiling.html",
+          "duration": "40min",
+          "difficulty": 2,
+          "tags": [
+            "nsys 参数",
+            "SGLang 压测",
+            "NVTX 标注"
+          ]
+        },
+        {
+          "id": "nsys3",
+          "title": "Trace 阅读与瓶颈排查 · 从 nsys-rep 中读出问题",
+          "path": "11-pytorch-profiler/03-nsys-trace-analysis.html",
+          "duration": "50min",
+          "difficulty": 3,
+          "tags": [
+            "GPU idle",
+            "Stream 竞争",
+            "决策树"
+          ]
+        },
+        {
+          "id": "nsys4",
+          "title": "优化策略 · 针对不同瓶颈的系统性优化",
+          "path": "11-pytorch-profiler/04-nsys-optimization.html",
+          "duration": "60min",
+          "difficulty": 3,
+          "tags": [
+            "Memory-bound",
+            "通信优化",
+            "nsys 验证"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "12-mooncake-deep-dive",
+      "title": "KV 基础设施 · Mooncake",
+      "icon": "M",
+      "color": "#70f0bd",
+      "courses": [
+        {
+          "id": "mc0",
+          "title": "章节地图 · 一条 KV 的八站旅程",
+          "path": "12-mooncake-deep-dive/index.html",
+          "duration": "10min",
+          "difficulty": 1,
+          "tags": ["学习路线", "源码地图", "实验"]
+        },
+        {
+          "id": "mc1",
+          "title": "论文、工作负载与设计动机",
+          "path": "12-mooncake-deep-dive/01-paper-and-motivation.html",
+          "duration": "45min",
+          "difficulty": 2,
+          "tags": ["FAST '25", "SLO", "长上下文"]
+        },
+        {
+          "id": "mc2",
+          "title": "整体架构与一次请求",
+          "path": "12-mooncake-deep-dive/02-architecture.html",
+          "duration": "45min",
+          "difficulty": 2,
+          "tags": ["控制面", "数据面", "请求流程"]
+        },
+        {
+          "id": "mc3",
+          "title": "Transfer Engine 源码走读",
+          "path": "12-mooncake-deep-dive/03-transfer-engine.html",
+          "duration": "60min",
+          "difficulty": 3,
+          "tags": ["C++", "MultiTransport", "批任务"]
+        },
+        {
+          "id": "mc4",
+          "title": "RDMA 数据面与多网卡",
+          "path": "12-mooncake-deep-dive/04-rdma-data-plane.html",
+          "duration": "55min",
+          "difficulty": 3,
+          "tags": ["MR/QP/CQ", "GPUDirect", "Multi-NIC"]
+        },
+        {
+          "id": "mc5",
+          "title": "Mooncake Store · 元数据与副本",
+          "path": "12-mooncake-deep-dive/05-mooncake-store.html",
+          "duration": "60min",
+          "difficulty": 3,
+          "tags": ["PutStart/PutEnd", "Lease", "Tiering"]
+        },
+        {
+          "id": "mc6",
+          "title": "SGLang 集成 · PD 与 HiCache",
+          "path": "12-mooncake-deep-dive/06-sglang-integration.html",
+          "duration": "55min",
+          "difficulty": 3,
+          "tags": ["PD", "HiCache", "源码边界"]
+        },
+        {
+          "id": "mc7",
+          "title": "性能模型与容量规划",
+          "path": "12-mooncake-deep-dive/07-performance-model.html",
+          "duration": "50min",
+          "difficulty": 3,
+          "tags": ["KV 计算器", "Break-even", "Benchmark"]
+        },
+        {
+          "id": "mc8",
+          "title": "生产排障与验证手册",
+          "path": "12-mooncake-deep-dive/08-production-debugging.html",
+          "duration": "50min",
+          "difficulty": 3,
+          "tags": ["故障树", "指标", "上线清单"]
+        }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,748 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>KV Transfer & Bootstrap：三层协议</title>
+<style>
+
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+  --R0:#fbbf24;--R1:#7dd3fc;--R2:#a78bfa;--R3:#34d399;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+.cols-4{grid-template-columns:repeat(4,1fr)}
+@media (max-width:900px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+
+/* Demo */
+.demo{background:#0f1218;border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}
+.demo-title{font-size:16px;font-weight:600;color:var(--brand);margin:0 0 4px}
+.demo-sub{color:var(--mute);font-size:12.5px;margin-bottom:14px}
+.demo-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
+.demo-btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:7px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:all .12s}
+.demo-btn:hover{border-color:var(--brand);color:var(--brand)}
+.demo-btn.primary{background:var(--brand);color:var(--bg);border-color:var(--brand);font-weight:600}
+.demo-btn.primary:hover{background:#5cd6a4}
+.demo-step{font-family:"SF Mono",monospace;font-size:12px;color:var(--mute);margin-left:auto;background:#1a1f2b;padding:4px 10px;border-radius:6px;border:1px solid var(--line)}
+.demo-narration{background:rgba(110,231,183,.08);border-left:3px solid var(--brand);padding:10px 14px;border-radius:0 8px 8px 0;margin-top:12px;color:#cbd5e1;font-size:13px;min-height:42px;transition:all .3s}
+
+.rank-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}
+.rank-card{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px;text-align:center;transition:all .3s}
+.rank-card.active{border-color:var(--brand);box-shadow:0 0 12px rgba(110,231,183,.3)}
+.rank-card .rid{font-family:"SF Mono",monospace;font-weight:700;font-size:14px;margin-bottom:6px}
+.rank-card .body{color:var(--mute);font-family:"SF Mono",monospace;font-size:11px;line-height:1.5}
+.bar-h{display:flex;flex-direction:column;gap:3px;margin:8px 0}
+.bar-row{display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center;font-size:11px}
+.bar-row .lbl{color:var(--mute);font-family:"SF Mono",monospace}
+.bar-track{height:24px;background:#0a0d12;border:1px solid var(--line);border-radius:4px;position:relative;overflow:hidden}
+.bar-seg{position:absolute;top:2px;bottom:2px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0b0d12;transition:all .35s}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.pulse{animation:pulse 1s ease-in-out infinite}
+.kpi{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace}
+.kpi span{background:#1a1f2b;padding:3px 8px;border-radius:5px;border:1px solid var(--line)}
+.kpi span b{color:var(--brand)}
+
+
+.queue-box{background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:12px;min-height:110px;position:relative}
+.queue-title{font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace;margin-bottom:8px;display:flex;justify-content:space-between}
+.queue-title .cnt{color:var(--brand)}
+.req-chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:11px;font-family:"SF Mono",monospace;margin:3px;transition:all .35s;cursor:pointer}
+.req-chip.bootstrapping{border-color:var(--warn);color:var(--warn)}
+.req-chip.waiting{border-color:var(--brand2);color:var(--brand2)}
+.req-chip.transferring{border-color:var(--purple);color:var(--purple);animation:pulse 1s ease-in-out infinite}
+.req-chip.success{border-color:var(--brand);color:var(--brand);background:rgba(110,231,183,0.15)}
+.req-chip.failed{border-color:var(--bad);color:var(--bad)}
+.req-chip.active{box-shadow:0 0 10px currentColor}
+.msg-line{font-family:"SF Mono",monospace;font-size:11.5px;padding:4px 10px;margin:2px 0;border-radius:4px;background:#0f1218;border-left:2px solid var(--line);color:var(--mute)}
+.msg-line.active{border-color:var(--brand);color:var(--ink);background:rgba(110,231,183,0.05)}
+.msg-line .ts{color:var(--purple);margin-right:8px}
+.msg-line .tag{color:var(--warn);margin-right:8px}
+.path{color:var(--mute);font-size:11px;font-family:"SF Mono",monospace}
+.hl{background:rgba(251,191,36,.15);color:var(--warn);padding:0 3px;border-radius:3px}
+.step-badge{display:inline-block;background:var(--brand);color:var(--bg);border-radius:50%;width:22px;height:22px;line-height:22px;text-align:center;font-size:12px;font-weight:700;margin-right:8px}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--brand)}
+.flow-node{fill:#11141b;stroke:#262b38;stroke-width:1.5}
+.flow-node.active{stroke:#6ee7b7;stroke-width:2.2}
+.flow-node.active-warn{stroke:#fbbf24;stroke-width:2.2}
+.flow-node.active-blue{stroke:#7dd3fc;stroke-width:2.2}
+.flow-edge{stroke:#3a4050;stroke-width:1.5;fill:none}
+.flow-edge.active{stroke:#fbbf24;stroke-width:2}
+.flow-label{fill:#e6e8ee;font-family:"SF Mono",monospace;font-size:11px}
+.flow-label.sub{fill:#8b93a7;font-size:10px}
+.click-hint{font-size:11px;color:var(--mute);margin-top:6px;text-align:center}
+
+</style>
+</head><body><div class="wrap"><h1>KV Transfer & Bootstrap：三层协议<span class="tag">PD · 6/7</span></h1><div class="sub">KVPoll 5 状态机、CommonKVBootstrapServer 6 个 HTTP 接口、_resolve_rank_mapping 的组合、两个 ZMQ 后台线程、metadata buffer 接力、staging 优化。交互式状态机探索。</div><div class="toc"><a href="#role">三层职责</a><a href="#mooncake">Mooncake 是谁 🌐</a><a href="#poll">KVPoll 🎯</a><a href="#bootstrap">BootstrapServer</a><a href="#mapping">rank mapping</a><a href="#zmq">ZMQ 消息</a><a href="#metadata">MetadataBuffers</a><a href="#staging">Staging</a><a href="#summary">要点</a></div>
+<!-- PART 1 -->
+<h2 id="role"><span class="step">PART 1</span>KV Transfer 模块：四层职责（注意！）</h2>
+<div class="card">
+<p>SGLang 把"跨机搬 KV"这件事拆成<strong>四层</strong>。之前的表少画了 Mooncake 这一层，我们补上——<span class="hl">Mooncake 不是 SGLang 的代码</span>，而是一个独立的开源项目（kvcache-ai/Mooncake，清华 MADSys + 月之暗面），SGLang 通过 Python binding 调用它。</p>
+
+<table>
+<tr><th>层</th><th>干什么</th><th>源码属主</th><th>具体位置</th></tr>
+<tr><td>1 · 控制平面</td><td>P/D 发现彼此（拓扑、dp_rank、ZMQ 端点）</td><td>SGLang</td><td><span class="path">common/conn.py</span> BootstrapServer</td></tr>
+<tr><td>2 · 元数据平面</td><td>一个请求级的"我要发去哪、我要从哪收"的对接</td><td>SGLang</td><td><span class="path">common/conn.py</span> KVManager + ZMQ</td></tr>
+<tr><td>3 · 集成适配层</td><td>把 SGLang 的 KV 概念翻译成 Mooncake 的 API 调用</td><td>SGLang</td><td><span class="path">mooncake/conn.py</span>（1600+ 行，属于 SGLang）</td></tr>
+<tr><td>4 · 数据平面（底层）</td><td>真实的 RDMA / NVLink 字节搬运</td><td><strong>Mooncake</strong>（外部项目）</td><td><span class="path">libmooncake.so</span> + <code>mooncake.engine.TransferEngine</code></td></tr>
+</table>
+<p>P 和 D 从"各自启动"到"完成一次 KV 交接"，需要穿过这四层。接下来专门讲 Mooncake 的角色。</p>
+</div>
+
+<!-- PART 1.5 - Mooncake -->
+<h2 id="mooncake"><span class="step">PART 1.5</span>Mooncake 是谁，和 SGLang 是什么关系</h2>
+<div class="card">
+<h3>Mooncake 是一个独立项目</h3>
+<ul class="tight">
+<li>开源地址：<a href="https://github.com/kvcache-ai/Mooncake" style="color:var(--brand2)">github.com/kvcache-ai/Mooncake</a>；站内新增 <a href="../12-mooncake-deep-dive/index.html" style="color:var(--brand2)">Mooncake 独立深度章节（论文 + 源码 + 动画实验）</a></li>
+<li>出品：清华 MADSys Lab + 月之暗面（Moonshot AI），起源于 Kimi 线上服务</li>
+<li>语言：C++ 核心 + Python binding</li>
+<li>pip install：<code>pip install mooncake-transfer-engine</code></li>
+<li>在 SGLang 之外还服务：vLLM、Dynamo、LMCache 等</li>
+</ul>
+
+<h3>Mooncake 提供三个东西（SGLang 用到了前两个）</h3>
+<table>
+<tr><th>组件</th><th>能力</th><th>SGLang 怎么用</th></tr>
+<tr><td><code>mooncake.engine.TransferEngine</code></td><td>一个高性能 RDMA 引擎：注册/去注册显存、session 发现、<code>transfer_sync_write</code>、<code>batch_transfer_sync_write</code></td><td>PD 的 KV 跨机搬运</td></tr>
+<tr><td><code>mooncake.allocator</code></td><td>NVLinkAllocator / BarexAllocator：GPU 显存 custom allocator，bypass NCCL 做 peer 直写</td><td>单机 NVLink 场景</td></tr>
+<tr><td><code>mooncake.store</code></td><td>分布式 KV store（Mooncake Store）</td><td>SGLang 里 hierarchical cache 的可选后端，和 PD 分离无关</td></tr>
+</table>
+
+<div class="callout warn">
+<strong>关键认知</strong>：Mooncake 只负责"把一段 GPU 内存从机器 A 搬到机器 B"，它<u>不知道</u> KV cache、bootstrap_room、chunked prefill 这些概念。所有"哪段 KV 要搬"、"搬去对方哪个 page"的决策都是 SGLang 做的；Mooncake 只负责完成 <code>(src_ptr, dst_ptr, length)</code> 这种纯字节级的命令。
+</div>
+
+<h3>它为什么比裸 NCCL / GDRCopy 好？</h3>
+<table>
+<tr><th>特性</th><th>NCCL</th><th>GDRCopy</th><th>Mooncake Transfer Engine</th></tr>
+<tr><td>异构拓扑</td><td>同构 comm group</td><td>单机 GPU-GPU</td><td>✅ 任意拓扑，RDMA/NVLink/TCP 混合</td></tr>
+<tr><td>动态 session</td><td>静态 world</td><td>N/A</td><td>✅ 运行时发现 peer</td></tr>
+<tr><td>多 QP 并行</td><td>受限</td><td>N/A</td><td>✅ 自动 multi-QP，吞吐打满</td></tr>
+<tr><td>零拷贝 + GPUDirect RDMA</td><td>✅</td><td>✅</td><td>✅</td></tr>
+<tr><td>P/D 数量不对称</td><td>❌</td><td>N/A</td><td>✅（PD 的关键）</td></tr>
+</table>
+
+<p>对 PD 而言最关键的是 <strong>"P/D 数量不对称 + 运行时发现 peer"</strong>——你可以跑 2P+3D，随时加 P 加 D，Mooncake 都能即时建立 session 传数据。NCCL 做不到。</p>
+</div>
+
+<!-- PART 1.6 - boundary -->
+<h2 id="boundary"><span class="step">PART 1.6</span>SGLang ↔ Mooncake 边界：从源码看切入点</h2>
+<div class="card">
+<h3>SGLang 侧的唯一桥梁：<code>MooncakeTransferEngine</code></h3>
+<p>SGLang 把 <code>from mooncake.engine import TransferEngine</code> 的调用封在一个薄薄的 wrapper 里（<span class="path">sglang/srt/distributed/device_communicators/mooncake_transfer_engine.py</span>）：</p>
+
+<pre><span class="path">// sglang/srt/distributed/device_communicators/mooncake_transfer_engine.py:93-135</span>
+<span class="kw">class</span> MooncakeTransferEngine:
+    <span class="com">"""Shared Mooncake transfer engine for RDMA/transfer operations."""</span>
+
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, hostname, gpu_id=<span class="kw">None</span>, ib_device=<span class="kw">None</span>):
+        <span class="kw">try</span>:
+            <span class="kw">from</span> mooncake.engine <span class="kw">import</span> TransferEngine   <span class="com"># ★ 跨进 Mooncake 的唯一入口</span>
+        <span class="kw">except</span> ImportError <span class="kw">as</span> e:
+            <span class="kw">raise</span> ImportError(<span class="str">"Please install mooncake by..."</span>) <span class="kw">from</span> e
+
+        self.engine = <span class="fn">TransferEngine</span>()
+        self.hostname = hostname
+        self.gpu_id = gpu_id <span class="kw">or</span> 0
+        self.ib_device = <span class="fn">get_ib_devices_for_gpu</span>(ib_device, self.gpu_id)
+        self.<span class="fn">initialize</span>(hostname=self.hostname, device_name=self.ib_device)
+        self.session_id = NetworkAddress(self.hostname, self.engine.<span class="fn">get_rpc_port</span>()).<span class="fn">to_host_port_str</span>()
+
+    <span class="kw">def</span> <span class="fn">register</span>(self, ptr, length):
+        <span class="kw">return</span> self.engine.<span class="fn">register_memory</span>(ptr, length)           <span class="com"># Mooncake API</span>
+
+    <span class="kw">def</span> <span class="fn">batch_register</span>(self, ptrs, lengths):
+        <span class="kw">return</span> self.engine.<span class="fn">batch_register_memory</span>(ptrs, lengths)
+
+    <span class="kw">def</span> <span class="fn">transfer_sync</span>(self, session_id, buffer, peer_buffer_address, length):
+        <span class="kw">return</span> self.engine.<span class="fn">transfer_sync_write</span>(session_id, buffer, peer_buffer_address, length)
+
+    <span class="kw">def</span> <span class="fn">batch_transfer_sync</span>(self, session_id, buffers, peer_addresses, lengths):
+        <span class="kw">return</span> self.engine.<span class="fn">batch_transfer_sync_write</span>(session_id, buffers, peer_addresses, lengths)</pre>
+
+<h3>这个 wrapper 只暴露 5 个操作给 SGLang 上层</h3>
+<table>
+<tr><th>SGLang 方法</th><th>Mooncake C++ 底层</th><th>做什么</th></tr>
+<tr><td><code>initialize(hostname, protocol)</code></td><td><code>engine.initialize(hostname, "P2PHANDSHAKE", "rdma", ib_dev)</code></td><td>启动 Mooncake engine，注册 RPC 端口，广播拓扑</td></tr>
+<tr><td><code>register(ptr, length)</code></td><td><code>engine.register_memory</code></td><td>把 GPU 内存 pin 住 + 注册给 RDMA 硬件（ibv_reg_mr）</td></tr>
+<tr><td><code>batch_register(ptrs, lens)</code></td><td><code>engine.batch_register_memory</code></td><td>批量注册（一次 ibv syscall）</td></tr>
+<tr><td><code>transfer_sync(sid, src, dst, len)</code></td><td><code>engine.transfer_sync_write</code></td><td>单次 RDMA write，同步等完成</td></tr>
+<tr><td><code>batch_transfer_sync(sid, srcs, dsts, lens)</code></td><td><code>engine.batch_transfer_sync_write</code></td><td>批量 RDMA write（自动多 QP 并行）</td></tr>
+</table>
+
+<h3>PD 模块怎么拿到这个 engine</h3>
+<pre><span class="path">// sglang/srt/disaggregation/mooncake/conn.py:258-275</span>
+<span class="kw">class</span> MooncakeKVManager(CommonKVManager):
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, args, disaggregation_mode, server_args, ...):
+        super().<span class="fn">__init__</span>(...)
+        self.engine = <span class="fn">get_mooncake_transfer_engine</span>()    <span class="com"># ★ 从全局拿共享 engine</span>
+
+        <span class="com"># 把 KV pool / aux buffer 全部注册给 Mooncake（pin 住 + RDMA 可达）</span>
+        self.engine.<span class="fn">batch_register</span>(
+            self.kv_args.kv_data_ptrs, self.kv_args.kv_data_lens,
+        )
+        self.engine.<span class="fn">batch_register</span>(
+            self.kv_args.aux_data_ptrs, self.kv_args.aux_data_lens,
+        )</pre>
+
+<pre><span class="path">// sglang/srt/disaggregation/mooncake/conn.py:570-577 · _transfer_data</span>
+<span class="kw">def</span> <span class="fn">_transfer_data</span>(self, mooncake_session_id, transfer_blocks):
+    <span class="kw">if not</span> transfer_blocks: <span class="kw">return</span> 0
+    src_addrs, dst_addrs, lengths = zip(*transfer_blocks)
+    <span class="com"># ★ 真正把 KV 发出去的那一行代码</span>
+    <span class="kw">return</span> self.engine.<span class="fn">batch_transfer_sync</span>(
+        mooncake_session_id, list(src_addrs), list(dst_addrs), list(lengths)
+    )</pre>
+
+<div class="callout">
+<strong>边界非常干净</strong>：SGLang 所有 "给我把这几段内存发到那台机器" 的请求，最终都穿过这一句 <code>self.engine.batch_transfer_sync(...)</code>。再往下的 multi-QP 调度、RDMA doorbell、ibv completion 都在 libmooncake 里，<u>SGLang 代码库里看不到</u>。
+</div>
+</div>
+
+<!-- PART 1.7 - Mooncake internal (high level) -->
+<h2 id="mc-internal"><span class="step">PART 1.7</span>Mooncake 内部：三层架构（SGLang 看不到但值得了解）</h2>
+<div class="card">
+<p>虽然 Mooncake 不是 SGLang 代码，但调通问题时很容易要深入一层。Mooncake 内部分三层：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 860 320" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="mar" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#fbbf24"/></marker></defs>
+
+<!-- Python binding -->
+<rect x="30" y="20" width="800" height="60" rx="10" fill="#11141b" stroke="#a78bfa" stroke-width="2"/>
+<text x="430" y="46" text-anchor="middle" font-size="13" fill="#a78bfa" font-weight="700">Python binding (mooncake-python)</text>
+<text x="430" y="66" text-anchor="middle" font-size="11" fill="#e6e8ee" font-family="SF Mono,monospace">TransferEngine / NVLinkAllocator / BarexAllocator · 对 SGLang 暴露的 API</text>
+
+<!-- Core -->
+<rect x="30" y="100" width="800" height="110" rx="10" fill="#11141b" stroke="#fbbf24" stroke-width="2"/>
+<text x="430" y="126" text-anchor="middle" font-size="13" fill="#fbbf24" font-weight="700">Mooncake Transfer Engine (C++ core)</text>
+<text x="150" y="156" text-anchor="middle" font-size="11" fill="#e6e8ee">Segment Manager</text>
+<text x="150" y="172" text-anchor="middle" font-size="10" fill="#8b93a7">注册内存 → Segment</text>
+<text x="150" y="186" text-anchor="middle" font-size="10" fill="#8b93a7">按 key 发现</text>
+
+<text x="320" y="156" text-anchor="middle" font-size="11" fill="#e6e8ee">Topology Aware Engine</text>
+<text x="320" y="172" text-anchor="middle" font-size="10" fill="#8b93a7">自动选最优路径</text>
+<text x="320" y="186" text-anchor="middle" font-size="10" fill="#8b93a7">NUMA / GPU 亲和</text>
+
+<text x="490" y="156" text-anchor="middle" font-size="11" fill="#e6e8ee">Multi-QP Scheduler</text>
+<text x="490" y="172" text-anchor="middle" font-size="10" fill="#8b93a7">切分 transfer 到多 QP</text>
+<text x="490" y="186" text-anchor="middle" font-size="10" fill="#8b93a7">大包自动并行</text>
+
+<text x="660" y="156" text-anchor="middle" font-size="11" fill="#e6e8ee">Transport Layer</text>
+<text x="660" y="172" text-anchor="middle" font-size="10" fill="#8b93a7">抽象 RDMA/TCP</text>
+<text x="660" y="186" text-anchor="middle" font-size="10" fill="#8b93a7">统一 transfer_sync API</text>
+
+<!-- Hardware -->
+<rect x="30" y="230" width="800" height="70" rx="10" fill="#11141b" stroke="#fb7185" stroke-width="2"/>
+<text x="430" y="252" text-anchor="middle" font-size="13" fill="#fb7185" font-weight="700">硬件后端（transport）</text>
+<text x="150" y="278" text-anchor="middle" font-size="11" fill="#e6e8ee">libibverbs (RDMA)</text>
+<text x="330" y="278" text-anchor="middle" font-size="11" fill="#e6e8ee">NVLink / NVSwitch</text>
+<text x="510" y="278" text-anchor="middle" font-size="11" fill="#e6e8ee">CXL / BAREX</text>
+<text x="690" y="278" text-anchor="middle" font-size="11" fill="#e6e8ee">TCP (fallback)</text>
+
+<!-- arrows -->
+<line x1="430" y1="80" x2="430" y2="100" stroke="#fbbf24" marker-end="url(#mar)"/>
+<line x1="430" y1="210" x2="430" y2="230" stroke="#fbbf24" marker-end="url(#mar)"/>
+</svg>
+</div>
+
+<h3>每层做什么</h3>
+<table>
+<tr><th>层</th><th>职责</th><th>为什么关键</th></tr>
+<tr><td><strong>Python binding</strong></td><td>ctypes/pybind11 包 C++ core；暴露 register/transfer 等 API</td><td>SGLang 只看这一层</td></tr>
+<tr><td><strong>Segment Manager</strong></td><td>每次 <code>register_memory</code> 生成一个 Segment；按 hostname 组织可被其他节点发现</td><td>跨机 session 的基础</td></tr>
+<tr><td><strong>Topology Aware Engine</strong></td><td>感知 GPU-NIC 拓扑（哪张卡连哪个 IB）；选最短路径；GPUDirect RDMA</td><td>8 卡机 × 4 IB 卡时路径选择非常重要</td></tr>
+<tr><td><strong>Multi-QP Scheduler</strong></td><td>大 transfer 自动切块 → 多个 QP 并行 → 打满 200Gbps/400Gbps</td><td>单 QP 打不满现代 IB 带宽</td></tr>
+<tr><td><strong>Transport Layer</strong></td><td>统一 <code>RDMA / NVLink / TCP</code> 接口；失败回退</td><td>让上层只写 <code>transfer_sync_write</code>，不管物理介质</td></tr>
+</table>
+
+<h3>关键配置 & 排障入口</h3>
+<pre><span class="com"># 基础</span>
+<span class="kw">export</span> MOONCAKE_LOG_LEVEL=DEBUG                        <span class="com"># 看 Mooncake 内部日志</span>
+<span class="kw">export</span> MC_TE_RPC_PORT=12345                            <span class="com"># 固定 RPC 端口</span>
+<span class="kw">export</span> MC_NUM_QP_PER_EP=8                              <span class="com"># 每个 endpoint 多少个 QP</span>
+
+<span class="com"># IB 设备指定（SGLang 层暴露）</span>
+<span class="kw">export</span> SGLANG_DISAGGREGATION_IB_DEVICE=mlx5_0,mlx5_1   <span class="com"># 多 IB 设备</span>
+
+<span class="com"># 看 Mooncake 是否真的 RDMA 在跑</span>
+ibv_devinfo                                                <span class="com"># 检查 IB 状态</span>
+cat /proc/mooncake/stats                                   <span class="com"># （如果支持）运行时指标</span></pre>
+</div>
+
+<!-- Interactive: SGLang / Mooncake boundary -->
+<div class="demo">
+<div class="demo-title">🔍 层级穿透：点任何一层看源码位置和在做什么</div>
+<div class="demo-sub">一次 KV transfer 从 SGLang 的 send_kvcache 到 RDMA doorbell 要穿 5 层。点每层看它所属的模块和调用下一层的方式。</div>
+
+<div style="background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px">
+  <svg viewBox="0 0 900 440" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+    <defs><marker id="lmar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L0,8 L8,4 z" fill="#fbbf24"/></marker></defs>
+
+    <g id="l-1" style="cursor:pointer">
+      <rect x="50" y="20" width="800" height="54" rx="8" fill="#0f1218" stroke="#6ee7b7" stroke-width="1.5" class="flow-node"/>
+      <text x="70" y="45" font-size="12" fill="#6ee7b7" font-weight="700">①</text>
+      <text x="95" y="45" font-size="12.5" fill="#e6e8ee">SGLang scheduler</text>
+      <text x="420" y="45" font-size="11" fill="#8b93a7" font-family="SF Mono,monospace">prefill.py:462 · send_kv_chunk(req, last_chunk=True)</text>
+      <text x="95" y="62" font-size="10.5" fill="#8b93a7">决定这个 req 要传哪些 KV page，加到 FastQueue</text>
+    </g>
+
+    <g id="l-2" style="cursor:pointer">
+      <rect x="50" y="94" width="800" height="54" rx="8" fill="#0f1218" stroke="#7dd3fc" stroke-width="1.5" class="flow-node"/>
+      <text x="70" y="119" font-size="12" fill="#7dd3fc" font-weight="700">②</text>
+      <text x="95" y="119" font-size="12.5" fill="#e6e8ee">SGLang KVManager (mooncake/conn.py)</text>
+      <text x="420" y="119" font-size="11" fill="#8b93a7" font-family="SF Mono,monospace">transfer_worker → _send_kvcache_generic</text>
+      <text x="95" y="136" font-size="10.5" fill="#8b93a7">按 layer/head/page 组装 (src_ptr, dst_ptr, length) 列表</text>
+    </g>
+
+    <g id="l-3" style="cursor:pointer">
+      <rect x="50" y="168" width="800" height="54" rx="8" fill="#0f1218" stroke="#a78bfa" stroke-width="1.5" class="flow-node"/>
+      <text x="70" y="193" font-size="12" fill="#a78bfa" font-weight="700">③</text>
+      <text x="95" y="193" font-size="12.5" fill="#e6e8ee">SGLang 薄 wrapper (MooncakeTransferEngine)</text>
+      <text x="420" y="193" font-size="11" fill="#8b93a7" font-family="SF Mono,monospace">mooncake_transfer_engine.py:223</text>
+      <text x="95" y="210" font-size="10.5" fill="#8b93a7">batch_transfer_sync → 透传到 C++ batch_transfer_sync_write</text>
+    </g>
+
+    <g id="l-4" style="cursor:pointer">
+      <rect x="50" y="242" width="800" height="54" rx="8" fill="#0f1218" stroke="#fbbf24" stroke-width="1.5" class="flow-node"/>
+      <text x="70" y="267" font-size="12" fill="#fbbf24" font-weight="700">④</text>
+      <text x="95" y="267" font-size="12.5" fill="#e6e8ee">Mooncake Python binding（不在 SGLang 仓库）</text>
+      <text x="420" y="267" font-size="11" fill="#8b93a7" font-family="SF Mono,monospace">mooncake.engine.TransferEngine</text>
+      <text x="95" y="284" font-size="10.5" fill="#8b93a7">pybind11 调 C++ core 的 batch_transfer_sync_write</text>
+    </g>
+
+    <g id="l-5" style="cursor:pointer">
+      <rect x="50" y="316" width="800" height="54" rx="8" fill="#0f1218" stroke="#fb7185" stroke-width="1.5" class="flow-node"/>
+      <text x="70" y="341" font-size="12" fill="#fb7185" font-weight="700">⑤</text>
+      <text x="95" y="341" font-size="12.5" fill="#e6e8ee">Mooncake C++ core + libibverbs</text>
+      <text x="420" y="341" font-size="11" fill="#8b93a7" font-family="SF Mono,monospace">TransferEngine::batchTransfer</text>
+      <text x="95" y="358" font-size="10.5" fill="#8b93a7">切分到 multi-QP → ibv_post_send → RDMA doorbell</text>
+    </g>
+
+    <g id="l-6" style="cursor:pointer">
+      <rect x="50" y="390" width="800" height="40" rx="8" fill="#0f1218" stroke="#fb7185" stroke-width="1" class="flow-node"/>
+      <text x="95" y="414" font-size="11.5" fill="#e6e8ee">硬件（RDMA NIC、NVLink、CXL）：完成 DMA，D 侧 CQ 产生 completion</text>
+    </g>
+
+    <line x1="450" y1="74"  x2="450" y2="94"  stroke="#fbbf24" marker-end="url(#lmar)"/>
+    <line x1="450" y1="148" x2="450" y2="168" stroke="#fbbf24" marker-end="url(#lmar)"/>
+    <line x1="450" y1="222" x2="450" y2="242" stroke="#fbbf24" marker-end="url(#lmar)"/>
+    <line x1="450" y1="296" x2="450" y2="316" stroke="#fbbf24" marker-end="url(#lmar)"/>
+    <line x1="450" y1="370" x2="450" y2="390" stroke="#fbbf24" marker-end="url(#lmar)"/>
+  </svg>
+
+  <div style="margin-top:12px;background:#0f1218;border:1px solid var(--line);border-radius:8px;padding:12px">
+    <div style="color:var(--mute);font-size:11.5px;margin-bottom:6px">点击上方任一层查看详情</div>
+    <div id="ly-title" style="color:var(--brand);font-weight:700;font-size:13.5px;margin-bottom:6px">👆 请点任何一层</div>
+    <div id="ly-info" style="color:#cbd5e1;font-size:12.5px;line-height:1.7">每层都有明确的输入/输出边界。越往下越接近硬件，越往上越接近 SGLang 的业务概念。</div>
+    <div id="ly-code" style="margin-top:10px;font-family:'SF Mono',monospace;font-size:11.5px;color:#cbd5e1;background:#0a0d12;border-radius:6px;padding:10px;white-space:pre-wrap;display:none"></div>
+  </div>
+</div>
+<div class="demo-narration" id="ly-narr">一次 KV transfer 在这 5 层之间流动。SGLang 拥有前 3 层的源码，后 2 层在 Mooncake 项目里。排障时要先判断"卡在哪一层"。</div>
+</div>
+
+<script>
+(function(){
+  const LAYERS = {
+    'l-1': {
+      title:'① SGLang Scheduler 层 · 属于 SGLang',
+      info:'P 的 event loop 跑到 process_batch_result_disagg_prefill 时调用 send_kv_chunk。这一层只关心"哪个请求要传 KV"，不关心 RDMA。',
+      code:'# sglang/srt/disaggregation/prefill.py:462\nif req.is_chunked <= 0:\n    req.output_ids.append(next_token_id)\n    self.disagg_prefill_inflight_queue.append(req)\n    self.send_kv_chunk(req, last_chunk=True)\n\n# send_kv_chunk (prefill.py:744)\nkv_indices = self.req_to_token_pool.req_to_token[req_pool_idx, start:end].cpu().numpy()\npage_indices = kv_to_page_indices(kv_indices, page_size)\nreq.disagg_kv_sender.send(page_indices, state_indices)   # → 进 FastQueue'
+    },
+    'l-2': {
+      title:'② SGLang KVManager · 属于 SGLang',
+      info:'transfer_worker 线程池消费 FastQueue。这一层要把 "page 索引" 翻译成 "物理地址 + 长度" 的 transfer_blocks 列表——涉及 layer 数、head 数、item_len、dtype 等模型结构。',
+      code:'# sglang/srt/disaggregation/mooncake/conn.py:1146 (transfer_worker)\nchunk: TransferKVChunk = queue.get()\nfor req in transfer_infos[room].values():\n    target = decode_kv_args_table[req.mooncake_session_id]\n    ret = self.send_kvcache(\n        req.mooncake_session_id,\n        chunk.prefill_kv_indices,\n        target.dst_kv_ptrs,\n        req.dst_kv_indices[chunk.index_slice],\n        executor,\n    )\n# send_kvcache → _send_kvcache_generic → 拼成 [(src, dst, len), ...]'
+    },
+    'l-3': {
+      title:'③ SGLang → Mooncake 薄 wrapper · 属于 SGLang',
+      info:'MooncakeTransferEngine 只做一件事：把 SGLang 的参数传给 Mooncake 的 Python binding。没有业务逻辑，只是 try/except + debug log。',
+      code:'# sglang/srt/distributed/device_communicators/mooncake_transfer_engine.py:223\ndef batch_transfer_sync(self, session_id, buffers, peer_addresses, lengths):\n    try:\n        ret = self.engine.batch_transfer_sync_write(\n            session_id, buffers, peer_addresses, lengths\n        )\n    except Exception:\n        ret = -1\n    return ret\n\n# self.engine 是 mooncake.engine.TransferEngine 的实例（来自 pip install mooncake-transfer-engine）'
+    },
+    'l-4': {
+      title:'④ Mooncake Python binding · ★ 不属于 SGLang',
+      info:'从这里开始是 Mooncake 项目的代码。pybind11 把 Python 的 list[int] 转成 C++ 的 std::vector，调用 C++ 核心。SGLang 仓库里看不到这部分。',
+      code:'# pseudo: mooncake/mooncake_engine_pybind.cpp\nPYBIND11_MODULE(engine, m) {\n    py::class_<TransferEngine>(m, "TransferEngine")\n        .def("batch_transfer_sync_write",\n             [](TransferEngine& self,\n                const std::string& session_id,\n                std::vector<uintptr_t> src,\n                std::vector<uintptr_t> dst,\n                std::vector<size_t> len) {\n               return self.batchTransfer(session_id, src, dst, len, OpCode::WRITE);\n             });\n}'
+    },
+    'l-5': {
+      title:'⑤ Mooncake C++ core · ★ 不属于 SGLang',
+      info:'Transfer Engine 拿到 (src, dst, len) 列表后：(a) 查 Topology Engine 选路径；(b) Multi-QP Scheduler 切块给多个 QP；(c) 调 ibv_post_send 把 WQE 挂到 send queue；(d) RDMA NIC 按 doorbell 发起 DMA。',
+      code:'// mooncake TransferEngine::batchTransfer 伪码\nstatus = segmentMgr->lookup(session_id, peer_segments);\nauto plan = topologyEngine->plan(src, dst, peer_segments);\nfor (auto& sub : plan.splits) {\n    auto qp = multiQpScheduler->pick(sub.numa);\n    struct ibv_send_wr wr = build_rdma_write(sub.src, sub.dst, sub.len);\n    ibv_post_send(qp, &wr, ...);\n}\n// poll completion queue until all done\nreturn 0;'
+    },
+    'l-6': {
+      title:'硬件层 · RDMA NIC / NVLink',
+      info:'GPU 显存通过 PCIe BAR 映射给 NIC（GPUDirect RDMA）。NIC 发起 DMA，数据直接从源 GPU 显存经 IB 线缆飞到目标 GPU，完全旁路 CPU。D 侧 Mooncake 轮询 CQ 看到 completion → Python callback → SGLang 收到 sync。',
+      code:'// 硬件层：\n// src GPU HBM → PCIe → Mellanox HCA (QP send)\n//   → IB switch → remote HCA (QP recv)\n//   → PCIe → dst GPU HBM\n//\n// 延迟典型：RDMA HDR IB = 1-2 µs 一次 RTT\n// 带宽：单 QP 100-150 Gbps；multi-QP 打满 200/400 Gbps NIC'
+    }
+  };
+  Object.keys(LAYERS).forEach(id => {
+    const g = document.getElementById(id);
+    if(!g) return;
+    g.addEventListener('click',()=>{
+      const d = LAYERS[id];
+      document.getElementById('ly-title').innerHTML = d.title;
+      document.getElementById('ly-info').innerHTML = d.info;
+      const codeEl = document.getElementById('ly-code');
+      codeEl.textContent = d.code;
+      codeEl.style.display = 'block';
+      document.getElementById('ly-narr').innerHTML = d.title.includes('★') ?
+        '⚠️ 这一层<u>不在 SGLang 仓库里</u>。SGLang 的 bug 报告要看清楚是不是实际应该给 Mooncake 项目报。' :
+        '这一层源码可以在 SGLang 仓库里找到，是 SGLang 自己的代码。';
+      // highlight only this layer
+      Object.keys(LAYERS).forEach(k=>{
+        const el = document.getElementById(k);
+        if(el) el.querySelector('rect').setAttribute('stroke-width', k===id ? '3' : '1.5');
+      });
+    });
+  });
+})();
+</script>
+
+<!-- PART 2: KVPoll state machine -->
+<h2 id="poll"><span class="step">PART 2</span>KVPoll：P/D 共享的 5 状态机</h2>
+<div class="card">
+<pre><span class="path">// base/conn.py:42-47</span>
+<span class="kw">class</span> KVPoll:
+    Failed          = 0
+    Bootstrapping   = 1
+    WaitingForInput = 2
+    Transferring    = 3
+    Success         = 4</pre>
+
+<table>
+<tr><th>状态</th><th>P 侧含义</th><th>D 侧含义</th></tr>
+<tr><td>Bootstrapping</td><td>sender 已创建，等 D 的 ZMQ metadata</td><td>receiver 已创建，等查到 P 拓扑</td></tr>
+<tr><td>WaitingForInput</td><td>收到 D 的 metadata，可进 waiting_queue forward</td><td>查到 P 后（_resolve_prefill_dp_rank 完成）</td></tr>
+<tr><td>Transferring</td><td>run_batch 后进了 InflightQueue</td><td>send_metadata 已发出</td></tr>
+<tr><td>Success</td><td>transfer_worker 全部 chunk+aux 完成</td><td>收齐 required_prefill_response_num 个 P 的 Success</td></tr>
+<tr><td>Failed</td><td>超时 / RDMA 错 / abort</td><td>超时 / metadata corruption / P 报失败</td></tr>
+</table>
+</div>
+
+<!-- Interactive state machine -->
+<div class="demo">
+<div class="demo-title">🎯 KVPoll 状态机：点事件看状态转移</div>
+<div class="demo-sub">同一请求在 P/D 两侧的状态独立推进，通过 ZMQ 消息耦合。点下方事件按钮触发状态转移</div>
+
+<div style="background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px">
+  <div class="grid cols-2" style="gap:14px">
+    <div>
+      <div style="color:var(--brand);font-size:13px;font-weight:600;margin-bottom:8px">P 侧 sender</div>
+      <div id="sm-p-state" style="padding:14px;background:#0f1218;border:2px solid var(--brand);border-radius:10px;font-family:'SF Mono',monospace;font-size:14px;text-align:center;color:var(--brand);font-weight:700">Bootstrapping</div>
+      <div style="color:var(--mute);font-size:11.5px;margin-top:8px" id="sm-p-hint">等待 D 通过 ZMQ 发来 metadata...</div>
+    </div>
+    <div>
+      <div style="color:var(--brand2);font-size:13px;font-weight:600;margin-bottom:8px">D 侧 receiver</div>
+      <div id="sm-d-state" style="padding:14px;background:#0f1218;border:2px solid var(--brand2);border-radius:10px;font-family:'SF Mono',monospace;font-size:14px;text-align:center;color:var(--brand2);font-weight:700">Bootstrapping</div>
+      <div style="color:var(--mute);font-size:11.5px;margin-top:8px" id="sm-d-hint">等待 _resolve_prefill_dp_rank 完成...</div>
+    </div>
+  </div>
+
+  <div style="margin-top:14px;background:#0f1218;border:1px solid var(--line);border-radius:8px;padding:10px">
+    <div style="color:var(--mute);font-size:11.5px;margin-bottom:6px">事件（按源码中出现的顺序）</div>
+    <div style="display:flex;flex-wrap:wrap;gap:6px" id="sm-events"></div>
+  </div>
+
+  <div id="sm-log" style="margin-top:10px;max-height:160px;overflow:auto"></div>
+</div>
+<div class="demo-narration" id="sm-narr">按顺序点事件按钮。注意 P/D 状态是独立推进的，某个事件只影响一侧。某些事件在另一侧<u>延迟</u>出现（比如 P 的 transfer_worker 完成后，D 过一会才收到 sync）。</div>
+</div>
+
+<script>
+(function(){
+  let pState = 'Bootstrapping';
+  let dState = 'Bootstrapping';
+  const EVENTS = [
+    {id:'e1', label:'① D: _resolve_prefill_dp_rank done', side:'d', target:'WaitingForInput', msg:'D 查到 P 在哪个 dp rank', pHint:null, dHint:'已知 P 的拓扑，可以调 send_metadata'},
+    {id:'e2', label:'② D: receiver.init → send kv_args', side:null, msg:'D 发第一条 ZMQ：注册 KV/aux 指针给 P', pHint:'decode_kv_args_table 登记 D 的指针，但还没 transfer info', dHint:null},
+    {id:'e3', label:'③ D: pop_preallocated → send_metadata', side:'d', target:'Transferring', msg:'D 分配好 KV page，把 (room, kv_indices, aux_idx) 通过 ZMQ 发给 P', dHint:'已发出 metadata，等 P 的 transfer'},
+    {id:'e4', label:'④ P: bootstrap_thread 收到 metadata', side:'p', target:'WaitingForInput', msg:'P 的 transfer_infos[room] 登记完成，状态切 WaitingForInput', pHint:'主循环会在下一轮 pop_bootstrapped'},
+    {id:'e5', label:'⑤ P: pop_bootstrapped → waiting_queue', side:'p', target:'Transferring', msg:'P 推进 req 到 waiting_queue，准备 forward', pHint:'req 将被 PrefillAdder 装进 batch'},
+    {id:'e6', label:'⑥ P: run_batch → process_batch_result → send_kv_chunk', side:null, msg:'P 算完 prompt，首 token 写入 metadata buffer；KV chunk 进 FastQueue', pHint:'req 进入 InflightQueue，等 transfer_worker 消费'},
+    {id:'e7', label:'⑦ Mooncake: RDMA send_kvcache done', side:null, msg:'transfer_worker 完成 RDMA 写 KV', pHint:'KV 已全部写入 D 的 pool，准备 send_aux'},
+    {id:'e8', label:'⑧ Mooncake: send_aux done + sync_status', side:'p', target:'Success', msg:'P 通过 ZMQ 反向告诉 D：room xxx 成功', pHint:'P 侧 InflightQueue 收到 Success，释放 KV'},
+    {id:'e9', label:'⑨ D: decode_thread 收到 sync', side:'d', target:'Success', msg:'D 的状态切 Success', dHint:'下一轮 pop_transferred 会 commit 首 token'},
+    {id:'e10', label:'⑩ D: pop_transferred → commit → running', side:null, msg:'D commit，req 进 running_batch，开始 decode', dHint:'req 已进入 running，KVPoll 生命周期结束'},
+  ];
+
+  const eContainer = document.getElementById('sm-events');
+  EVENTS.forEach(e=>{
+    const btn = document.createElement('button');
+    btn.className = 'demo-btn';
+    btn.textContent = e.label;
+    btn.style.fontSize='11px';
+    btn.id = 'btn-'+e.id;
+    btn.addEventListener('click',()=>fire(e));
+    eContainer.appendChild(btn);
+  });
+
+  function fire(e){
+    if(e.side==='p'){
+      pState = e.target;
+      document.getElementById('sm-p-state').textContent = pState;
+      document.getElementById('sm-p-state').style.color =
+        pState==='Failed'?'var(--bad)':pState==='Success'?'var(--brand)':'var(--warn)';
+      if(e.pHint) document.getElementById('sm-p-hint').textContent = e.pHint;
+    } else if(e.side==='d'){
+      dState = e.target;
+      document.getElementById('sm-d-state').textContent = dState;
+      document.getElementById('sm-d-state').style.color =
+        dState==='Failed'?'var(--bad)':dState==='Success'?'var(--brand)':'var(--warn)';
+      if(e.dHint) document.getElementById('sm-d-hint').textContent = e.dHint;
+    }
+    if(e.pHint && e.side!=='d') document.getElementById('sm-p-hint').textContent = e.pHint;
+    if(e.dHint && e.side!=='p') document.getElementById('sm-d-hint').textContent = e.dHint;
+    // Log
+    const line = document.createElement('div');
+    line.className = 'msg-line active';
+    const ts = new Date().toTimeString().slice(0,8);
+    line.innerHTML = `<span class="ts">${ts}</span><span class="tag">[${e.side?e.side.toUpperCase():'both'}]</span>${e.msg}`;
+    document.getElementById('sm-log').prepend(line);
+    document.getElementById('btn-'+e.id).style.opacity = '0.4';
+    document.getElementById('sm-narr').innerHTML = `<b>${e.label}</b>：${e.msg}`;
+  }
+})();
+</script>
+
+<!-- PART 3: BootstrapServer -->
+<h2 id="bootstrap"><span class="step">PART 3</span>BootstrapServer：P 的拓扑发现</h2>
+<div class="card">
+<pre><span class="path">// common/conn.py:692-907</span>
+<span class="kw">class</span> CommonKVBootstrapServer(BaseKVBootstrapServer):
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, host, port):
+        self.app = web.Application()
+        self.prefill_port_table: Dict[int, Dict[...]] = {}   <span class="com"># dp → cp → tp → pp → PrefillRankInfo</span>
+        self.room_to_dp_rank: Dict[int, Dict[str, ...]] = {} <span class="com"># room → {dp_rank, ts}</span>
+        self.<span class="fn">_setup_routes</span>()
+
+    <span class="kw">def</span> <span class="fn">_setup_routes</span>(self):
+        self.app.router.add_route(<span class="str">"*"</span>, <span class="str">"/route"</span>, self._handle_route)
+        self.app.router.add_post(<span class="str">"/register_dp_rank"</span>, self._handle_register_dp_rank)
+        self.app.router.add_post(<span class="str">"/query_dp_ranks"</span>, self._handle_query_dp_ranks)
+        self.app.router.add_get (<span class="str">"/health"</span>, self._handle_health_check)</pre>
+
+<h3>6 个 HTTP 接口</h3>
+<table>
+<tr><th>API</th><th>调用者</th><th>时机</th><th>作用</th></tr>
+<tr><td><code>PUT /route</code></td><td>P rank</td><td>启动时</td><td>注册 rank_ip/rank_port/TP/CP/PP/DP/page_size/dtype</td></tr>
+<tr><td><code>GET /route?dp=-1...</code></td><td>D 首次握手</td><td>D 启动后第 1 次</td><td>查整体 parallel info（_resolve_rank_mapping 用）</td></tr>
+<tr><td><code>GET /route?dp=0&amp;cp=0&amp;tp=2&amp;pp=0</code></td><td>D send_metadata 前</td><td>每次请求</td><td>拿到指定 P rank 的 ZMQ endpoint</td></tr>
+<tr><td><code>POST /register_dp_rank</code></td><td>P sender</td><td>每次请求（dp_size&gt;1）</td><td>登记本请求的 dp_rank</td></tr>
+<tr><td><code>POST /query_dp_ranks</code></td><td>D receiver</td><td>每次请求（慢路径）</td><td>批量查 room → dp_rank</td></tr>
+<tr><td><code>GET /health</code></td><td>D heartbeat</td><td>周期性</td><td>探活 P 进程</td></tr>
+</table>
+
+<div class="callout">
+<strong>为什么需要这个中心化 server</strong>：D 启动时不知道 P 的 ZMQ 端点（rank_port 是启动时动态分配的，不是固定配置）。Bootstrap server 充当"通讯录"：P 一起来就注册自己，D 要找 P 时来查。
+</div>
+</div>
+
+<!-- PART 4: rank mapping -->
+<h2 id="mapping"><span class="step">PART 4</span>_resolve_rank_mapping：TP 不一致的组合爆炸</h2>
+<div class="card">
+<p>真实生产环境下，P 和 D 的并行度可能完全不同：<br>
+P TP=4 + DP=2（4 卡服务器，高算力）<br>
+D TP=8 + DP=1（8 卡服务器，高 KV 容量）</p>
+
+<p>这时一条请求的 KV 如何从"P 的 4 个 rank"映射到"D 的 8 个 rank"？_resolve_rank_mapping 负责算这个映射。</p>
+
+<pre><span class="path">// common/conn.py:249-327（只看 TP 分支）</span>
+<span class="kw">def</span> <span class="fn">_resolve_rank_mapping</span>(self, info: PrefillServerInfo):
+    <span class="kw">if</span> self.attn_tp_size == info.attn_tp_size:
+        <span class="com"># 情况 A: P 和 D TP 相同</span>
+        target_tp_rank = self.kv_args.engine_rank % self.attn_tp_size
+        required_dst_info_num = 1
+        required_prefill_response_num = 1
+        target_tp_ranks = [target_tp_rank]
+
+    <span class="kw">elif</span> self.attn_tp_size > info.attn_tp_size:
+        <span class="com"># 情况 B: D TP > P TP。比如 D=8, P=4</span>
+        <span class="com"># 1 个 P rank 服务 2 个 D rank。所以每 2 个 D rank 发同一个 P rank</span>
+        target_tp_rank = (self.kv_args.engine_rank % self.attn_tp_size) // (
+            self.attn_tp_size // info.attn_tp_size
+        )
+        required_dst_info_num = self.attn_tp_size // info.attn_tp_size  <span class="com"># P 需要等 2 条 D metadata</span>
+        required_prefill_response_num = 1
+
+    <span class="kw">else</span>:
+        <span class="com"># 情况 C: D TP < P TP。比如 D=2, P=8</span>
+        <span class="com"># 1 个 D rank 要从 4 个 P rank 各取一份 KV head 切片</span>
+        target_tp_ranks = list(range(
+            (self.kv_args.engine_rank % self.attn_tp_size) * (info.attn_tp_size // self.attn_tp_size),
+            (self.kv_args.engine_rank % self.attn_tp_size + 1) * (info.attn_tp_size // self.attn_tp_size),
+        ))
+        required_dst_info_num = 1
+        required_prefill_response_num = info.attn_tp_size // self.attn_tp_size  <span class="com"># D 要等 4 条 P 成功</span></pre>
+
+<table>
+<tr><th>量</th><th>含义</th></tr>
+<tr><td><code>target_tp_ranks</code></td><td>对本 D rank 而言，要从哪些 P rank 收 KV</td></tr>
+<tr><td><code>required_dst_info_num</code></td><td>P 等几条 D 的 metadata 才能进 WaitingForInput</td></tr>
+<tr><td><code>required_prefill_response_num</code></td><td>D 等几条 P 的 sync_status 才能切 Success</td></tr>
+</table>
+</div>
+
+<!-- PART 5: ZMQ message -->
+<h2 id="zmq"><span class="step">PART 5</span>两侧 ZMQ 线程：消息格式大全</h2>
+<div class="card">
+<p>P 侧和 D 侧各开了一个 ZMQ PULL socket，在后台线程里循环 <code>recv_multipart</code>。消息都是 multipart bytes，不同 opcode 走不同分支。</p>
+
+<h3>D → P 的消息（P 的 bootstrap_thread 处理）</h3>
+<pre><span class="path">// mooncake/conn.py:1345-1422</span>
+<span class="kw">def</span> <span class="fn">bootstrap_thread</span>():
+    <span class="kw">while</span> <span class="kw">True</span>:
+        msg = server_socket.<span class="fn">recv_multipart</span>()
+        room = msg[0].decode()
+
+        <span class="kw">if</span> room == <span class="str">"WATERMARK"</span>:
+            <span class="com"># staging buffer 反馈水位</span>
+            self.<span class="fn">_handle_watermark</span>(msg); <span class="kw">continue</span>
+
+        <span class="kw">if</span> room == <span class="str">"STAGING_RSP"</span>:
+            <span class="com"># staging buffer transfer 响应</span>
+            self.<span class="fn">_handle_staging_rsp</span>(msg); <span class="kw">continue</span>
+
+        sid = msg[3].decode()
+        <span class="kw">if</span> room == <span class="str">"None"</span>:
+            <span class="com"># 首次握手：D 告诉 P 自己的 KV/aux 指针</span>
+            self.decode_kv_args_table[sid] = KVArgsRegisterInfo.<span class="fn">from_zmq</span>(msg)
+        <span class="kw">else</span>:
+            <span class="com"># 请求级 metadata</span>
+            room = int(room)
+            self.transfer_infos[room][sid] = TransferInfo.<span class="fn">from_zmq</span>(msg)
+            <span class="kw">if</span> len(self.transfer_infos[room]) == required_dst_info_num:
+                self.<span class="fn">update_status</span>(room, KVPoll.WaitingForInput)</pre>
+
+<h3>P → D 的消息（D 的 decode_thread 处理）</h3>
+<pre><span class="path">// mooncake/conn.py:1425-1496</span>
+<span class="kw">def</span> <span class="fn">decode_thread</span>():
+    <span class="kw">while</span> <span class="kw">True</span>:
+        msg = server_socket.<span class="fn">recv_multipart</span>()
+
+        <span class="kw">if</span> msg[0] == AUX_DATA_HEADER:
+            self.<span class="fn">_handle_aux_data</span>(msg); <span class="kw">continue</span>
+        <span class="kw">if</span> msg[0] == <span class="str">b"CHUNK_READY"</span>:  <span class="com"># staging 反馈</span>
+            ...; <span class="kw">continue</span>
+        <span class="kw">if</span> msg[0] == <span class="str">b"STAGING_REQ"</span>:
+            self.<span class="fn">_handle_staging_req</span>(msg); <span class="kw">continue</span>
+
+        <span class="com"># 正常 sync：room, status, prefill_rank</span>
+        room, status, prefill_rank = msg
+        <span class="kw">if</span> int(status) == KVPoll.Success:
+            self.prefill_response_tracker[int(room)].add(int(prefill_rank))
+            <span class="kw">if</span> len(self.prefill_response_tracker[int(room)]) == required_prefill_response_num:
+                self.<span class="fn">update_status</span>(int(room), KVPoll.Success)</pre>
+</div>
+
+<!-- PART 6: metadata buffer -->
+<h2 id="metadata"><span class="step">PART 6</span>MetadataBuffers：KV 之外的首 token 接力棒</h2>
+<div class="card">
+<p>P 不仅要把 KV 给 D，还要把<strong>首 token</strong>（以及首 token 的 logprob、cached_tokens、spec 采样信息）给 D。这一部分不走 KV pool，走独立的 metadata buffer。</p>
+
+<pre><span class="path">// disaggregation/utils.py:135-220</span>
+<span class="kw">class</span> MetadataBuffers:
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, size, hidden_size, hidden_states_dtype, max_top_logprobs_num=128):
+        self.output_ids            = torch.<span class="fn">zeros</span>((size, 16), dtype=torch.int32, device=device)
+        self.cached_tokens         = torch.<span class="fn">zeros</span>((size, 16), dtype=torch.int32, device=device)
+        self.output_token_logprobs_val = torch.<span class="fn">zeros</span>((size, 16), dtype=torch.float32, device=device)
+        self.output_top_logprobs_val   = torch.<span class="fn">zeros</span>((size, 128), dtype=torch.float32, device=device)
+        self.output_topk_p         = torch.<span class="fn">zeros</span>((size, 16), dtype=torch.float32, device=device)
+        self.output_topk_index     = torch.<span class="fn">zeros</span>((size, 16), dtype=torch.int64, device=device)
+        self.output_hidden_states  = torch.<span class="fn">zeros</span>((size, hidden_size), dtype=hidden_states_dtype, device=device)
+        self.bootstrap_room        = torch.<span class="fn">zeros</span>((size, 8),  dtype=bootstrap_room_dtype, device=device) <span class="com"># ★ 校验防串包</span></pre>
+
+<p><code>size</code> 就是<strong>同时在传的请求数上限</strong>。每个请求拿一个 slot，用完归还。P 把首 token 写进对应 slot 的 <code>output_ids[slot, 0]</code>，同时把 <code>bootstrap_room</code> 写进 <code>bootstrap_room[slot, 0]</code>。</p>
+
+<p>transfer_worker 在 send_aux 时把 slot 的所有 tensor 都 RDMA 到 D 侧对应的同一 slot；D 的 commit 从 slot 读出来后校验 bootstrap_room 匹配。</p>
+</div>
+
+<!-- PART 7: staging -->
+<h2 id="staging"><span class="step">PART 7</span>Staging Buffer：异构 TP 的特殊优化</h2>
+<div class="card">
+<p>当 P TP=4，D TP=1（D 用 DP attention）时：</p>
+<ul class="tight">
+<li>D 一个 rank 拥有<strong>所有</strong> KV head</li>
+<li>P 4 个 rank 各持 1/4 的 KV head</li>
+<li>D 一个请求的 KV 需要从 4 个 P rank 各取一份</li>
+</ul>
+
+<p>直接 per-token RDMA 会产生大量小 transfer（每 head slice 一次 RDMA，每 token 一批），带宽利用率极低。</p>
+
+<h3>staging buffer 方案</h3>
+<div class="grid cols-2">
+<div class="card" style="margin:0;background:var(--panel2)">
+<h4 style="color:var(--bad)">未优化</h4>
+<ul class="tight">
+<li>N token × H head × 4 P rank = 4NH 次小 RDMA</li>
+<li>每次只传 head_dim 字节</li>
+<li>RDMA queue 被小包挤爆</li>
+</ul>
+</div>
+<div class="card" style="margin:0;background:var(--panel2)">
+<h4 style="color:var(--brand)">开启 staging</h4>
+<ul class="tight">
+<li>P 侧先 <strong>gather</strong> 多个 head 到一个连续 GPU buffer</li>
+<li>一次 bulk RDMA 写到 D 的 staging pool</li>
+<li>D 侧再从 staging pool scatter 到各 KV page</li>
+<li>吞吐 2-5x 提升</li>
+</ul>
+</div>
+</div>
+
+<pre><span class="path">// 环境变量</span>
+<span class="kw">export</span> SGLANG_DISAGG_STAGING_BUFFER=1
+<span class="kw">export</span> SGLANG_DISAGG_STAGING_BUFFER_SIZE_MB=64
+<span class="kw">export</span> SGLANG_DISAGG_STAGING_POOL_SIZE_MB=4096</pre>
+
+<div class="callout warn">
+<strong>不要用于 MLA 模型</strong>：DeepSeek-V2/V3 的 MLA 结构每个 slice 就是全部（latent），不存在 gather/scatter 收益，强开 staging 反而有正确性问题。
+</div>
+</div>
+
+<!-- PART 8 -->
+<h2 id="summary"><span class="step">PART 8</span>本章要点</h2>
+<div class="card">
+<table>
+<tr><th>问题</th><th>答案</th></tr>
+<tr><td>KV Transfer 有几层？</td><td>3 层：控制面（BootstrapServer）、元数据面（KVManager+ZMQ）、数据面（Mooncake/RDMA）</td></tr>
+<tr><td>KVPoll 5 状态怎么推进？</td><td>事件驱动。P 的 bootstrap_thread 和 D 的 decode_thread 各自在后台收 ZMQ，到条件就 update_status</td></tr>
+<tr><td>P/D TP 不一致怎么配对？</td><td>_resolve_rank_mapping 算出 target_tp_ranks + required_dst_info_num + required_prefill_response_num</td></tr>
+<tr><td>首 token 怎么传？</td><td>写到共享 MetadataBuffers 的 slot，通过 send_aux RDMA；bootstrap_room 字段校验防串包</td></tr>
+<tr><td>异构 TP 为什么慢？</td><td>head slice 数量爆炸导致大量小 RDMA；staging buffer 用 gather/scatter 批量化</td></tr>
+</table>
+</div>
+<div class="nav"><a href="05-decode-worker.html">← 上一篇：Decode Worker</a><a href="07-router-and-production.html">下一篇：生产治理 →</a></div><div class="foot">SGLang PD Disaggregation · 原理 → 源码 → 流转 → 交互演示</div></div>  <script src="../course-nav.js"></script>
+</body></html>

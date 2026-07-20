@@ -1,0 +1,464 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>T7 · GEMM Naive · 从最慢的写法开始</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.run{background:#1a1f2b;border:1px dashed var(--brand);border-radius:10px;padding:10px 14px;font-family:"SF Mono",monospace;font-size:12.5px;color:var(--brand);margin:8px 0}
+.btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:8px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit}
+.btn:hover{border-color:var(--brand);color:var(--brand)}
+.btn.active{background:var(--brand);color:var(--bg);border-color:var(--brand)}
+.controls{display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>T7 · GEMM Naive · 从最慢的写法开始 <span class="tag">Triton 系列 · 8/15</span></h1>
+<div class="sub">先写一个能跑但很慢的 GEMM kernel——慢没关系，关键是暴露问题：每步从 HBM 读一小条数据，完全没有复用。这个"痛"驱动我们去优化。</div>
+
+<div class="toc">
+  <a href="#tile">§1 每个 program 算一个 tile</a>
+  <a href="#naive">§2 K 维逐元素循环</a>
+  <a href="#kernel">§3 完整 Naive Kernel</a>
+  <a href="#why-slow">§4 为什么慢？数据复用分析</a>
+  <a href="#real">§5 真正的瓶颈</a>
+  <a href="#tiling">§6 引出 Tiling 动机</a>
+  <a href="#bench">§7 可运行代码 + Benchmark</a>
+  <a href="#takeaway">§8 带走</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="tile"><span class="step">§1</span>思路：每个 program 算 C 的一个 tile</h2>
+
+<div class="card">
+<p>我们把 C 切成 <code>BLOCK_M × BLOCK_N</code> 的小块，每个 program 负责算一个块。</p>
+<p>一个 program 的任务：计算 <code>C[pid_m*BLOCK_M : (pid_m+1)*BLOCK_M, pid_n*BLOCK_N : (pid_n+1)*BLOCK_N]</code></p>
+</div>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 780 340" width="780">
+  <!-- C matrix outline -->
+  <rect x="80" y="40" width="400" height="280" rx="4" fill="none" stroke="#8b93a7" stroke-width="1.5"/>
+  <text x="280" y="28" text-anchor="middle" fill="#8b93a7" font-family="SF Mono" font-size="14">C [M × N]</text>
+
+  <!-- Grid lines - horizontal -->
+  <line x1="80" y1="110" x2="480" y2="110" stroke="#262b38" stroke-width="0.8" stroke-dasharray="4"/>
+  <line x1="80" y1="180" x2="480" y2="180" stroke="#262b38" stroke-width="0.8" stroke-dasharray="4"/>
+  <line x1="80" y1="250" x2="480" y2="250" stroke="#262b38" stroke-width="0.8" stroke-dasharray="4"/>
+
+  <!-- Grid lines - vertical -->
+  <line x1="180" y1="40" x2="180" y2="320" stroke="#262b38" stroke-width="0.8" stroke-dasharray="4"/>
+  <line x1="280" y1="40" x2="280" y2="320" stroke="#262b38" stroke-width="0.8" stroke-dasharray="4"/>
+  <line x1="380" y1="40" x2="380" y2="320" stroke="#262b38" stroke-width="0.8" stroke-dasharray="4"/>
+
+  <!-- Highlighted tile -->
+  <rect x="180" y="110" width="100" height="70" rx="4" fill="rgba(110,231,183,0.15)" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="230" y="150" text-anchor="middle" fill="#6ee7b7" font-family="SF Mono" font-size="11" font-weight="700">pid=(1,1)</text>
+  <text x="230" y="168" text-anchor="middle" fill="#6ee7b7" font-family="SF Mono" font-size="10">BLOCK_M×BLOCK_N</text>
+
+  <!-- Labels -->
+  <text x="60" y="78" text-anchor="end" fill="#8b93a7" font-family="SF Mono" font-size="11">pid_m=0</text>
+  <text x="60" y="148" text-anchor="end" fill="#6ee7b7" font-family="SF Mono" font-size="11">pid_m=1</text>
+  <text x="60" y="218" text-anchor="end" fill="#8b93a7" font-family="SF Mono" font-size="11">pid_m=2</text>
+  <text x="60" y="288" text-anchor="end" fill="#8b93a7" font-family="SF Mono" font-size="11">pid_m=3</text>
+
+  <text x="130" y="336" text-anchor="middle" fill="#8b93a7" font-family="SF Mono" font-size="11">pid_n=0</text>
+  <text x="230" y="336" text-anchor="middle" fill="#6ee7b7" font-family="SF Mono" font-size="11">pid_n=1</text>
+  <text x="330" y="336" text-anchor="middle" fill="#8b93a7" font-family="SF Mono" font-size="11">pid_n=2</text>
+  <text x="430" y="336" text-anchor="middle" fill="#8b93a7" font-family="SF Mono" font-size="11">pid_n=3</text>
+
+  <!-- Annotation -->
+  <line x1="282" y1="145" x2="540" y2="100" stroke="#6ee7b7" stroke-width="1" stroke-dasharray="3"/>
+  <rect x="540" y="80" width="210" height="50" rx="8" fill="#161a23" stroke="#6ee7b7" stroke-width="1"/>
+  <text x="645" y="100" text-anchor="middle" fill="#6ee7b7" font-family="SF Mono" font-size="11">这个 program 负责</text>
+  <text x="645" y="118" text-anchor="middle" fill="#6ee7b7" font-family="SF Mono" font-size="11">算这一小块的所有元素</text>
+</svg>
+</div>
+
+<div class="callout info">
+Grid 形状 = <code>(ceil(M/BLOCK_M), ceil(N/BLOCK_N))</code>，总共启动这么多 programs 并行执行。
+</div>
+
+<!-- ============================================================ -->
+<h2 id="naive"><span class="step">§2</span>朴素思路：K 维逐元素循环</h2>
+
+<div class="card">
+<p>最直觉的写法——对 K 维的每一列/每一行，逐个读取并做外积累加：</p>
+
+<pre><span class="com"># ❌ 能跑，但非常慢——先看看为什么</span>
+<span class="kw">for</span> k <span class="kw">in</span> <span class="fn">range</span>(K):
+    <span class="com"># 读 A 的第 k 列中属于本 tile 的那 BLOCK_M 个元素</span>
+    a_val = tl.<span class="fn">load</span>(a_ptr + offs_m * stride_am + k * stride_ak)  <span class="com"># shape [BLOCK_M]</span>
+    <span class="com"># 读 B 的第 k 行中属于本 tile 的那 BLOCK_N 个元素</span>
+    b_val = tl.<span class="fn">load</span>(b_ptr + k * stride_bk + offs_n * stride_bn)  <span class="com"># shape [BLOCK_N]</span>
+    <span class="com"># 外积：[BLOCK_M] × [BLOCK_N] → [BLOCK_M, BLOCK_N]</span>
+    acc += a_val[:, <span class="num">None</span>] * b_val[<span class="num">None</span>, :]  <span class="com"># [BLOCK_M, BLOCK_N]</span></pre>
+</div>
+
+<h3>为什么这段代码在 Triton 里能跑？</h3>
+<div class="callout info">
+Triton 支持 broadcasting！<code>a_val[:, None]</code> 变成 <code>[BLOCK_M, 1]</code>，<code>b_val[None, :]</code> 变成 <code>[1, BLOCK_N]</code>，相乘后得到 <code>[BLOCK_M, BLOCK_N]</code>。这是合法的外积运算。
+</div>
+
+<h3>但为什么它很慢？</h3>
+<div class="callout bad">
+<ul class="tight">
+<li>每次循环只从 HBM 读 <code>BLOCK_M + BLOCK_N</code> 个元素（很少！）</li>
+<li>K 次循环 → 总读取：<code>K × (BLOCK_M + BLOCK_N)</code> 个元素</li>
+<li>循环体太轻，GPU 的 instruction pipeline 无法有效隐藏 memory latency</li>
+<li><code>a[:, None] * b[None, :]</code> 是标量广播乘法，<strong>用不了 Tensor Core</strong></li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="kernel"><span class="step">§3</span>完整 Naive Kernel 代码</h2>
+
+<div class="card">
+<pre><span class="kw">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">matmul_naive_kernel</span>(
+    a_ptr, b_ptr, c_ptr,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    <span class="com"># ── 定位：我是第几个 tile ──</span>
+    pid_m = tl.<span class="fn">program_id</span>(<span class="num">0</span>)
+    pid_n = tl.<span class="fn">program_id</span>(<span class="num">1</span>)
+
+    <span class="com"># ── 输出 tile 的行列偏移 ──</span>
+    offs_m = pid_m * BLOCK_M + tl.<span class="fn">arange</span>(<span class="num">0</span>, BLOCK_M)  <span class="com"># [BLOCK_M]</span>
+    offs_n = pid_n * BLOCK_N + tl.<span class="fn">arange</span>(<span class="num">0</span>, BLOCK_N)  <span class="com"># [BLOCK_N]</span>
+
+    <span class="com"># ── 累加器（fp32 精度）──</span>
+    acc = tl.<span class="fn">zeros</span>((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    <span class="com"># ── K 维逐元素循环 ──</span>
+    <span class="kw">for</span> k <span class="kw">in</span> <span class="fn">range</span>(K):
+        <span class="com"># 读 A 的一列: [BLOCK_M] 个元素</span>
+        a = tl.<span class="fn">load</span>(
+            a_ptr + offs_m * stride_am + k * stride_ak,
+            mask=offs_m &lt; M, other=<span class="num">0.0</span>
+        )
+        <span class="com"># 读 B 的一行: [BLOCK_N] 个元素</span>
+        b = tl.<span class="fn">load</span>(
+            b_ptr + k * stride_bk + offs_n * stride_bn,
+            mask=offs_n &lt; N, other=<span class="num">0.0</span>
+        )
+        <span class="com"># 外积累加</span>
+        acc += a[:, <span class="num">None</span>] * b[<span class="num">None</span>, :]
+
+    <span class="com"># ── 写回 C ──</span>
+    c_ptrs = c_ptr + offs_m[:, <span class="num">None</span>] * stride_cm + offs_n[<span class="num">None</span>, :] * stride_cn
+    mask = (offs_m[:, <span class="num">None</span>] &lt; M) &amp; (offs_n[<span class="num">None</span>, :] &lt; N)
+    tl.<span class="fn">store</span>(c_ptrs, acc.<span class="fn">to</span>(tl.float16), mask=mask)</pre>
+</div>
+
+<h3>逐段解读</h3>
+
+<table>
+<tr><th>部分</th><th>作用</th><th>关键细节</th></tr>
+<tr><td><code>program_id(0/1)</code></td><td>确定自己负责 C 的哪个 tile</td><td>2D grid: axis 0 = M 方向, axis 1 = N 方向</td></tr>
+<tr><td><code>offs_m / offs_n</code></td><td>tile 内的行列索引</td><td><code>arange</code> 生成连续整数向量</td></tr>
+<tr><td><code>tl.zeros</code></td><td>初始化 fp32 累加器</td><td>用 fp32 防止 fp16 精度丢失</td></tr>
+<tr><td><code>for k in range(K)</code></td><td>逐元素遍历 K 维</td><td>循环次数 = K，每次只读 1 列/行</td></tr>
+<tr><td><code>tl.load + mask</code></td><td>从 HBM 读取数据</td><td>mask 处理边界（M/N 不整除 BLOCK 时）</td></tr>
+<tr><td><code>a[:, None] * b[None, :]</code></td><td>外积 → [BLOCK_M, BLOCK_N]</td><td>标量广播乘法，不走 Tensor Core</td></tr>
+<tr><td><code>acc.to(tl.float16)</code></td><td>写回时转回 fp16</td><td>节省显存，匹配输出 dtype</td></tr>
+</table>
+
+<!-- ============================================================ -->
+<h2 id="why-slow"><span class="step">§4</span>为什么这很慢？ — 数据复用分析</h2>
+
+<div class="card">
+<h3>算一笔账</h3>
+<pre><span class="com">设 BLOCK_M = 64, BLOCK_N = 64, K = 4096</span>
+
+每次 K 循环：
+  读 A: BLOCK_M = <span class="num">64</span> 个 fp16 = <span class="num">128</span> Bytes
+  读 B: BLOCK_N = <span class="num">64</span> 个 fp16 = <span class="num">128</span> Bytes
+  总读: <span class="num">256</span> Bytes
+  计算: BLOCK_M × BLOCK_N = 64×64 = <span class="num">4096</span> 次乘加 = <span class="num">8192</span> FLOPs
+
+单步 Arithmetic Intensity = 8192 / 256 = <span class="num">32 FLOP/Byte</span></pre>
+
+<div class="callout warn">
+<strong>等等，AI = 32 看起来不低？</strong><br/>
+如果用 tiled 方案（BLOCK_K=64），算出来的 AI：<br/>
+<code>2×64×64×64 / ((64×64 + 64×64)×2) = 32</code> — 一样！<br/><br/>
+那为什么 naive 慢？<strong>因为 AI 只是一半的故事。</strong>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="real"><span class="step">§5</span>真正的瓶颈：循环太多次 → 三重打击</h2>
+
+<div class="card">
+<p>AI 是一回事，但循环次数对 GPU 的影响是另一回事：</p>
+
+<table>
+<tr><th>问题</th><th>说明</th><th>影响</th></tr>
+<tr>
+  <td style="color:var(--bad)">循环次数爆炸</td>
+  <td>K=4096 次循环 vs tiled 的 K/64=64 次</td>
+  <td>loop overhead 放大 64×</td>
+</tr>
+<tr>
+  <td style="color:var(--bad)">无法用 Tensor Core</td>
+  <td><code>a[:, None] * b[None, :]</code> 是标量广播乘法</td>
+  <td>Tensor Core 需要 <code>tl.dot</code> 作用于 2D tile</td>
+</tr>
+<tr>
+  <td style="color:var(--bad)">Software Pipelining 失效</td>
+  <td>每步计算太轻（只做一次外积）</td>
+  <td>无法用下一步的 load 覆盖当前步的 compute latency</td>
+</tr>
+</table>
+</div>
+
+<div class="callout bad">
+<strong>Naive 的核心问题不仅是"每步读的少"，更是：</strong><br/>
+① 循环 4096 次 → 巨大的 loop overhead<br/>
+② <code>a[:, None] * b[None, :]</code> 不能走 Tensor Core → 算力利用率断崖<br/>
+③ 每步太轻 → 无法做 software pipelining → memory latency 裸露<br/>
+<strong>三重打击，速度只有 cuBLAS 的 5~10%。</strong>
+</div>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 780 200" width="780">
+  <!-- Timeline: Naive -->
+  <text x="40" y="30" fill="#8b93a7" font-family="SF Mono" font-size="12">Naive: 4096 次循环，每次很薄</text>
+  <rect x="40" y="45" width="700" height="24" rx="4" fill="#1a1f2b" stroke="#262b38"/>
+  <!-- Many thin slices -->
+  <g fill="rgba(248,113,113,0.4)" stroke="#f87171" stroke-width="0.3">
+    <rect x="41" y="46" width="1.5" height="22" rx="1"/>
+    <rect x="44" y="46" width="1.5" height="22" rx="1"/>
+    <rect x="47" y="46" width="1.5" height="22" rx="1"/>
+    <rect x="50" y="46" width="1.5" height="22" rx="1"/>
+    <rect x="53" y="46" width="1.5" height="22" rx="1"/>
+    <rect x="56" y="46" width="1.5" height="22" rx="1"/>
+    <rect x="59" y="46" width="1.5" height="22" rx="1"/>
+    <rect x="62" y="46" width="1.5" height="22" rx="1"/>
+    <rect x="65" y="46" width="1.5" height="22" rx="1"/>
+    <rect x="68" y="46" width="1.5" height="22" rx="1"/>
+    <rect x="71" y="46" width="1.5" height="22" rx="1"/>
+    <rect x="74" y="46" width="1.5" height="22" rx="1"/>
+  </g>
+  <text x="90" y="61" fill="#f87171" font-family="SF Mono" font-size="10">... × 4096 次循环 ...</text>
+  <text x="735" y="61" text-anchor="end" fill="#f87171" font-family="SF Mono" font-size="10">很慢</text>
+
+  <!-- Timeline: Tiled -->
+  <text x="40" y="110" fill="#8b93a7" font-family="SF Mono" font-size="12">Tiled: 64 次循环，每次很厚 (BLOCK_K=64)</text>
+  <rect x="40" y="125" width="700" height="24" rx="4" fill="#1a1f2b" stroke="#262b38"/>
+  <!-- Thick slices -->
+  <g fill="rgba(110,231,183,0.3)" stroke="#6ee7b7" stroke-width="0.5">
+    <rect x="41" y="126" width="10" height="22" rx="2"/>
+    <rect x="53" y="126" width="10" height="22" rx="2"/>
+    <rect x="65" y="126" width="10" height="22" rx="2"/>
+    <rect x="77" y="126" width="10" height="22" rx="2"/>
+    <rect x="89" y="126" width="10" height="22" rx="2"/>
+    <rect x="101" y="126" width="10" height="22" rx="2"/>
+    <rect x="113" y="126" width="10" height="22" rx="2"/>
+    <rect x="125" y="126" width="10" height="22" rx="2"/>
+  </g>
+  <text x="150" y="141" fill="#6ee7b7" font-family="SF Mono" font-size="10">... × 64 次循环 ...</text>
+  <text x="735" y="141" text-anchor="end" fill="#6ee7b7" font-family="SF Mono" font-size="10">快！</text>
+
+  <!-- Legend -->
+  <text x="40" y="180" fill="#8b93a7" font-family="SF Mono" font-size="11">每个厚块内用 tl.dot → Tensor Core 全速运转 + pipeline 覆盖 latency</text>
+</svg>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="tiling"><span class="step">§6</span>引出 Tiling 的动机</h2>
+
+<div class="card">
+<p>如果我们把 K 也切成块（<code>BLOCK_K</code>），每次读一个 <code>[BLOCK_M × BLOCK_K]</code> 的 A tile 和 <code>[BLOCK_K × BLOCK_N]</code> 的 B tile……</p>
+
+<table>
+<tr><th></th><th style="color:var(--bad)">Naive（本节）</th><th style="color:var(--brand)">Tiled（下一节）</th></tr>
+<tr><td>K 循环次数</td><td>K（如 4096）</td><td>K / BLOCK_K（如 64）</td></tr>
+<tr><td>每步读取</td><td>BLOCK_M + BLOCK_N 个元素</td><td>BLOCK_M×BLOCK_K + BLOCK_K×BLOCK_N 个元素</td></tr>
+<tr><td>每步计算</td><td>BLOCK_M × BLOCK_N 次标量乘</td><td>2 × BLOCK_M × BLOCK_N × BLOCK_K FLOPs</td></tr>
+<tr><td>Tensor Core</td><td style="color:var(--bad)">不能用（标量乘+广播）</td><td style="color:var(--brand)">能用（tl.dot on 2D tiles）</td></tr>
+<tr><td>Software Pipeline</td><td style="color:var(--bad)">困难（每步太轻）</td><td style="color:var(--brand)">可行（每步足够重）</td></tr>
+<tr><td>实际性能</td><td>~5-10% cuBLAS</td><td>~60-90% cuBLAS</td></tr>
+</table>
+</div>
+
+<div class="callout">
+<strong>下一节我们引入 <code>BLOCK_K</code> 和 <code>tl.dot</code>——这是从"能跑"到"快"的关键跳跃。</strong>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="bench"><span class="step">§7</span>可运行代码 + Benchmark</h2>
+
+<div class="card">
+<h3>完整可复制代码</h3>
+<pre><span class="kw">import</span> torch
+<span class="kw">import</span> triton
+<span class="kw">import</span> triton.language <span class="kw">as</span> tl
+
+
+<span class="kw">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">matmul_naive_kernel</span>(
+    a_ptr, b_ptr, c_ptr,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+):
+    pid_m = tl.<span class="fn">program_id</span>(<span class="num">0</span>)
+    pid_n = tl.<span class="fn">program_id</span>(<span class="num">1</span>)
+
+    offs_m = pid_m * BLOCK_M + tl.<span class="fn">arange</span>(<span class="num">0</span>, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.<span class="fn">arange</span>(<span class="num">0</span>, BLOCK_N)
+
+    acc = tl.<span class="fn">zeros</span>((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    <span class="kw">for</span> k <span class="kw">in</span> <span class="fn">range</span>(K):
+        a = tl.<span class="fn">load</span>(
+            a_ptr + offs_m * stride_am + k * stride_ak,
+            mask=offs_m &lt; M, other=<span class="num">0.0</span>
+        )
+        b = tl.<span class="fn">load</span>(
+            b_ptr + k * stride_bk + offs_n * stride_bn,
+            mask=offs_n &lt; N, other=<span class="num">0.0</span>
+        )
+        acc += a[:, <span class="num">None</span>] * b[<span class="num">None</span>, :]
+
+    c_ptrs = c_ptr + offs_m[:, <span class="num">None</span>] * stride_cm + offs_n[<span class="num">None</span>, :] * stride_cn
+    mask = (offs_m[:, <span class="num">None</span>] &lt; M) &amp; (offs_n[<span class="num">None</span>, :] &lt; N)
+    tl.<span class="fn">store</span>(c_ptrs, acc.<span class="fn">to</span>(tl.float16), mask=mask)
+
+
+<span class="kw">def</span> <span class="fn">matmul_naive</span>(a: torch.Tensor, b: torch.Tensor) -&gt; torch.Tensor:
+    <span class="str">"""Naive Triton GEMM: C = A @ B"""</span>
+    M, K = a.shape
+    K2, N = b.shape
+    <span class="kw">assert</span> K == K2, <span class="str">f"Shape mismatch: A is [{M},{K}], B is [{K2},{N}]"</span>
+    c = torch.<span class="fn">empty</span>((M, N), device=a.device, dtype=torch.float16)
+    grid = (triton.<span class="fn">cdiv</span>(M, <span class="num">64</span>), triton.<span class="fn">cdiv</span>(N, <span class="num">64</span>))
+    matmul_naive_kernel[grid](
+        a, b, c, M, N, K,
+        a.<span class="fn">stride</span>(<span class="num">0</span>), a.<span class="fn">stride</span>(<span class="num">1</span>),
+        b.<span class="fn">stride</span>(<span class="num">0</span>), b.<span class="fn">stride</span>(<span class="num">1</span>),
+        c.<span class="fn">stride</span>(<span class="num">0</span>), c.<span class="fn">stride</span>(<span class="num">1</span>),
+        BLOCK_M=<span class="num">64</span>, BLOCK_N=<span class="num">64</span>,
+    )
+    <span class="kw">return</span> c
+
+
+<span class="com"># ── 正确性验证 ──</span>
+M, N, K = <span class="num">512</span>, <span class="num">512</span>, <span class="num">4096</span>
+a = torch.<span class="fn">randn</span>((M, K), device=<span class="str">"cuda"</span>, dtype=torch.float16)
+b = torch.<span class="fn">randn</span>((K, N), device=<span class="str">"cuda"</span>, dtype=torch.float16)
+
+c_triton = <span class="fn">matmul_naive</span>(a, b)
+c_torch = a @ b
+
+<span class="fn">print</span>(<span class="str">f"Max diff: {(c_triton - c_torch).abs().max().item():.4f}"</span>)
+<span class="fn">print</span>(<span class="str">f"Allclose (atol=1e-1): {torch.allclose(c_triton, c_torch, atol=1e-1)}"</span>)
+
+
+<span class="com"># ── Benchmark ──</span>
+<span class="kw">import</span> triton.testing
+
+<span class="kw">@triton.testing.perf_report</span>(
+    triton.testing.<span class="fn">Benchmark</span>(
+        x_names=[<span class="str">"M"</span>],
+        x_vals=[<span class="num">128</span>, <span class="num">256</span>, <span class="num">512</span>, <span class="num">1024</span>, <span class="num">2048</span>],
+        line_arg=<span class="str">"provider"</span>,
+        line_vals=[<span class="str">"naive"</span>, <span class="str">"cublas"</span>],
+        line_names=[<span class="str">"Naive Triton"</span>, <span class="str">"cuBLAS (torch)"</span>],
+        styles=[(<span class="str">"red"</span>, <span class="str">"-"</span>), (<span class="str">"green"</span>, <span class="str">"-"</span>)],
+        ylabel=<span class="str">"TFLOPS"</span>,
+        plot_name=<span class="str">"matmul-naive-vs-cublas"</span>,
+        args={<span class="str">"K"</span>: <span class="num">4096</span>, <span class="str">"N"</span>: <span class="num">4096</span>},
+    )
+)
+<span class="kw">def</span> <span class="fn">benchmark</span>(M, N, K, provider):
+    a = torch.<span class="fn">randn</span>((M, K), device=<span class="str">"cuda"</span>, dtype=torch.float16)
+    b = torch.<span class="fn">randn</span>((K, N), device=<span class="str">"cuda"</span>, dtype=torch.float16)
+    quantiles = [<span class="num">0.5</span>, <span class="num">0.2</span>, <span class="num">0.8</span>]
+    <span class="kw">if</span> provider == <span class="str">"naive"</span>:
+        ms, min_ms, max_ms = triton.testing.<span class="fn">do_bench</span>(
+            <span class="kw">lambda</span>: <span class="fn">matmul_naive</span>(a, b), quantiles=quantiles
+        )
+    <span class="kw">else</span>:
+        ms, min_ms, max_ms = triton.testing.<span class="fn">do_bench</span>(
+            <span class="kw">lambda</span>: a @ b, quantiles=quantiles
+        )
+    tflops = <span class="num">2</span> * M * N * K * <span class="num">1e-12</span> / (ms * <span class="num">1e-3</span>)
+    <span class="kw">return</span> tflops
+
+benchmark.<span class="fn">run</span>(print_data=<span class="num">True</span>)</pre>
+</div>
+
+<div class="callout warn">
+<strong>预期结果：</strong>Naive Triton GEMM 大约只有 cuBLAS 的 5~10% 性能。矩阵越大差距越明显——这正好说明 tiling + Tensor Core 的重要性。
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§8</span>带走</h2>
+
+<div class="card">
+<table>
+<tr><th>#</th><th>要点</th></tr>
+<tr><td style="color:var(--brand)">1</td><td><strong>Naive GEMM</strong>：K 维逐元素循环，每步只读一列/一行 → 可以跑，但是极慢</td></tr>
+<tr><td style="color:var(--brand)">2</td><td><strong>慢的原因</strong>：循环 4096 次、不能用 Tensor Core、无法 software pipeline——三重打击</td></tr>
+<tr><td style="color:var(--brand)">3</td><td><strong>解药</strong>：把 K 也 tile 化 → 引入 BLOCK_K + <code>tl.dot</code>（下一节）</td></tr>
+</table>
+</div>
+
+<div class="callout">
+<strong>Next →</strong> T8 · GEMM Tiled：引入 BLOCK_K，从 5% 跳到 60%+ cuBLAS 性能。
+</div>
+
+<div class="foot">T7 · GEMM Naive — Triton 系列 8/15</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,359 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C11 · Bank Conflict 与 Swizzle · 消除 Shared Memory 瓶颈</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.type{color:#fb7185}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+svg text{font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.svg-wrap{margin:20px 0;text-align:center}
+.svg-wrap svg{max-width:100%}
+.formula{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 20px;margin:12px 0;font-family:"SF Mono","JetBrains Mono",monospace;font-size:13px;line-height:1.8}
+.highlight{color:var(--brand);font-weight:600}
+.highlight2{color:var(--brand2);font-weight:600}
+.highlight-warn{color:var(--warn);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>C11 · Bank Conflict 与 Swizzle · 消除 Shared Memory 瓶颈 <span class="tag">CUDA GEMM 系列 · 12/15</span></h1>
+<p class="sub">你的 GEMM 从 82% 到 95% 的最后一步：消除 shared memory 的 bank conflict。理解 swizzle pattern 后，你就知道 CUTLASS 那些"神秘的 XOR"在干什么了。</p>
+
+<!-- §1 -->
+<h2><span class="step">§1</span>Bank Conflict 回顾</h2>
+
+<div class="card">
+<p><span class="highlight">Shared memory 硬件结构：</span></p>
+<ul class="tight">
+  <li>32 个 bank，每个 bank 宽度 4 bytes</li>
+  <li>bank 编号公式：<code>bank(addr) = (addr / 4) % 32</code></li>
+  <li>同一 warp 中多个 thread 访问同一 bank &rarr; <span class="highlight-warn">conflict</span> &rarr; 串行化</li>
+</ul>
+</div>
+
+<div class="callout">
+在 GEMM 中，从 shared memory 加载 tile 到 registers 时，如果 layout 不对，很容易产生 bank conflict。
+</div>
+
+<!-- §2 -->
+<h2><span class="step">§2</span>GEMM 中 Bank Conflict 的来源</h2>
+
+<p>Case: 从 <code>A_shared[BM][BK]</code> 中按列加载数据：</p>
+
+<pre>
+<span class="com">// A_shared[32][32], float (每个元素 4 bytes)</span>
+
+<span class="com">// Thread 0 loads A_shared[0][k]  → addr = 0*32+k = k      → bank = k%32</span>
+<span class="com">// Thread 1 loads A_shared[1][k]  → addr = 1*32+k = 32+k   → bank = (32+k)%32 = k%32</span>
+<span class="com">// Thread 2 loads A_shared[2][k]  → addr = 2*32+k = 64+k   → bank = (64+k)%32 = k%32</span>
+<span class="com">// ...</span>
+<span class="com">// Thread 31 loads A_shared[31][k] → bank = k%32</span>
+</pre>
+
+<div class="callout bad">
+所有 32 个 thread 都访问 bank k%32 &rarr; <strong>32-way bank conflict</strong>！最坏情况！
+</div>
+
+<!-- SVG: 32 threads all pointing to same bank -->
+<div class="svg-wrap">
+<svg width="680" height="320" viewBox="0 0 680 320">
+  <!-- Banks -->
+  <rect x="40" y="250" width="600" height="40" rx="6" fill="#161a23" stroke="#262b38"/>
+  <text x="340" y="300" text-anchor="middle" fill="#8b93a7" font-size="11">32 Banks (Bank 0 ~ Bank 31)</text>
+
+  <!-- Target bank (highlighted) -->
+  <rect x="298" y="252" width="24" height="36" rx="3" fill="#fbbf24" opacity="0.3"/>
+  <text x="310" y="275" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="bold">k</text>
+
+  <!-- Bank labels -->
+  <text x="55" y="275" fill="#6b7280" font-size="9">B0</text>
+  <text x="110" y="275" fill="#6b7280" font-size="9">B4</text>
+  <text x="170" y="275" fill="#6b7280" font-size="9">B8</text>
+  <text x="225" y="275" fill="#6b7280" font-size="9">B12</text>
+  <text x="370" y="275" fill="#6b7280" font-size="9">B20</text>
+  <text x="430" y="275" fill="#6b7280" font-size="9">B24</text>
+  <text x="490" y="275" fill="#6b7280" font-size="9">B28</text>
+  <text x="550" y="275" fill="#6b7280" font-size="9">B31</text>
+
+  <!-- Thread block -->
+  <rect x="140" y="20" width="400" height="36" rx="6" fill="#161a23" stroke="#262b38"/>
+  <text x="340" y="43" text-anchor="middle" fill="#8b93a7" font-size="11">Warp: Thread 0 ~ Thread 31</text>
+
+  <!-- Thread arrows all pointing to same bank -->
+  <g stroke="#f87171" stroke-width="1.2" fill="none" marker-end="url(#arrowRed)">
+    <line x1="160" y1="58" x2="310" y2="248"/>
+    <line x1="190" y1="58" x2="310" y2="248"/>
+    <line x1="220" y1="58" x2="310" y2="248"/>
+    <line x1="250" y1="58" x2="310" y2="248"/>
+    <line x1="280" y1="58" x2="310" y2="248"/>
+    <line x1="310" y1="58" x2="310" y2="248"/>
+    <line x1="340" y1="58" x2="310" y2="248"/>
+    <line x1="370" y1="58" x2="310" y2="248"/>
+    <line x1="400" y1="58" x2="310" y2="248"/>
+    <line x1="430" y1="58" x2="310" y2="248"/>
+    <line x1="460" y1="58" x2="310" y2="248"/>
+    <line x1="490" y1="58" x2="310" y2="248"/>
+    <line x1="520" y1="58" x2="310" y2="248"/>
+  </g>
+
+  <!-- Arrow marker -->
+  <defs>
+    <marker id="arrowRed" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#f87171"/>
+    </marker>
+  </defs>
+
+  <!-- Conflict label -->
+  <rect x="220" y="140" width="240" height="30" rx="6" fill="#f87171" opacity="0.15"/>
+  <text x="340" y="160" text-anchor="middle" fill="#f87171" font-size="13" font-weight="bold">32-way Bank Conflict!</text>
+
+  <!-- Thread dots -->
+  <g fill="#fb7185">
+    <circle cx="160" cy="38" r="3"/><circle cx="190" cy="38" r="3"/>
+    <circle cx="220" cy="38" r="3"/><circle cx="250" cy="38" r="3"/>
+    <circle cx="280" cy="38" r="3"/><circle cx="310" cy="38" r="3"/>
+    <circle cx="340" cy="38" r="3"/><circle cx="370" cy="38" r="3"/>
+    <circle cx="400" cy="38" r="3"/><circle cx="430" cy="38" r="3"/>
+    <circle cx="460" cy="38" r="3"/><circle cx="490" cy="38" r="3"/>
+    <circle cx="520" cy="38" r="3"/>
+  </g>
+
+  <!-- "..." indicators -->
+  <text x="540" y="43" fill="#8b93a7" font-size="13">...</text>
+</svg>
+</div>
+
+<!-- §3 -->
+<h2><span class="step">§3</span>解决方案 1: Padding</h2>
+
+<pre>
+<span class="com">// 原来:</span>
+<span class="kw">__shared__</span> <span class="type">float</span> A_shared[<span class="num">32</span>][<span class="num">32</span>];      <span class="com">// 列访问 → 32-way conflict</span>
+
+<span class="com">// 加 padding:</span>
+<span class="kw">__shared__</span> <span class="type">float</span> A_shared[<span class="num">32</span>][<span class="num">32</span> + <span class="num">1</span>];  <span class="com">// 33 列！</span>
+</pre>
+
+<div class="card">
+<p><span class="highlight2">为什么 +1 能消除 conflict？</span></p>
+<pre>
+<span class="com">// 现在每行有 33 个 float，stride = 33</span>
+<span class="com">// Thread i loads A_shared[i][k] → addr = i*33+k → bank = (i*33+k)%32</span>
+<span class="com">//</span>
+<span class="com">// i=0: bank = (0*33+k) % 32 = k % 32</span>
+<span class="com">// i=1: bank = (1*33+k) % 32 = (33+k) % 32 = (1+k) % 32  ← 不同!</span>
+<span class="com">// i=2: bank = (2*33+k) % 32 = (66+k) % 32 = (2+k) % 32  ← 不同!</span>
+<span class="com">// i=3: bank = (3*33+k) % 32 = (99+k) % 32 = (3+k) % 32  ← 不同!</span>
+<span class="com">// ...</span>
+<span class="com">// → 32 threads 访问 32 个不同 bank → 无 conflict!</span>
+</pre>
+</div>
+
+<div class="callout">
+加一列 padding 就能完全消除 conflict。代价：浪费 ~3% shared memory。
+</div>
+
+<!-- §4 -->
+<h2><span class="step">§4</span>解决方案 2: XOR Swizzle (CUTLASS 方式)</h2>
+
+<p>Padding 简单但浪费内存。更优雅的方法：<span class="highlight">改变数据存储的位置（swizzle）</span>。</p>
+
+<pre>
+<span class="com">// Swizzle: 存数据时，把行号 XOR 到列号上</span>
+<span class="type">int</span> smem_col = col ^ (row % BK);  <span class="com">// XOR swizzle</span>
+
+<span class="com">// Store: A_shared[row][col ^ (row % 32)] = A_global[row][col]</span>
+<span class="com">// Load:  val = A_shared[row][col ^ (row % 32)]</span>
+</pre>
+
+<h3>为什么 XOR 能消除冲突？</h3>
+
+<pre>
+<span class="com">// 所有 thread 加载同一列 k:</span>
+<span class="com">// row=0, col=k: stored at [0][k^0] = [0][k]       → bank = k%32</span>
+<span class="com">// row=1, col=k: stored at [1][k^1]                 → bank = (32 + k^1) % 32 = (k^1)%32</span>
+<span class="com">// row=2, col=k: stored at [2][k^2]                 → bank = (64 + k^2) % 32 = (k^2)%32</span>
+<span class="com">// row=3, col=k: stored at [3][k^3]                 → bank = (k^3)%32</span>
+<span class="com">// ...</span>
+<span class="com">//</span>
+<span class="com">// k^0, k^1, k^2, ..., k^31 的低 5 位互不相同!</span>
+<span class="com">// → 32 个不同的 bank → 无冲突!</span>
+</pre>
+
+<div class="callout info">
+XOR 操作天然把不同行的数据分散到不同 bank——数学上保证无冲突，且不浪费任何内存。
+</div>
+
+<!-- §5 -->
+<h2><span class="step">§5</span>ldmatrix + Swizzle 的配合</h2>
+
+<p>在 Tensor Core GEMM 中，<code>ldmatrix</code> 指令有自己的数据 layout 期望。数据需要按特定 swizzle pattern 存放才能让 <code>ldmatrix</code> 无冲突加载。</p>
+
+<div class="card">
+<p><span class="highlight">CUTLASS 的 CuTe Swizzle 描述：</span></p>
+<pre>
+<span class="com">// CUTLASS 用 CuTe 的 Swizzle&lt;B, M, S&gt; 描述:</span>
+<span class="com">// B = base bits, M = mask bits, S = shift bits</span>
+<span class="com">// 实际 swizzle = (row >> S) & ((1&lt;&lt;B)-1) XOR col_in_group</span>
+
+<span class="com">// 例如 Swizzle&lt;3, 3, 3&gt;:</span>
+<span class="com">// Takes bits [5:3] of row, XOR with bits [2:0] of col</span>
+<span class="com">// → 每 8 行为一个周期，每组 8 列内 swizzle</span>
+</pre>
+</div>
+
+<div class="callout">
+你不需要记住这个公式——理解核心思想就行：<span class="highlight">XOR 行号和列号的某些位，把同列元素分散到不同 bank</span>。
+</div>
+
+<!-- SVG: Swizzle pattern visualization -->
+<div class="svg-wrap">
+<svg width="560" height="220" viewBox="0 0 560 220">
+  <!-- Title -->
+  <text x="280" y="20" text-anchor="middle" fill="#8b93a7" font-size="12">XOR Swizzle 后的 bank 分布（加载同一列 k=0）</text>
+
+  <!-- Grid header -->
+  <text x="60" y="50" fill="#8b93a7" font-size="10">Row</text>
+  <text x="120" y="50" fill="#8b93a7" font-size="10">XOR val</text>
+  <text x="200" y="50" fill="#8b93a7" font-size="10">Actual col</text>
+  <text x="310" y="50" fill="#8b93a7" font-size="10">Bank</text>
+
+  <!-- Rows -->
+  <g font-size="11" fill="var(--ink)">
+    <text x="60" y="72">0</text><text x="120" y="72" fill="#a78bfa">0^0 = 0</text><text x="200" y="72">[0][0]</text><text x="310" y="72" fill="#6ee7b7">Bank 0</text>
+    <text x="60" y="92">1</text><text x="120" y="92" fill="#a78bfa">0^1 = 1</text><text x="200" y="92">[1][1]</text><text x="310" y="92" fill="#6ee7b7">Bank 1</text>
+    <text x="60" y="112">2</text><text x="120" y="112" fill="#a78bfa">0^2 = 2</text><text x="200" y="112">[2][2]</text><text x="310" y="112" fill="#6ee7b7">Bank 2</text>
+    <text x="60" y="132">3</text><text x="120" y="132" fill="#a78bfa">0^3 = 3</text><text x="200" y="132">[3][3]</text><text x="310" y="132" fill="#6ee7b7">Bank 3</text>
+    <text x="60" y="152">4</text><text x="120" y="152" fill="#a78bfa">0^4 = 4</text><text x="200" y="152">[4][4]</text><text x="310" y="152" fill="#6ee7b7">Bank 4</text>
+    <text x="60" y="172" fill="#8b93a7">...</text><text x="120" y="172" fill="#8b93a7">...</text><text x="200" y="172" fill="#8b93a7">...</text><text x="310" y="172" fill="#8b93a7">...</text>
+    <text x="60" y="192">31</text><text x="120" y="192" fill="#a78bfa">0^31 = 31</text><text x="200" y="192">[31][31]</text><text x="310" y="192" fill="#6ee7b7">Bank 31</text>
+  </g>
+
+  <!-- Result annotation -->
+  <rect x="380" y="100" width="160" height="50" rx="8" fill="#6ee7b7" opacity="0.1" stroke="#6ee7b7" stroke-width="1"/>
+  <text x="460" y="120" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="bold">32 个不同 Bank</text>
+  <text x="460" y="138" text-anchor="middle" fill="#6ee7b7" font-size="11">零冲突!</text>
+</svg>
+</div>
+
+<!-- §6 -->
+<h2><span class="step">§6</span>L2 Cache Swizzle (CTA 调度顺序)</h2>
+
+<p>回顾 Triton T10 中的 <code>GROUP_SIZE_M</code> swizzle：</p>
+
+<pre>
+<span class="com">// Triton: GROUP_SIZE_M swizzle</span>
+pid_m = first_pid_m + (pid % group_size_m)
+pid_n = (pid % num_pid_in_group) // group_size_m
+</pre>
+
+<p>CUDA 等价实现：</p>
+
+<pre>
+<span class="com">// GPU 自己调度 blocks 的顺序，我们无法控制</span>
+<span class="com">// 解决方案: 在 kernel 内部 remap blockIdx</span>
+
+<span class="type">int</span> pid = blockIdx.x;  <span class="com">// 使用 1D grid</span>
+<span class="type">int</span> num_pid_m = (M + BM - <span class="num">1</span>) / BM;
+<span class="type">int</span> num_pid_n = (N + BN - <span class="num">1</span>) / BN;
+<span class="type">int</span> num_pid_in_group = GROUP_SIZE_M * num_pid_n;
+<span class="type">int</span> group_id = pid / num_pid_in_group;
+<span class="type">int</span> first_pid_m = group_id * GROUP_SIZE_M;
+<span class="type">int</span> group_size_m = <span class="fn">min</span>(num_pid_m - first_pid_m, GROUP_SIZE_M);
+<span class="type">int</span> pid_m = first_pid_m + (pid % group_size_m);
+<span class="type">int</span> pid_n = (pid % num_pid_in_group) / group_size_m;
+</pre>
+
+<div class="callout info">
+和 Triton T10 完全一样的公式——Triton 没有隐藏这部分，只是语法不同。核心思想：让相邻 block 访问相邻的 B 矩阵列，最大化 L2 cache 复用。
+</div>
+
+<!-- §7 -->
+<h2><span class="step">§7</span>性能影响</h2>
+
+<table>
+<tr><th>优化手段</th><th>效果</th></tr>
+<tr><td>无 swizzle (32-way conflict)</td><td><span style="color:var(--bad)">~60% peak</span> (受限于 shared memory 带宽)</td></tr>
+<tr><td>Padding (+1)</td><td><span style="color:var(--warn)">~90% peak</span></td></tr>
+<tr><td>XOR swizzle</td><td><span style="color:var(--brand)">~95% peak</span></td></tr>
+<tr><td>+ L2 CTA swizzle</td><td><span style="color:var(--brand)">~97% peak</span></td></tr>
+</table>
+
+<div class="callout">
+从 82% (C10) + swizzle = ~90-95% cuBLAS。剩下的 5% 来自 NVIDIA 的极致微调（pipeline bubble 消除、寄存器分配优化等）。
+</div>
+
+<!-- §8 -->
+<h2><span class="step">§8</span>实战：给 C10 的 kernel 加 Padding</h2>
+
+<p>最小改动，立竿见影：</p>
+
+<pre>
+<span class="com">// Before (有 bank conflict):</span>
+<span class="kw">__shared__</span> <span class="type">half</span> A_shared[<span class="num">2</span>][BM][BK];
+
+<span class="com">// After (无 bank conflict):</span>
+<span class="kw">__shared__</span> <span class="type">half</span> A_shared[<span class="num">2</span>][BM][BK + <span class="num">8</span>];  <span class="com">// +8 for half type (8×2=16 bytes = 4 banks offset)</span>
+</pre>
+
+<div class="card">
+<p><span class="highlight2">为什么 half 类型 padding 8？</span></p>
+<ul class="tight">
+  <li><code>half</code> = 2 bytes，一个 bank = 4 bytes = 2 个 half</li>
+  <li>Padding 8 个 half = 16 bytes = 4 个 bank 的偏移</li>
+  <li>相邻行错开 4 个 bank，大幅减少 conflict</li>
+  <li>完全消除需要让 stride 与 32 互素：BK + 8 如果满足 (BK+8) 与 16 互素即可</li>
+</ul>
+</div>
+
+<div class="callout warn">
+注意：padding 后所有对 shared memory 的索引逻辑不需要改变！只是声明时多了一列，硬件寻址自动错开 bank。
+</div>
+
+<!-- §9 -->
+<h2><span class="step">§9</span>带走</h2>
+
+<div class="card">
+<ol>
+  <li><strong>Bank conflict</strong>：同一 warp 中多个 thread 访问同一 bank &rarr; 串行化 &rarr; 性能暴跌</li>
+  <li><strong>GEMM 中列访问</strong> shared memory 天然产生 32-way conflict（stride = 32 的倍数）</li>
+  <li><strong>Padding (+1 或 +8)</strong>：简单有效，浪费少量内存，代码改动极小</li>
+  <li><strong>XOR swizzle</strong>：CUTLASS 方式，数学保证无冲突，不浪费内存，但代码更复杂</li>
+  <li><strong>L2 CTA swizzle</strong>：改变 block 调度顺序，与 Triton <code>GROUP_SIZE_M</code> 完全对应</li>
+</ol>
+</div>
+
+<p class="foot">C11 · Bank Conflict 与 Swizzle — CUDA GEMM 系列 12/15</p>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

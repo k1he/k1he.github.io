@@ -1,0 +1,420 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Prefill Worker：三段流水线</title>
+<style>
+
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+  --R0:#fbbf24;--R1:#7dd3fc;--R2:#a78bfa;--R3:#34d399;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+.cols-4{grid-template-columns:repeat(4,1fr)}
+@media (max-width:900px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+
+/* Demo */
+.demo{background:#0f1218;border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}
+.demo-title{font-size:16px;font-weight:600;color:var(--brand);margin:0 0 4px}
+.demo-sub{color:var(--mute);font-size:12.5px;margin-bottom:14px}
+.demo-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
+.demo-btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:7px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:all .12s}
+.demo-btn:hover{border-color:var(--brand);color:var(--brand)}
+.demo-btn.primary{background:var(--brand);color:var(--bg);border-color:var(--brand);font-weight:600}
+.demo-btn.primary:hover{background:#5cd6a4}
+.demo-step{font-family:"SF Mono",monospace;font-size:12px;color:var(--mute);margin-left:auto;background:#1a1f2b;padding:4px 10px;border-radius:6px;border:1px solid var(--line)}
+.demo-narration{background:rgba(110,231,183,.08);border-left:3px solid var(--brand);padding:10px 14px;border-radius:0 8px 8px 0;margin-top:12px;color:#cbd5e1;font-size:13px;min-height:42px;transition:all .3s}
+
+.rank-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}
+.rank-card{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px;text-align:center;transition:all .3s}
+.rank-card.active{border-color:var(--brand);box-shadow:0 0 12px rgba(110,231,183,.3)}
+.rank-card .rid{font-family:"SF Mono",monospace;font-weight:700;font-size:14px;margin-bottom:6px}
+.rank-card .body{color:var(--mute);font-family:"SF Mono",monospace;font-size:11px;line-height:1.5}
+.bar-h{display:flex;flex-direction:column;gap:3px;margin:8px 0}
+.bar-row{display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center;font-size:11px}
+.bar-row .lbl{color:var(--mute);font-family:"SF Mono",monospace}
+.bar-track{height:24px;background:#0a0d12;border:1px solid var(--line);border-radius:4px;position:relative;overflow:hidden}
+.bar-seg{position:absolute;top:2px;bottom:2px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0b0d12;transition:all .35s}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.pulse{animation:pulse 1s ease-in-out infinite}
+.kpi{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace}
+.kpi span{background:#1a1f2b;padding:3px 8px;border-radius:5px;border:1px solid var(--line)}
+.kpi span b{color:var(--brand)}
+
+
+.queue-box{background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:12px;min-height:110px;position:relative}
+.queue-title{font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace;margin-bottom:8px;display:flex;justify-content:space-between}
+.queue-title .cnt{color:var(--brand)}
+.req-chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:11px;font-family:"SF Mono",monospace;margin:3px;transition:all .35s;cursor:pointer}
+.req-chip.bootstrapping{border-color:var(--warn);color:var(--warn)}
+.req-chip.waiting{border-color:var(--brand2);color:var(--brand2)}
+.req-chip.transferring{border-color:var(--purple);color:var(--purple);animation:pulse 1s ease-in-out infinite}
+.req-chip.success{border-color:var(--brand);color:var(--brand);background:rgba(110,231,183,0.15)}
+.req-chip.failed{border-color:var(--bad);color:var(--bad)}
+.req-chip.active{box-shadow:0 0 10px currentColor}
+.msg-line{font-family:"SF Mono",monospace;font-size:11.5px;padding:4px 10px;margin:2px 0;border-radius:4px;background:#0f1218;border-left:2px solid var(--line);color:var(--mute)}
+.msg-line.active{border-color:var(--brand);color:var(--ink);background:rgba(110,231,183,0.05)}
+.msg-line .ts{color:var(--purple);margin-right:8px}
+.msg-line .tag{color:var(--warn);margin-right:8px}
+.path{color:var(--mute);font-size:11px;font-family:"SF Mono",monospace}
+.hl{background:rgba(251,191,36,.15);color:var(--warn);padding:0 3px;border-radius:3px}
+.step-badge{display:inline-block;background:var(--brand);color:var(--bg);border-radius:50%;width:22px;height:22px;line-height:22px;text-align:center;font-size:12px;font-weight:700;margin-right:8px}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--brand)}
+.flow-node{fill:#11141b;stroke:#262b38;stroke-width:1.5}
+.flow-node.active{stroke:#6ee7b7;stroke-width:2.2}
+.flow-node.active-warn{stroke:#fbbf24;stroke-width:2.2}
+.flow-node.active-blue{stroke:#7dd3fc;stroke-width:2.2}
+.flow-edge{stroke:#3a4050;stroke-width:1.5;fill:none}
+.flow-edge.active{stroke:#fbbf24;stroke-width:2}
+.flow-label{fill:#e6e8ee;font-family:"SF Mono",monospace;font-size:11px}
+.flow-label.sub{fill:#8b93a7;font-size:10px}
+.click-hint{font-size:11px;color:var(--mute);margin-top:6px;text-align:center}
+
+</style>
+</head><body><div class="wrap"><h1>Prefill Worker：三段流水线<span class="tag">PD · 4/7</span></h1><div class="sub">P 进程的三大核心结构、请求在 P 侧的三段流转、send_kv_chunk 和 transfer_worker 源码。可交互演示请求穿过三个队列。</div><div class="toc"><a href="#role">P 的三大结构</a><a href="#queue1">BootstrapQueue.add</a><a href="#queue2">bootstrap_thread + pop</a><a href="#queue3">send_kv_chunk + transfer_worker</a><a href="#evloop">event loop</a><a href="#summary">要点</a></div>
+<!-- PART 1 -->
+<h2 id="role"><span class="step">PART 1</span>Prefill Worker 的三大核心数据结构</h2>
+<div class="card">
+<p>P 进程和 unified 模式的 scheduler 几乎一样，唯一差别是<strong>输入队列被改造成三段流水线</strong>，还多了一个 <code>MooncakeKVManager</code> 处理 KV 外传。</p>
+<table>
+<tr><th>结构</th><th>职责</th><th>源码</th></tr>
+<tr><td><code>PrefillBootstrapQueue</code></td><td>新请求落地点；等 D 发 metadata</td><td><span class="path">prefill.py:195</span></td></tr>
+<tr><td><code>waiting_queue</code> (复用)</td><td>收到 metadata 后的请求；被 PrefillAdder 装箱进 batch</td><td><span class="path">scheduler.py</span></td></tr>
+<tr><td><code>disagg_prefill_inflight_queue</code></td><td>forward 完成、等 RDMA transfer 完成的请求</td><td><span class="path">prefill.py:583</span></td></tr>
+<tr><td><code>MooncakeKVManager</code></td><td>ZMQ 服务器 + transfer_worker 线程池，管 KV 外传</td><td><span class="path">mooncake/conn.py:1285</span></td></tr>
+</table>
+
+<h3>初始化路径</h3>
+<pre><span class="path">// scheduler.py:1096-1124（P 分支）</span>
+<span class="kw">elif</span> self.disaggregation_mode == DisaggregationMode.PREFILL:
+    self.disagg_prefill_bootstrap_queue = PrefillBootstrapQueue(
+        token_to_kv_pool = self.token_to_kv_pool_allocator.get_kvcache(),
+        metadata_buffers = self.disagg_metadata_buffers,
+        tp_rank = self.tp_rank, tp_size = self.tp_size,
+        bootstrap_port = self.server_args.disaggregation_bootstrap_port,
+        transfer_backend = self.transfer_backend,
+        ...
+    )</pre>
+
+<p><code>PrefillBootstrapQueue.__init__</code> 内部会：</p>
+<ol>
+<li>调 <code>_init_kv_manager</code>：构造 MooncakeKVManager，开 ZMQ PULL socket</li>
+<li>把 KV pool 的 <code>(data_ptr, length)</code> 注册给 Mooncake transfer engine</li>
+<li>起后台线程 <code>start_prefill_thread</code>：收 D 发来的 ZMQ 消息</li>
+<li>起 <code>transfer_worker</code> 线程池（默认 4-12 个）：消费 FastQueue 做 RDMA</li>
+</ol>
+</div>
+
+<!-- Interactive: 3-queue pipeline -->
+<div class="demo">
+<div class="demo-title">🎬 请求到达 P 后：三段流水线动画</div>
+<div class="demo-sub">观察一个请求依次穿过 Bootstrap → Waiting → Inflight 三个队列，对应源码中三个阶段</div>
+
+<div class="demo-controls">
+  <button class="demo-btn primary" id="pl-play">▶ 播放</button>
+  <button class="demo-btn" id="pl-next">下一步</button>
+  <button class="demo-btn" id="pl-reset">↻ 重置</button>
+  <span class="demo-step" id="pl-step">step 0 / 10</span>
+</div>
+
+<div style="background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px">
+  <div class="grid cols-3" style="gap:10px">
+    <div class="queue-box" id="pl-q1">
+      <div class="queue-title">1. BootstrapQueue <span class="cnt" id="pl-c1">0</span></div>
+      <div id="pl-r1"></div>
+      <div class="path" style="margin-top:8px">KVPoll=Bootstrapping</div>
+    </div>
+    <div class="queue-box" id="pl-q2">
+      <div class="queue-title">2. waiting_queue <span class="cnt" id="pl-c2">0</span></div>
+      <div id="pl-r2"></div>
+      <div class="path" style="margin-top:8px">PrefillAdder 装箱</div>
+    </div>
+    <div class="queue-box" id="pl-q3">
+      <div class="queue-title">3. InflightQueue <span class="cnt" id="pl-c3">0</span></div>
+      <div id="pl-r3"></div>
+      <div class="path" style="margin-top:8px">KVPoll=Transferring → Success</div>
+    </div>
+  </div>
+
+  <div style="margin-top:14px;font-family:'SF Mono',monospace;font-size:11.5px;background:#0f1218;border:1px solid var(--line);border-radius:8px;padding:10px">
+    <div style="color:var(--mute);margin-bottom:6px">当前这一步在执行的源码</div>
+    <div id="pl-code" style="white-space:pre-wrap;color:#cbd5e1">（点播放开始）</div>
+  </div>
+</div>
+
+<div class="demo-narration" id="pl-narr">req#1 进来之后，先进 BootstrapQueue 等 D 发 metadata；收到后进 waiting_queue 被装进 batch；forward 完成后进 InflightQueue 等 RDMA 结束。</div>
+</div>
+
+<script>
+(function(){
+  const S = [
+    {q:{b:[1],w:[],i:[]}, code:"# prefill.py:227\ndef add(self, req, num_kv_heads):\n    req.disagg_kv_sender = MooncakeKVSender(...)\n    req.sampling_params.max_new_tokens = 1  # 只算首 token\n    self.queue.append(req)", narr:"① <strong>BootstrapQueue.add</strong>：创建 sender（KVPoll=Bootstrapping），强制 max_new_tokens=1，塞进内部 queue。此时 req 只在 P 侧等；D 侧同时在独立跑自己的 add 流程。"},
+    {q:{b:[1],w:[],i:[]}, code:"# mooncake/conn.py:1345 (bg thread)\nwhile True:\n    msg = server_socket.recv_multipart()\n    room = int(msg[0])\n    transfer_infos[room][sid] = TransferInfo.from_zmq(msg)\n    if len(transfer_infos[room]) == required_dst_info_num:\n        update_status(room, KVPoll.WaitingForInput)", narr:"② <strong>bootstrap_thread 收到 D 的 metadata</strong>：解析 (room, endpoint, kv_indices, aux_index) 存进 transfer_infos 字典，把 KVPoll 切到 WaitingForInput。"},
+    {q:{b:[1],w:[],i:[]}, code:"# prefill.py:270 (main loop)\ndef pop_bootstrapped(self):\n    polls = poll_and_all_reduce(senders, tp_group)\n    for req, poll in zip(queue, polls):\n        if poll == KVPoll.WaitingForInput:\n            req.metadata_buffer_index = alloc()\n            req.disagg_kv_sender.init(num_pages, idx)\n            bootstrapped.append(req)", narr:"③ <strong>pop_bootstrapped</strong>：下一轮 event_loop 检查所有 sender，发现 req#1 状态是 WaitingForInput，分配 metadata buffer slot，init sender。"},
+    {q:{b:[],w:[1],i:[]}, code:"# prefill.py:388 (event_loop_normal_disagg_prefill)\nself.waiting_queue.extend(\n    self.disagg_prefill_bootstrap_queue.pop_bootstrapped()\n)\nbatch = self.get_next_disagg_prefill_batch_to_run()", narr:"④ req 进入 scheduler 的 <strong>waiting_queue</strong>。这时它已经和 unified 模式一样，由 PrefillAdder 装进 batch。"},
+    {q:{b:[],w:[1],i:[]}, code:"# scheduler.py\nbatch = PrefillAdder.add_one_req(req, ...)\n# chunked prefill 照常工作：如果 prompt 太长\n# 可能只算一部分", narr:"⑤ <strong>PrefillAdder 装箱</strong>：检查 KV 容量、max_total_tokens、token budget，如果 prompt 太长开启 chunked 分段。"},
+    {q:{b:[],w:[1],i:[]}, code:"# scheduler.py\nresult = self.run_batch(batch)\n# 真正的 forward：Q/K/V proj → attention → MLP\n# KV 写到 self.token_to_kv_pool\n# 最后一步 sample 得到 next_token_ids[0]", narr:"⑥ <strong>run_batch</strong>：真正 forward。KV 写进 P 自己的 KV pool，同时得到首 token。"},
+    {q:{b:[],w:[1],i:[]}, code:"# prefill.py:462\nfor req, tok in zip(batch.reqs, next_token_ids):\n    if req.is_chunked <= 0:\n        req.output_ids.append(tok)\n        self.disagg_prefill_inflight_queue.append(req)\n        self.send_kv_chunk(req, last_chunk=True)", narr:"⑦ <strong>process_batch_result</strong>：是最后一段（非 chunked）就把 req 塞进 InflightQueue，同时调 send_kv_chunk 开始传 KV。"},
+    {q:{b:[],w:[],i:[1]}, code:"# prefill.py:744\ndef send_kv_chunk(self, req, last_chunk):\n    kv_indices = req_to_token[req_pool_idx, start:end].cpu().numpy()\n    if last_chunk:\n        self.disagg_metadata_buffers.set_buf(req)  # 写首 token/logprob\n    page_indices = kv_to_page_indices(kv_indices, page_size)\n    req.disagg_kv_sender.send(page_indices, state_indices)", narr:"⑧ <strong>send_kv_chunk</strong>：把 KV 索引转换成 page 索引；若是最后一段，把首 token 写进共享 metadata buffer；调 sender.send → FastQueue。"},
+    {q:{b:[],w:[],i:[1]}, code:"# mooncake/conn.py:1146 (transfer_worker)\nkv_chunk = queue.get()\nfor req in transfer_infos[room].values():\n    ret = self.send_kvcache(sid, src_indices,\n                            dst_kv_ptrs, dst_indices)\n    if last_chunk:\n        self.send_aux(req, aux_idx, dst_aux_ptrs)\n    sync_status_to_decode_endpoint(room, Success)", narr:"⑨ <strong>transfer_worker（池）</strong>：一个 worker 消费队列，调 Mooncake 的 send_kvcache 做 RDMA；最后一个 chunk 还要 send_aux 把 metadata buffer 也传过去；done 后通过 ZMQ 反向告诉 D 成功。"},
+    {q:{b:[],w:[],i:[]}, code:"# prefill.py:583\ndef process_disagg_prefill_inflight_queue(self):\n    polls = poll_and_all_reduce(senders)\n    for req, poll in ...:\n        if poll == KVPoll.Success:\n            release_kv_cache(req, tree_cache)  # 解锁前缀\n            req.finished_reason = FINISH_LENGTH(0)\n            done_reqs.append(req)", narr:"⑩ <strong>InflightQueue 清理</strong>：检测到 sender 进入 Success，释放 KV（解锁 tree cache 里的前缀），req 从 P 视角结束。"},
+  ];
+  const TOTAL = S.length;
+
+  function renderQ(step){
+    const qs = step===0 ? {b:[],w:[],i:[]} : S[step-1].q;
+    const mapping = [['pl-r1','pl-c1','b','bootstrapping'],['pl-r2','pl-c2','w','waiting'],['pl-r3','pl-c3','i','transferring']];
+    mapping.forEach(([rid,cid,key,cls])=>{
+      const r = document.getElementById(rid); r.innerHTML='';
+      const list = qs[key]||[];
+      list.forEach(id=>{
+        const chip = document.createElement('span');
+        chip.className='req-chip '+cls+' active';
+        chip.textContent = 'req#'+id;
+        r.appendChild(chip);
+      });
+      document.getElementById(cid).textContent = list.length;
+    });
+  }
+
+  let cur=0, timer=null;
+  function render(step){
+    document.getElementById('pl-step').textContent = `step ${step} / ${TOTAL}`;
+    if(step===0){
+      renderQ(0);
+      document.getElementById('pl-narr').innerHTML = 'req#1 进来之后，先进 BootstrapQueue 等 D 发 metadata；收到后进 waiting_queue 被装进 batch；forward 完成后进 InflightQueue 等 RDMA 结束。';
+      document.getElementById('pl-code').textContent = '（点播放开始）';
+      return;
+    }
+    const s = S[step-1];
+    renderQ(step);
+    document.getElementById('pl-narr').innerHTML = s.narr;
+    document.getElementById('pl-code').textContent = s.code;
+  }
+  render(0);
+  document.getElementById('pl-play').addEventListener('click',()=>{
+    if(timer) return;
+    timer = setInterval(()=>{cur++; render(cur); if(cur>=TOTAL){clearInterval(timer); timer=null;}}, 1800);
+  });
+  document.getElementById('pl-next').addEventListener('click',()=>{ if(cur<TOTAL){cur++; render(cur);}});
+  document.getElementById('pl-reset').addEventListener('click',()=>{clearInterval(timer); timer=null; cur=0; render(0);});
+})();
+</script>
+
+<!-- PART 2: queue details -->
+<h2 id="queue1"><span class="step">PART 2</span>深读 1：PrefillBootstrapQueue.add</h2>
+<div class="card">
+<pre><span class="path">// python/sglang/srt/disaggregation/prefill.py:227-248</span>
+<span class="kw">def</span> <span class="fn">add</span>(self, req: Req, num_kv_heads: int) -> None:
+    <span class="kw">if</span> self._check_if_req_exceed_kv_capacity(req):
+        <span class="kw">return</span>
+
+    <span class="com"># FAKE backend 用于测试；正常是 Mooncake/NIXL</span>
+    backend = TransferBackend.FAKE <span class="kw">if</span> req.bootstrap_host == FAKE_BOOTSTRAP_HOST <span class="kw">else</span> self.transfer_backend
+    kv_sender_class = <span class="fn">get_kv_class</span>(backend, KVClassType.SENDER)
+
+    dest_tp_ranks = [self.tp_rank]
+    req.disagg_kv_sender = <span class="fn">kv_sender_class</span>(
+        mgr=self.kv_manager,
+        bootstrap_addr=f<span class="str">"{req.bootstrap_host}:{self.bootstrap_port}"</span>,
+        bootstrap_room=req.bootstrap_room,
+        dest_tp_ranks=dest_tp_ranks,
+        pp_rank=self.pp_rank,
+    )
+    self.<span class="fn">_process_req</span>(req)
+    self.queue.append(req)
+
+<span class="kw">def</span> <span class="fn">_process_req</span>(self, req: Req) -> None:
+    <span class="com">"""Set max_new_tokens = 1, so PrefillAdder memory estimation is accurate"""</span>
+    req.sampling_params.max_new_tokens = 1</pre>
+
+<div class="callout">
+<strong>关键细节</strong>：<code>max_new_tokens=1</code> 告诉 PrefillAdder "我只算 1 个 token"，这样它做内存预算时只预留 prompt+1 token 的 KV，不会多占空间。真正的生成由 D 完成。
+</div>
+
+<h3>sender 创建时的副作用</h3>
+<pre><span class="path">// common/conn.py:425-466</span>
+<span class="kw">class</span> CommonKVSender:
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, mgr, bootstrap_addr, bootstrap_room, dest_tp_ranks, pp_rank):
+        self.kv_mgr = mgr
+        self.bootstrap_room = bootstrap_room
+        self.curr_idx = 0
+        self.kv_mgr.<span class="fn">update_status</span>(bootstrap_room, KVPoll.Bootstrapping)  <span class="com"># ★</span>
+        <span class="kw">if</span> dp_size > 1 <span class="kw">and</span> not follow_bootstrap_room:
+            self.<span class="fn">_register_prefill_dp_rank</span>()  <span class="com"># 把本请求落到哪个 dp_rank 告诉 bootstrap server</span></pre>
+</div>
+
+<!-- PART 3 -->
+<h2 id="queue2"><span class="step">PART 3</span>深读 2：bootstrap_thread 与 pop_bootstrapped</h2>
+<div class="card">
+<p>这两个函数构成了<strong>P 和 D 的握手桥梁</strong>。bootstrap_thread 在后台线程 recv，pop_bootstrapped 在主循环 poll。</p>
+
+<pre><span class="path">// mooncake/conn.py:1345-1422</span>
+<span class="kw">def</span> <span class="fn">start_prefill_thread</span>(self):
+    <span class="kw">def</span> <span class="fn">bootstrap_thread</span>():
+        <span class="kw">while</span> <span class="kw">True</span>:
+            msg = self.server_socket.<span class="fn">recv_multipart</span>()
+            room = msg[0].decode()
+
+            <span class="kw">if</span> room == <span class="str">"None"</span>:
+                <span class="com"># D 首次握手：注册 KVArgs（kv/aux 指针）</span>
+                sid = msg[3].decode()
+                self.decode_kv_args_table[sid] = KVArgsRegisterInfo.<span class="fn">from_zmq</span>(msg)
+                <span class="kw">continue</span>
+
+            <span class="com"># 具体请求的 metadata</span>
+            room = int(room)
+            sid = msg[3].decode()
+            required_dst_info_num = int(msg[7].decode())
+            <span class="kw">if</span> room <span class="kw">not in</span> self.transfer_infos:
+                self.transfer_infos[room] = {}
+            self.transfer_infos[room][sid] = TransferInfo.<span class="fn">from_zmq</span>(msg)
+
+            <span class="kw">if</span> len(self.transfer_infos[room]) == required_dst_info_num:
+                self.<span class="fn">update_status</span>(room, KVPoll.WaitingForInput)  <span class="com"># ★ 触发主循环推进</span>
+
+    threading.<span class="fn">Thread</span>(target=bootstrap_thread, daemon=<span class="kw">True</span>).start()</pre>
+
+<pre><span class="path">// prefill.py:270-352</span>
+<span class="kw">def</span> <span class="fn">pop_bootstrapped</span>(self):
+    polls = <span class="fn">poll_and_all_reduce_attn_cp_tp_group</span>(
+        [req.disagg_kv_sender <span class="kw">for</span> req <span class="kw">in</span> self.queue],
+        cp_group, tp_group,
+    )
+    <span class="kw">for</span> i, (req, poll) <span class="kw">in</span> enumerate(zip(self.queue, polls)):
+        <span class="kw">if</span> poll == KVPoll.Bootstrapping: <span class="kw">continue</span>
+        <span class="kw">elif</span> poll == KVPoll.Failed: <span class="fn">abort</span>(req); <span class="kw">continue</span>
+        <span class="com"># else: WaitingForInput</span>
+        req.metadata_buffer_index = self.req_to_metadata_buffer_idx_allocator.<span class="fn">alloc</span>()
+        num_pages = <span class="fn">kv_to_page_num</span>(len(req.origin_input_ids), page_size)
+        req.disagg_kv_sender.<span class="fn">init</span>(num_pages, req.metadata_buffer_index)
+        bootstrapped.append(req)
+    <span class="kw">return</span> bootstrapped</pre>
+
+<div class="callout warn">
+<strong>为什么要跨 TP group all-reduce poll</strong>：TP=8 的 P 有 8 个 rank。它们必须看到<u>一致</u>的状态，否则一部分 rank 进入 forward 一部分还在等，会死锁。all-reduce 取 min 保证所有 rank 看到相同 transition。
+</div>
+</div>
+
+<!-- PART 4 -->
+<h2 id="queue3"><span class="step">PART 4</span>深读 3：send_kv_chunk 和 transfer_worker</h2>
+<div class="card">
+<p>请求 forward 完后，prompt 的 KV 散落在 P 的 KV pool 里。要把它们传给 D，步骤是：</p>
+<ol>
+<li><strong>算 kv_indices</strong>：从 <code>req_to_token_pool</code> 取该 req 的 KV slot 列表</li>
+<li><strong>转 page_indices</strong>：如果 page_size &gt; 1，按 page 粒度聚合</li>
+<li><strong>塞进 FastQueue</strong>：sender.send() 把 chunk 加到异步队列</li>
+<li><strong>transfer_worker 消费</strong>：调 libmooncake 的 send_kvcache</li>
+</ol>
+
+<pre><span class="path">// prefill.py:744-822</span>
+<span class="kw">def</span> <span class="fn">send_kv_chunk</span>(self, req, last_chunk=<span class="kw">False</span>, end_idx=<span class="kw">None</span>):
+    page_size = self.token_to_kv_pool_allocator.page_size
+    start_idx = req.start_send_idx
+    end_idx = end_idx <span class="kw">or</span> min(len(req.fill_ids), len(req.origin_input_ids))
+    <span class="kw">if not</span> last_chunk:
+        end_idx = end_idx - end_idx % page_size  <span class="com"># 页对齐</span>
+
+    kv_indices = (self.req_to_token_pool.req_to_token[req.req_pool_idx, start_idx:end_idx]
+                  .cpu().numpy())
+    req.start_send_idx = end_idx
+
+    <span class="kw">if</span> last_chunk:
+        self.disagg_metadata_buffers.<span class="fn">set_buf</span>(req)  <span class="com"># ★ 首 token/logprob 写进共享 buffer</span>
+
+    page_indices = <span class="fn">kv_to_page_indices</span>(kv_indices, page_size)
+    req.disagg_kv_sender.<span class="fn">send</span>(page_indices, state_indices)</pre>
+
+<pre><span class="path">// mooncake/conn.py:1146-1343（transfer_worker 核心）</span>
+<span class="kw">def</span> <span class="fn">transfer_worker</span>(self, queue, executor):
+    <span class="kw">while</span> <span class="kw">True</span>:
+        chunk: TransferKVChunk = queue.<span class="fn">get</span>()
+        reqs = self.transfer_infos[chunk.room].values()
+
+        <span class="kw">for</span> req <span class="kw">in</span> reqs:
+            target = self.decode_kv_args_table[req.mooncake_session_id]
+            dst_slice = req.dst_kv_indices[chunk.index_slice]
+            ret = self.<span class="fn">send_kvcache</span>(
+                req.mooncake_session_id,
+                chunk.prefill_kv_indices,
+                target.dst_kv_ptrs,
+                dst_slice,
+                executor,
+            )
+            <span class="kw">if</span> chunk.is_last_chunk:
+                self.<span class="fn">send_aux</span>(req, chunk.prefill_aux_index, target.dst_aux_ptrs)
+                self.<span class="fn">sync_status_to_decode_endpoint</span>(req.endpoint, req.dst_port, req.room, Success)</pre>
+</div>
+
+<!-- PART 5 -->
+<h2 id="evloop"><span class="step">PART 5</span>P 的 event loop</h2>
+<div class="card">
+<pre><span class="path">// prefill.py:388-417</span>
+@torch.no_grad()
+<span class="kw">def</span> <span class="fn">event_loop_normal_disagg_prefill</span>(self):
+    <span class="kw">while</span> <span class="kw">True</span>:
+        recv_reqs = self.<span class="fn">recv_requests</span>()                                 <span class="com"># 1</span>
+        self.<span class="fn">process_input_requests</span>(recv_reqs)                            <span class="com"># 2 分流到 BootstrapQueue</span>
+        self.waiting_queue.<span class="fn">extend</span>(                                          <span class="com"># 3 检查 bootstrap 状态</span>
+            self.disagg_prefill_bootstrap_queue.<span class="fn">pop_bootstrapped</span>()
+        )
+        batch = self.<span class="fn">get_next_disagg_prefill_batch_to_run</span>()              <span class="com"># 4 PrefillAdder 装箱</span>
+        self.cur_batch = batch
+        <span class="kw">if</span> batch:
+            result = self.<span class="fn">run_batch</span>(batch)                                 <span class="com"># 5 forward</span>
+            self.<span class="fn">process_batch_result</span>(batch, result)                       <span class="com"># 6 dispatch 到 disagg 分支</span>
+        <span class="kw">else</span>:
+            self.<span class="fn">on_idle</span>()
+        self.<span class="fn">process_disagg_prefill_inflight_queue</span>()                      <span class="com"># 7 清理 done</span>
+        self.last_batch = batch</pre>
+<p>和 unified 相比只多了第 3、7 步，<code>run_batch</code>/<code>process_batch_result</code> 基本共用，只是 disagg 分支里替换了"流式发 token"为"通过 metadata buffer 捎带首 token"。</p>
+</div>
+
+<!-- PART 6 -->
+<h2 id="summary"><span class="step">PART 6</span>本章要点</h2>
+<div class="card">
+<table>
+<tr><th>问题</th><th>答案</th></tr>
+<tr><td>P 有几个队列？</td><td>3 个：BootstrapQueue → waiting_queue → InflightQueue</td></tr>
+<tr><td>P 怎么知道可以 forward 了？</td><td>后台 bootstrap_thread 把 KVPoll 改成 WaitingForInput；主循环 pop_bootstrapped 检测到后挪队</td></tr>
+<tr><td>KV 什么时候开始传？</td><td>run_batch 结束后，process_batch_result_disagg_prefill 调 send_kv_chunk，进 FastQueue；transfer_worker 池异步消费</td></tr>
+<tr><td>首 token 怎么传到 D？</td><td>send_kv_chunk 最后一段时，先 set_buf 把 token 写进 metadata buffer；然后 transfer_worker 先传 KV，再传 aux（metadata buffer 的那一个 slot）</td></tr>
+<tr><td>为什么需要 InflightQueue？</td><td>forward 完不等于 KV 传完。InflightQueue 专门等 RDMA 结束，成功后才释放 P 的 KV 和 tree cache 前缀锁</td></tr>
+</table>
+</div>
+<div class="nav"><a href="03-router-source.html">← 上一篇：Router 源码</a><a href="05-decode-worker.html">下一篇：Decode Worker →</a></div><div class="foot">SGLang PD Disaggregation · 原理 → 源码 → 流转 → 交互演示</div></div>  <script src="../course-nav.js"></script>
+</body></html>

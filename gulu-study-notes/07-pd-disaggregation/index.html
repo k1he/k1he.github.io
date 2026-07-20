@@ -1,0 +1,208 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>SGLang PD 分离：源码深读</title>
+<style>
+
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+  --R0:#fbbf24;--R1:#7dd3fc;--R2:#a78bfa;--R3:#34d399;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+.cols-4{grid-template-columns:repeat(4,1fr)}
+@media (max-width:900px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+
+/* Demo */
+.demo{background:#0f1218;border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}
+.demo-title{font-size:16px;font-weight:600;color:var(--brand);margin:0 0 4px}
+.demo-sub{color:var(--mute);font-size:12.5px;margin-bottom:14px}
+.demo-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
+.demo-btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:7px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:all .12s}
+.demo-btn:hover{border-color:var(--brand);color:var(--brand)}
+.demo-btn.primary{background:var(--brand);color:var(--bg);border-color:var(--brand);font-weight:600}
+.demo-btn.primary:hover{background:#5cd6a4}
+.demo-step{font-family:"SF Mono",monospace;font-size:12px;color:var(--mute);margin-left:auto;background:#1a1f2b;padding:4px 10px;border-radius:6px;border:1px solid var(--line)}
+.demo-narration{background:rgba(110,231,183,.08);border-left:3px solid var(--brand);padding:10px 14px;border-radius:0 8px 8px 0;margin-top:12px;color:#cbd5e1;font-size:13px;min-height:42px;transition:all .3s}
+
+.rank-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}
+.rank-card{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px;text-align:center;transition:all .3s}
+.rank-card.active{border-color:var(--brand);box-shadow:0 0 12px rgba(110,231,183,.3)}
+.rank-card .rid{font-family:"SF Mono",monospace;font-weight:700;font-size:14px;margin-bottom:6px}
+.rank-card .body{color:var(--mute);font-family:"SF Mono",monospace;font-size:11px;line-height:1.5}
+.bar-h{display:flex;flex-direction:column;gap:3px;margin:8px 0}
+.bar-row{display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center;font-size:11px}
+.bar-row .lbl{color:var(--mute);font-family:"SF Mono",monospace}
+.bar-track{height:24px;background:#0a0d12;border:1px solid var(--line);border-radius:4px;position:relative;overflow:hidden}
+.bar-seg{position:absolute;top:2px;bottom:2px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0b0d12;transition:all .35s}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.pulse{animation:pulse 1s ease-in-out infinite}
+.kpi{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace}
+.kpi span{background:#1a1f2b;padding:3px 8px;border-radius:5px;border:1px solid var(--line)}
+.kpi span b{color:var(--brand)}
+
+
+.queue-box{background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:12px;min-height:110px;position:relative}
+.queue-title{font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace;margin-bottom:8px;display:flex;justify-content:space-between}
+.queue-title .cnt{color:var(--brand)}
+.req-chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:11px;font-family:"SF Mono",monospace;margin:3px;transition:all .35s;cursor:pointer}
+.req-chip.bootstrapping{border-color:var(--warn);color:var(--warn)}
+.req-chip.waiting{border-color:var(--brand2);color:var(--brand2)}
+.req-chip.transferring{border-color:var(--purple);color:var(--purple);animation:pulse 1s ease-in-out infinite}
+.req-chip.success{border-color:var(--brand);color:var(--brand);background:rgba(110,231,183,0.15)}
+.req-chip.failed{border-color:var(--bad);color:var(--bad)}
+.req-chip.active{box-shadow:0 0 10px currentColor}
+.msg-line{font-family:"SF Mono",monospace;font-size:11.5px;padding:4px 10px;margin:2px 0;border-radius:4px;background:#0f1218;border-left:2px solid var(--line);color:var(--mute)}
+.msg-line.active{border-color:var(--brand);color:var(--ink);background:rgba(110,231,183,0.05)}
+.msg-line .ts{color:var(--purple);margin-right:8px}
+.msg-line .tag{color:var(--warn);margin-right:8px}
+.path{color:var(--mute);font-size:11px;font-family:"SF Mono",monospace}
+.hl{background:rgba(251,191,36,.15);color:var(--warn);padding:0 3px;border-radius:3px}
+.step-badge{display:inline-block;background:var(--brand);color:var(--bg);border-radius:50%;width:22px;height:22px;line-height:22px;text-align:center;font-size:12px;font-weight:700;margin-right:8px}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--brand)}
+.flow-node{fill:#11141b;stroke:#262b38;stroke-width:1.5}
+.flow-node.active{stroke:#6ee7b7;stroke-width:2.2}
+.flow-node.active-warn{stroke:#fbbf24;stroke-width:2.2}
+.flow-node.active-blue{stroke:#7dd3fc;stroke-width:2.2}
+.flow-edge{stroke:#3a4050;stroke-width:1.5;fill:none}
+.flow-edge.active{stroke:#fbbf24;stroke-width:2}
+.flow-label{fill:#e6e8ee;font-family:"SF Mono",monospace;font-size:11px}
+.flow-label.sub{fill:#8b93a7;font-size:10px}
+.click-hint{font-size:11px;color:var(--mute);margin-top:6px;text-align:center}
+
+</style>
+</head><body><div class="wrap"><h1>SGLang PD 分离：源码深读<span class="tag">PD · 0/8</span></h1><div class="sub">8 章按"原理 → 源码 → 请求流转 → 交互演示"结构编写。每页都有可播放或可点击的 demo。</div><div class="toc"><a href="#source">源码索引</a></div>
+<div class="card">
+<p>这一章按"<strong>原理 → 源码 → 请求流转 → 交互演示</strong>"的结构重写。每一页先讲清楚这个模块的核心原理和数据结构，再拆源码，最后用一个可播放/可点击的 demo 展示"一个请求到这里会被怎么处理"。</p>
+
+<p>学习路径推荐：</p>
+<ol>
+<li>先看 <b>01 why-pd</b> 理解动机，用 Roofline demo 亲眼看 P/D 为什么不能同池</li>
+<li>再看 <b>02 request-lifecycle</b> 的 14 步全链路 demo，建立骨架</li>
+<li>然后按 <b>03 → 04 → 05 → 06</b> 顺序钻每个模块</li>
+<li>用 <b>07</b> 的 metrics dashboard 练习故障诊断</li>
+<li>最后看 <b>08</b>，拆解 Tokenizer CPU 热路径以及 PD/非 PD 的放置差异</li>
+</ol>
+</div>
+
+<div class="grid cols-2" style="gap:14px;margin-top:20px">
+<a href="01-why-pd.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer;transition:all .2s"
+     onmouseover="this.style.borderColor='var(--brand)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--brand);margin-top:0">01 · 为什么必须 PD 分离</h3>
+<p style="color:var(--mute);font-size:13px">P/D 的计算特性差异（compute vs memory bound）、同池导致的 ITL 抖动、Chunked Prefill 的半截方案、PD 带来的新代价。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">🎬 Roofline 可视化 + ITL 抖动对比动画</p>
+</div>
+</a>
+<a href="02-request-lifecycle.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--brand)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--brand);margin-top:0">02 · 14 步全链路时序</h3>
+<p style="color:var(--mute);font-size:13px">从 client POST 到首个 SSE chunk 的完整路径：跨 6 进程、2 种语言、3 种通信协议。建立整章的骨架图。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">🎬 可播放时序 + 🎯 点任何 step 冻结队列状态</p>
+</div>
+</a>
+<a href="03-router-source.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--brand)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--brand);margin-top:0">03 · Router：双池路由 + bootstrap 注入</h3>
+<p style="color:var(--mute);font-size:13px">Rust 写的 PDRouter：WorkerRegistry、PolicyRegistry、execute_dual_dispatch、select_pd_pair（两次策略调用）、generate_room_id、tokio::join! 双发。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">🎬 8 步请求流转 + 🎯 cache_aware vs power_of_two 对比</p>
+</div>
+</a>
+<a href="04-prefill-worker.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--brand)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--brand);margin-top:0">04 · Prefill Worker：三段流水线</h3>
+<p style="color:var(--mute);font-size:13px">BootstrapQueue + waiting_queue + InflightQueue。bootstrap_thread 如何收 D 的 ZMQ；send_kv_chunk 和 Mooncake transfer_worker 的源码逐行。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">🎬 请求穿过 3 队列动画 + 实时源码对照</p>
+</div>
+</a>
+<a href="05-decode-worker.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--brand)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--brand);margin-top:0">05 · Decode Worker：预分配 + 收货 + 首 token 交接</h3>
+<p style="color:var(--mute);font-size:13px">DecodeReqToTokenPool 的 pre_alloc 额度设计、DecodePreallocQueue.pop_preallocated 源码、send_metadata、commit 时的 bootstrap_room 串包校验。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">🧠 ReqToTokenPool 对比模拟 + 🎬 D 侧 4 阶段流转</p>
+</div>
+</a>
+<a href="06-kv-transfer-bootstrap.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--brand)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--brand);margin-top:0">06 · KV Transfer & Bootstrap：三层协议</h3>
+<p style="color:var(--mute);font-size:13px">KVPoll 5 状态机、CommonKVBootstrapServer 6 个 HTTP 接口、_resolve_rank_mapping 组合爆炸、MetadataBuffers、staging buffer 异构 TP 优化。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">🎯 P/D 双状态机交互探索 + ZMQ 消息 log</p>
+</div>
+</a>
+<a href="07-router-and-production.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--brand)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--brand);margin-top:0">07 · 生产治理与排障</h3>
+<p style="color:var(--mute);font-size:13px">核心指标拆解、失败清理链路、调优环境变量、Router 动态扩缩容、EPD 扩展、10 条排障 checklist。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">📊 模拟 metrics dashboard + 5 种故障场景切换</p>
+</div>
+</a>
+<a href="08-tokenizer-deep-dive.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--brand)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--brand);margin-top:0">08 · Tokenizer 全链路：CPU 热路径解剖</h3>
+<p style="color:var(--mute);font-size:13px">Chat Template、BPE、SGLang TokenizerManager、增量 Detokenizer、动态 batch、容量规划，以及 HTTP PD 为什么可能重复 tokenize。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">🎬 BPE 合并 + 增量解码 + PD 放置动画 + 📊 性能预算器</p>
+</div>
+</a>
+</div>
+
+<h2 id="source"><span class="step">REF</span>源码索引（全章参考）</h2>
+<div class="card">
+<table>
+<tr><th>层</th><th>路径</th><th>核心</th></tr>
+<tr><td>Router (Rust)</td><td class="path">sgl-model-gateway/src/routers/http/pd_router.rs</td><td>execute_dual_dispatch / select_pd_pair / inject_bootstrap_into_value</td></tr>
+<tr><td>Router 策略</td><td class="path">sgl-model-gateway/src/policies/cache_aware.rs / power_of_two.rs</td><td>impl LoadBalancingPolicy</td></tr>
+<tr><td>Bootstrap 类型</td><td class="path">sgl-model-gateway/src/routers/http/pd_types.rs</td><td>generate_room_id</td></tr>
+<tr><td>Tokenizer Manager</td><td class="path">python/sglang/srt/managers/tokenizer_manager.py</td><td>_tokenize_texts / _tokenize_one_request / _send_one_request</td></tr>
+<tr><td>Dynamic Tokenizer</td><td class="path">python/sglang/srt/managers/async_dynamic_batch_tokenizer.py</td><td>_dynamic_batch_loop / _process_dynamic_batch</td></tr>
+<tr><td>Detokenizer</td><td class="path">python/sglang/srt/managers/detokenizer_manager.py</td><td>_grouped_batch_decode / _decode_batch_token_id_output</td></tr>
+<tr><td>Scheduler</td><td class="path">python/sglang/srt/managers/scheduler.py</td><td>handle_generate_request / _add_request_to_queue</td></tr>
+<tr><td>Prefill</td><td class="path">python/sglang/srt/disaggregation/prefill.py</td><td>PrefillBootstrapQueue / send_kv_chunk / process_disagg_prefill_inflight_queue</td></tr>
+<tr><td>Decode</td><td class="path">python/sglang/srt/disaggregation/decode.py</td><td>DecodePreallocQueue / DecodeTransferQueue / DecodeReqToTokenPool</td></tr>
+<tr><td>Bootstrap 协议</td><td class="path">python/sglang/srt/disaggregation/common/conn.py</td><td>CommonKVManager / CommonKVBootstrapServer / _resolve_rank_mapping</td></tr>
+<tr><td>Mooncake</td><td class="path">python/sglang/srt/disaggregation/mooncake/conn.py</td><td>start_prefill_thread / start_decode_thread / transfer_worker / send_metadata</td></tr>
+<tr><td>Metadata</td><td class="path">python/sglang/srt/disaggregation/utils.py</td><td>MetadataBuffers</td></tr>
+</table>
+</div>
+<div class="nav"><a href="../index.html">← 返回总目录</a><a href="01-why-pd.html">开始：为什么 PD →</a></div><div class="foot">SGLang PD Disaggregation · 原理 → 源码 → 流转 → 交互演示</div></div>  <script src="../course-nav.js"></script>
+</body></html>

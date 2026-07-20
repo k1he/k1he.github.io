@@ -1,0 +1,1037 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>调度器深入 · Filter → Score → 绑定</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>调度器深入 <span class="tag">第二层 · 06/15</span></h1>
+<div class="sub">Filter → Score → 绑定的完整流程——理解你的 8 卡推理 Pod 为什么 Pending 30 分钟，以及如何用 Affinity / Taint / TopologySpread / Preemption 精确控制调度行为。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么要深入理解调度</a>
+  <a href="#pipeline">§1 调度完整流程</a>
+  <a href="#filter">§2 Filter 阶段</a>
+  <a href="#score">§3 Score 阶段</a>
+  <a href="#affinity-taint">§4 NodeAffinity 和 Taint</a>
+  <a href="#topology">§5 TopologySpreadConstraints</a>
+  <a href="#preemption">§6 抢占 Preemption</a>
+  <a href="#takeaway">§7 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么要深入理解调度</h2>
+
+<div class="card">
+<p>场景：你申请了一个 8 卡 A100 的推理 Pod，kubectl apply 之后——<b>Pending 了 30 分钟</b>。</p>
+<ul class="tight">
+  <li><code>kubectl describe pod</code> 提示 <code>0/12 nodes are available: 4 Insufficient nvidia.com/gpu, 3 node(s) had taints that the pod didn't tolerate, 5 node(s) didn't match Pod's node affinity</code></li>
+  <li>你明明看到集群里有空闲 GPU 节点——为什么 scheduler 就是不选？</li>
+  <li>终于调度上去了，却跑到了一台"碎片 GPU"节点——4 卡 A100 + 4 卡被其他 Pod 占用，凑不出完整的 TP8</li>
+  <li>多个推理副本全部被调度到同一个机架——NVSwitch 交换机 down 了，所有副本一起挂</li>
+</ul>
+<div class="callout warn">
+这些问题的根源都是<b>不理解 scheduler 的决策逻辑</b>。当你知道 Filter 阶段检查哪些硬约束、Score 阶段偏好什么——就能主动设计调度策略，而不是被动等待和排障。
+</div>
+
+<h3>GPU 推理 Pod Pending 的常见原因速查</h3>
+<table>
+<thead><tr><th>describe 看到的消息</th><th>卡在哪个阶段/插件</th><th>解法方向</th></tr></thead>
+<tbody>
+<tr><td><code>Insufficient nvidia.com/gpu</code></td><td>Filter → NodeResourcesFit</td><td>等旧 Pod 释放 / 扩节点 / 抢占低优先级</td></tr>
+<tr><td><code>node(s) had taints that pod didn't tolerate</code></td><td>Filter → TaintToleration</td><td>给 Pod 加 toleration 或去掉节点 taint</td></tr>
+<tr><td><code>didn't match Pod's node affinity/selector</code></td><td>Filter → NodeAffinity</td><td>检查 label 拼写 / 节点是否有该 label</td></tr>
+<tr><td><code>doesn't satisfy topology spread</code></td><td>Filter → PodTopologySpread</td><td>放宽 maxSkew / 加节点到缺少 Pod 的域</td></tr>
+<tr><td><code>pod has unbound immediate PersistentVolumeClaims</code></td><td>Reserve → VolumeBinding</td><td>检查 PVC 绑定状态和 StorageClass</td></tr>
+<tr><td><code>Preempting</code> + NominatedNode 设了但没绑</td><td>PostFilter → Preemption 等待中</td><td>等被抢占 Pod 退出 / 缩短其 gracePeriod</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="pipeline"><span class="step">§1</span>调度完整流程</h2>
+
+<div class="card">
+<h3>调度队列（activeQ / backoffQ / unschedulableQ）</h3>
+<p>Scheduler 内部维护三个队列管理待调度 Pod。理解队列转换有助于判断 Pending Pod 何时会被重试：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 920 220" width="920">
+  <!-- activeQ -->
+  <rect x="30" y="50" width="240" height="80" rx="10" fill="#1f2937" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="50" y="78" fill="#6ee7b7" font-size="14" font-weight="700">activeQ</text>
+  <text x="50" y="96" fill="#8b93a7" font-size="11">待调度队列（按 PriorityClass 排序）</text>
+  <text x="50" y="112" fill="#8b93a7" font-size="10">调度循环每次从队首取一个 Pod 开始处理</text>
+
+  <!-- backoffQ -->
+  <rect x="340" y="50" width="240" height="80" rx="10" fill="#1f2937" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="360" y="78" fill="#fbbf24" font-size="14" font-weight="700">backoffQ</text>
+  <text x="360" y="96" fill="#8b93a7" font-size="11">退避队列 · 指数退避 1s→2s→4s→...10s</text>
+  <text x="360" y="112" fill="#8b93a7" font-size="10">短暂等待后自动回 activeQ 重试</text>
+
+  <!-- unschedulableQ -->
+  <rect x="650" y="50" width="240" height="80" rx="10" fill="#1f2937" stroke="#f87171" stroke-width="1.5"/>
+  <text x="670" y="78" fill="#f87171" font-size="14" font-weight="700">unschedulableQ</text>
+  <text x="670" y="96" fill="#8b93a7" font-size="11">不可调度队列 · 等集群状态变化</text>
+  <text x="670" y="112" fill="#8b93a7" font-size="10">新 Node 加入 / 旧 Pod 删除时激活</text>
+
+  <!-- 箭头：activeQ → backoffQ -->
+  <path d="M270 90 L340 90" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="282" y="82" fill="#8b93a7" font-size="9">调度失败(可重试)</text>
+
+  <!-- 箭头：backoffQ → unschedulableQ -->
+  <path d="M580 90 L650 90" stroke="#f87171" stroke-width="1.5"/>
+  <text x="590" y="82" fill="#8b93a7" font-size="9">多次失败</text>
+
+  <!-- 箭头：backoffQ → activeQ（退避到期） -->
+  <path d="M460 130 Q460 155 250 155 Q150 155 150 130" stroke="#6ee7b7" stroke-width="1.2" fill="none" stroke-dasharray="4 3"/>
+  <text x="270" y="170" fill="#6ee7b7" font-size="10">退避时间到 → 回 activeQ</text>
+
+  <!-- 箭头：unschedulableQ → activeQ（集群变化） -->
+  <path d="M770 130 Q770 190 460 190 Q150 190 150 130" stroke="#6ee7b7" stroke-width="1.2" fill="none" stroke-dasharray="4 3"/>
+  <text x="380" y="205" fill="#6ee7b7" font-size="10">集群状态变化（Node 加入 / Pod 删除 / 标签变更）→ 重新激活到 activeQ</text>
+</svg>
+</div>
+
+<div class="callout info">
+<b>为什么这很重要？</b>当 Pod 在 unschedulableQ 时，它不会被主动重试——除非集群状态发生变化（比如新节点加入、其他 Pod 被删除释放资源）。这就是为什么有时候 Pod Pending 半小时后突然调度成功——因为另一个 Pod 结束了。
+</div>
+
+<h3>Scheduling Framework · 八大扩展点</h3>
+<p>从 K8S 1.19 开始，调度器采用插件框架（Scheduling Framework）。一次调度经过以下扩展点：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 340" width="960">
+  <!-- 分界线标注 -->
+  <text x="30" y="22" fill="#7dd3fc" font-size="11" font-weight="600">Scheduling Cycle（同步 · 持有调度锁 · 一次只处理一个 Pod）</text>
+  <line x1="30" y1="32" x2="710" y2="32" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="4 2"/>
+
+  <text x="730" y="22" fill="#6ee7b7" font-size="11" font-weight="600">Binding Cycle（异步 · 不持锁）</text>
+  <line x1="730" y1="32" x2="940" y2="32" stroke="#6ee7b7" stroke-width="1" stroke-dasharray="4 2"/>
+
+  <!-- PreFilter -->
+  <rect x="30" y="50" width="105" height="55" rx="8" fill="#1f2937" stroke="#8b93a7"/>
+  <text x="82" y="72" text-anchor="middle" fill="#8b93a7" font-size="10.5" font-weight="600">PreFilter</text>
+  <text x="82" y="90" text-anchor="middle" fill="#8b93a7" font-size="9">预计算 Pod 信息</text>
+
+  <text x="142" y="78" fill="#262b38" font-size="13">→</text>
+
+  <!-- Filter -->
+  <rect x="155" y="50" width="105" height="55" rx="8" fill="#1f2937" stroke="#f87171" stroke-width="2"/>
+  <text x="207" y="72" text-anchor="middle" fill="#f87171" font-size="11" font-weight="700">Filter</text>
+  <text x="207" y="90" text-anchor="middle" fill="#8b93a7" font-size="9">硬约束淘汰</text>
+
+  <text x="267" y="78" fill="#262b38" font-size="13">→</text>
+
+  <!-- PostFilter -->
+  <rect x="280" y="50" width="105" height="55" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="332" y="72" text-anchor="middle" fill="#fb7185" font-size="10.5" font-weight="600">PostFilter</text>
+  <text x="332" y="90" text-anchor="middle" fill="#8b93a7" font-size="9">抢占入口</text>
+
+  <text x="392" y="78" fill="#262b38" font-size="13">→</text>
+
+  <!-- PreScore -->
+  <rect x="405" y="50" width="105" height="55" rx="8" fill="#1f2937" stroke="#8b93a7"/>
+  <text x="457" y="72" text-anchor="middle" fill="#8b93a7" font-size="10.5" font-weight="600">PreScore</text>
+  <text x="457" y="90" text-anchor="middle" fill="#8b93a7" font-size="9">打分预处理</text>
+
+  <text x="517" y="78" fill="#262b38" font-size="13">→</text>
+
+  <!-- Score -->
+  <rect x="530" y="50" width="105" height="55" rx="8" fill="#1f2937" stroke="#a78bfa" stroke-width="2"/>
+  <text x="582" y="72" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="700">Score</text>
+  <text x="582" y="90" text-anchor="middle" fill="#8b93a7" font-size="9">软偏好打分</text>
+
+  <text x="642" y="78" fill="#262b38" font-size="13">→</text>
+
+  <!-- Reserve -->
+  <rect x="655" y="50" width="95" height="55" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="702" y="72" text-anchor="middle" fill="#6ee7b7" font-size="10.5" font-weight="600">Reserve</text>
+  <text x="702" y="90" text-anchor="middle" fill="#8b93a7" font-size="9">预留资源</text>
+
+  <text x="757" y="78" fill="#262b38" font-size="13">→</text>
+
+  <!-- Permit -->
+  <rect x="770" y="50" width="80" height="55" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="810" y="72" text-anchor="middle" fill="#fbbf24" font-size="10.5" font-weight="600">Permit</text>
+  <text x="810" y="90" text-anchor="middle" fill="#8b93a7" font-size="9">批准/等待/拒</text>
+
+  <text x="857" y="78" fill="#262b38" font-size="13">→</text>
+
+  <!-- Bind -->
+  <rect x="870" y="50" width="70" height="55" rx="8" fill="#1f2937" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="905" y="72" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="700">Bind</text>
+  <text x="905" y="90" text-anchor="middle" fill="#8b93a7" font-size="9">写 nodeName</text>
+
+  <!-- 下方插件列表 -->
+  <text x="30" y="135" fill="#8b93a7" font-size="11">各扩展点的内置插件：</text>
+
+  <!-- Filter 插件列表 -->
+  <rect x="30" y="150" width="200" height="130" rx="8" fill="#0f1218" stroke="#262b38"/>
+  <text x="45" y="170" fill="#f87171" font-size="10.5" font-weight="600">Filter 插件</text>
+  <text x="45" y="188" fill="#8b93a7" font-size="10">NodeResourcesFit（资源够否）</text>
+  <text x="45" y="204" fill="#8b93a7" font-size="10">NodeAffinity（标签匹配）</text>
+  <text x="45" y="220" fill="#8b93a7" font-size="10">TaintToleration（污点容忍）</text>
+  <text x="45" y="236" fill="#8b93a7" font-size="10">PodTopologySpread（拓扑分散）</text>
+  <text x="45" y="252" fill="#8b93a7" font-size="10">InterPodAffinity（Pod 间亲和）</text>
+  <text x="45" y="268" fill="#8b93a7" font-size="10">NodeUnschedulable / NodePorts ...</text>
+
+  <!-- Score 插件列表 -->
+  <rect x="260" y="150" width="220" height="130" rx="8" fill="#0f1218" stroke="#262b38"/>
+  <text x="275" y="170" fill="#a78bfa" font-size="10.5" font-weight="600">Score 插件</text>
+  <text x="275" y="188" fill="#8b93a7" font-size="10">NodeResourcesFit（Least/MostAllocated）</text>
+  <text x="275" y="204" fill="#8b93a7" font-size="10">NodeResourcesBalancedAllocation</text>
+  <text x="275" y="220" fill="#8b93a7" font-size="10">NodeAffinity（preferred 加分）</text>
+  <text x="275" y="236" fill="#8b93a7" font-size="10">TaintToleration（PreferNoSchedule）</text>
+  <text x="275" y="252" fill="#8b93a7" font-size="10">PodTopologySpread（分散打分）</text>
+  <text x="275" y="268" fill="#8b93a7" font-size="10">InterPodAffinity（preferred 亲和）</text>
+
+  <!-- PostFilter + Bind -->
+  <rect x="510" y="150" width="200" height="95" rx="8" fill="#0f1218" stroke="#262b38"/>
+  <text x="525" y="170" fill="#fb7185" font-size="10.5" font-weight="600">PostFilter 插件</text>
+  <text x="525" y="188" fill="#8b93a7" font-size="10">DefaultPreemption</text>
+  <text x="525" y="206" fill="#8b93a7" font-size="10" font-style="italic">→ 仅在 Filter 全失败时触发</text>
+  <text x="525" y="224" fill="#8b93a7" font-size="10" font-style="italic">→ 选择可驱逐 Pod 腾资源</text>
+
+  <rect x="740" y="150" width="190" height="95" rx="8" fill="#0f1218" stroke="#262b38"/>
+  <text x="755" y="170" fill="#6ee7b7" font-size="10.5" font-weight="600">Bind / Reserve / Permit</text>
+  <text x="755" y="188" fill="#8b93a7" font-size="10">DefaultBinder → PATCH nodeName</text>
+  <text x="755" y="206" fill="#8b93a7" font-size="10">VolumeBinding → 预留 PV</text>
+  <text x="755" y="224" fill="#8b93a7" font-size="10">Permit → gang scheduling 等待</text>
+
+  <!-- 底部关键说明 -->
+  <text x="30" y="310" fill="#f87171" font-size="11">• Filter：任何一个插件返回 Unschedulable → 该 Node 被淘汰（一票否决）</text>
+  <text x="30" y="328" fill="#a78bfa" font-size="11">• Score：每个插件给 0-100 分 × weight → 加权求和 → 取最高分 Node</text>
+</svg>
+</div>
+
+<div class="callout info">
+<b>关键理解</b>：Scheduling Cycle（PreFilter → Reserve）是<b>同步串行</b>的——同一时间只处理一个 Pod。Binding Cycle（Permit → Bind）是<b>异步</b>的——写 nodeName 到 etcd 不阻塞下一个 Pod 的调度。这就是为什么 scheduler 每秒能处理几百个 Pod 的调度决策。
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：如何自定义调度插件（Scheduling Framework 扩展）</button>
+<div class="expand-content">
+<p>K8S 原生 scheduler 支持 out-of-tree 插件开发。你可以：</p>
+<ul class="tight">
+  <li><b>方式 1</b>：修改 <code>KubeSchedulerConfiguration</code> 调整内置插件的权重和参数（最简单）</li>
+  <li><b>方式 2</b>：编写自定义 plugin 编译到 scheduler binary 中（需要 Go 开发）</li>
+  <li><b>方式 3</b>：部署第二个 scheduler（<code>schedulerName: my-scheduler</code>）专门服务 GPU Pod</li>
+</ul>
+<p>GPU 集群常见的自定义 scheduler 插件场景：</p>
+<ul class="tight">
+  <li>GPU 拓扑感知调度（如 NVIDIA GPU Operator 的 topology-aware placement）</li>
+  <li>Gang scheduling（等所有 Pod 都能调度后才一起绑定——Pipeline Parallel 场景）</li>
+  <li>碎片化感知调度（避免把 4 卡 Pod 放到只剩 4 卡但分属不同 NVLink 域的节点）</li>
+</ul>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="filter"><span class="step">§2</span>Filter 阶段 · 硬约束淘汰</h2>
+
+<div class="card">
+<p>Filter 阶段对每个 Node 逐一执行所有 Filter 插件。<b>任何一个插件返回 Unschedulable → 该 Node 直接淘汰</b>。以下是最重要的 5 个 Filter 插件：</p>
+
+<h3>① NodeResourcesFit · CPU / Mem / GPU 资源够不够</h3>
+<p>对比 Pod 的 <code>requests</code> 与 Node 的 <code>Allocatable - 已分配 requests 总和</code>：</p>
+<pre># Pod 请求
+resources:
+  requests:
+    cpu: "32"                      # 32 核
+    memory: "320Gi"                # 320GB 内存
+    nvidia.com/gpu: "8"            # 8 块 GPU
+
+# Node 状态（8 卡 A100 节点，96 核 / 768Gi / 8 GPU）
+# 已有另一个 Pod 占了 8 卡 GPU：
+#   剩余 GPU = 8 - 8 = 0
+#   → 不满足 Pod 的 gpu requests → 此 Node 被淘汰</pre>
+
+<div class="callout bad">
+<b>最常见的误解</b>：<code>kubectl top node</code> 显示 GPU 利用率只有 20%——但 scheduler <b>不看利用率</b>，它看的是 requests 累计值。即使 GPU 实际空闲（模型没在推理），只要其他 Pod 已经 request 了那些 GPU，scheduler 就认为资源不足。这是"声明式资源管理"的设计——保证已声明的资源不会被超卖。
+</div>
+
+<h3>② NodeAffinity · 标签选择器</h3>
+<p>检查 Pod 的 <code>nodeAffinity.requiredDuringSchedulingIgnoredDuringExecution</code> 是否与 Node labels 匹配：</p>
+<pre># Pod 要求：节点必须有标签 nvidia.com/gpu.product=NVIDIA-A100-SXM4-80GB
+#
+# Node-A labels: {nvidia.com/gpu.product: NVIDIA-A100-SXM4-80GB}  → 匹配 ✓
+# Node-B labels: {nvidia.com/gpu.product: NVIDIA-V100-SXM2-32GB}  → 不匹配 ✗ → 淘汰
+# Node-C labels: {无此 key}                                       → 不匹配 ✗ → 淘汰</pre>
+
+<h3>③ TaintToleration · 污点容忍</h3>
+<p>Node 上的 <code>NoSchedule</code> / <code>NoExecute</code> Taint 必须被 Pod 的 Toleration 精确匹配，否则淘汰：</p>
+<pre># Node taint:  nvidia.com/gpu=present:NoSchedule
+#
+# Pod A（有 toleration {key:nvidia.com/gpu, operator:Exists, effect:NoSchedule}）
+#   → 匹配 → 通过 ✓
+#
+# Pod B（普通 CPU 服务，没有任何 GPU toleration）
+#   → 不匹配 → 淘汰 ✗  ← 这就是 GPU 节点"专用化"的原理</pre>
+
+<h3>④ PodTopologySpread · 拓扑分散约束</h3>
+<p>当 <code>whenUnsatisfiable: DoNotSchedule</code> 时，Filter 阶段检查把 Pod 放到该 Node 后，拓扑域间的 Pod 数差是否超出 <code>maxSkew</code>：</p>
+<pre># maxSkew=1, topologyKey=topology.kubernetes.io/zone
+# zone-a: 3 个推理 Pod     zone-b: 2 个推理 Pod
+#
+# 新 Pod 放 zone-a 的某 Node → skew = (3+1) - 2 = 2 > maxSkew → 淘汰 zone-a 所有 Node ✗
+# 新 Pod 放 zone-b 的某 Node → skew = 3 - (2+1) = 0 ≤ 1     → 通过 ✓</pre>
+
+<h3>⑤ InterPodAffinity / AntiAffinity · Pod 间亲和</h3>
+<p><code>requiredDuringSchedulingIgnoredDuringExecution</code> 的 podAntiAffinity 会在 Filter 阶段检查：</p>
+<pre># Pod 声明：不能跟 label app=sglang-inference 的 Pod 在同一个 hostname
+# Node 上已有一个 app=sglang-inference 的 Pod → 淘汰 ✗
+#
+# 常用于：同一模型的多个 TP8 副本不能跑在同一台机器
+# （因为单台最多 8 卡，不可能装两个 8 卡 Pod）</pre>
+
+<div class="callout warn">
+<b>常见坑</b>：Pod 硬反亲和 + replicas 数 > 合格 Node 数 → 必然有 Pod 永远 Pending。例如你有 3 台 A100 节点，Deployment 设了 4 replicas + 硬反亲和（每个 hostname 最多一个 Pod），第 4 个 Pod 永远调度不上。
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：Filter 的性能优化 · percentageOfNodesToScore</button>
+<div class="expand-content">
+<p>如果集群有 5000 个 Node，每次调度要对每个 Node 执行所有 Filter 插件，性能开销巨大。K8S 的优化：</p>
+<ul class="tight">
+  <li><b>percentageOfNodesToScore</b>：默认只筛选 50%（≥100 Node）或 10%（≥5000 Node）的 Node。找到足够多可调度 Node 后提前停止 Filter。</li>
+  <li><b>并行 Filter</b>：对不同 Node 的 Filter 检查是并行执行的（goroutine 池）。</li>
+  <li><b>PreFilter 预计算</b>：一些复杂信息（如 Inter-Pod Affinity 的拓扑计算）在 PreFilter 阶段一次算好，避免 Filter 中重复计算。</li>
+</ul>
+<p>这意味着在大集群中，scheduler 不一定选到"全局最优 Node"——它选的是"在采样的 Node 中最优的"。对 GPU 集群（通常 <100 台 GPU Node），这个近似影响很小。</p>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+GPU 推理 Pod Pending 的排障三步法：<br/>
+① <code>kubectl describe pod &lt;name&gt;</code> 看 Events 中 FailedScheduling 消息 → 分类统计各原因淘汰了多少节点<br/>
+② 从淘汰数最多的原因入手。如果是 <code>Insufficient nvidia.com/gpu</code>，执行 <code>kubectl describe node &lt;gpu-node&gt;</code> 查看 <code>Allocated resources</code> 里 GPU 被哪些 Pod 占了<br/>
+③ 如果是 NodeAffinity/TaintToleration 问题，对比 Pod spec 中的 affinity/toleration 与节点的 labels/taints 是否字符串完全匹配（大小写、连字符都要一致）
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="score"><span class="step">§3</span>Score 阶段 · 软偏好打分</h2>
+
+<div class="card">
+<p>通过 Filter 的 Node 进入 Score 阶段。每个 Score 插件对每个候选 Node 打 <b>0-100 分</b>，最终<b>加权求和</b>取最高分的 Node。</p>
+
+<h3>LeastAllocated vs MostAllocated（Spread vs Binpack）</h3>
+
+<div class="grid cols-2">
+<div style="background:var(--panel2);border-radius:10px;padding:16px">
+<h4 style="margin-top:0;color:#6ee7b7">LeastAllocated（默认 · 打散策略）</h4>
+<p style="font-size:12.5px;color:var(--mute)">优先选<b>资源剩余最多</b>的 Node → Pod 均匀打散到各节点</p>
+<pre style="font-size:11.5px">score = (allocatable - requested) / allocatable × 100
+
+# Node A: GPU 剩余 6/8 → score = 75
+# Node B: GPU 剩余 2/8 → score = 25
+# → 选 Node A（更空的）</pre>
+<p style="font-size:12px;color:var(--brand2)">适合：通用服务、高可用优先、容灾</p>
+</div>
+<div style="background:var(--panel2);border-radius:10px;padding:16px">
+<h4 style="margin-top:0;color:#fbbf24">MostAllocated（Binpack · 装箱策略）</h4>
+<p style="font-size:12.5px;color:var(--mute)">优先选<b>资源剩余最少</b>的 Node → Pod 集中塞满一台再用下一台</p>
+<pre style="font-size:11.5px">score = requested / allocatable × 100
+
+# Node A: GPU 已用 6/8 → score = 75
+# Node B: GPU 已用 2/8 → score = 25
+# → 选 Node A（更满的）</pre>
+<p style="font-size:12px;color:var(--brand2)">适合：节省成本、弹性缩容、GPU 碎片整理</p>
+</div>
+</div>
+
+<div class="callout info">
+<b>GPU 推理集群为什么推荐 MostAllocated（Binpack）？</b><br/>
+场景：10 台 8 卡 A100 节点，跑了 10 个单卡推理 Pod。<br/>
+• <b>LeastAllocated</b>（默认）：每台 1 卡 Pod → 10 台机器各用 1 卡，剩余 7 卡 → 没有一台能放下 8 卡大模型！<br/>
+• <b>MostAllocated</b>（Binpack）：把 10 个单卡 Pod 塞到 2 台机器 → 剩余 8 台完全空闲 → 大模型随时可用。<br/>
+<b>一个调度策略的调整 = 省出 8 台 A100 机器的可用性。</b>
+</div>
+
+<h3>BalancedAllocation · CPU/Mem 使用比例均衡</h3>
+<p>偏好 CPU 和 Memory 使用率接近的节点。避免"CPU 用满了内存还大量空闲"的浪费。</p>
+<pre># Node A: CPU 利用率 60%, Memory 利用率 55% → 差值 5%  → 得分高（均衡）
+# Node B: CPU 利用率 90%, Memory 利用率 20% → 差值 70% → 得分低（失衡）</pre>
+
+<h3>NodeAffinity preferred 加分</h3>
+<p><code>preferredDuringSchedulingIgnoredDuringExecution</code> 在 Score 阶段给匹配的 Node 加分，权重（weight 1-100）控制偏好强度：</p>
+<pre># Pod preferred: weight=80, 希望 gpu-interconnect=nvswitch 的节点
+# Node-A 有 nvswitch 标签 → 加 80 分
+# Node-B 没有 nvswitch 标签 → 不加分（但也不淘汰——因为是"preferred"不是"required"）</pre>
+
+<h3>TopologySpreadConstraint 的打分逻辑</h3>
+<p>当 <code>whenUnsatisfiable: ScheduleAnyway</code> 时，Score 阶段给"放上去后 skew 更小"的 Node 更高分。Pod 数量少的拓扑域中的 Node 得分更高——<b>尽力打散，但不强制</b>。</p>
+
+<h3>配置 Binpack 策略的 KubeSchedulerConfiguration</h3>
+<pre># /etc/kubernetes/scheduler-config.yaml
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+profiles:
+- schedulerName: default-scheduler      # 直接修改默认 scheduler
+  pluginConfig:
+  - name: NodeResourcesFit
+    args:
+      scoringStrategy:
+        type: MostAllocated             # 切换为 binpack 模式
+        resources:
+        - name: nvidia.com/gpu
+          weight: 10                    # GPU 权重最高——优先填满 GPU 维度
+        - name: cpu
+          weight: 1
+        - name: memory
+          weight: 1</pre>
+
+<div class="callout warn">
+<b>注意</b>：修改 scheduler 配置会影响<b>整个集群的所有 Pod</b>。如果你同时有 CPU 服务和 GPU 服务，建议用 <code>schedulerName</code> 部署第二个 scheduler 专门服务 GPU Pod，避免影响 CPU 服务的调度。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="affinity-taint"><span class="step">§4</span>NodeAffinity 和 Taint-Toleration 详解</h2>
+
+<div class="card">
+<h3>NodeAffinity · requiredDuringScheduling vs preferredDuringScheduling</h3>
+<table>
+<thead><tr><th>类型</th><th>作用阶段</th><th>行为</th><th>用途</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:#f87171"><b>requiredDuringScheduling<br/>IgnoredDuringExecution</b></td>
+  <td>Filter（硬约束）</td>
+  <td>不满足 → Node 被淘汰，Pod 绝不会调度过去</td>
+  <td>必须是 A100 节点 / 必须在某个 zone</td>
+</tr>
+<tr>
+  <td style="color:#a78bfa"><b>preferredDuringScheduling<br/>IgnoredDuringExecution</b></td>
+  <td>Score（软偏好）</td>
+  <td>满足 → 加分，不满足 → 不加分但也不淘汰</td>
+  <td>尽量选 80GB 版本 / 尽量选 NVSwitch 节点</td>
+</tr>
+</tbody>
+</table>
+
+<div class="callout info">
+<b>IgnoredDuringExecution</b> 的含义：调度完成后，即使 Node 的 label 被改了（不再满足条件），已经跑着的 Pod <b>不会被驱逐</b>。这是目前唯一实现的语义。（K8S 社区在讨论 <code>RequiredDuringExecution</code>——label 变了就驱逐）
+</div>
+
+<h3>Taint Effect · 三种级别</h3>
+<table>
+<thead><tr><th>Effect</th><th>对调度的影响</th><th>对已有 Pod 的影响</th><th>典型场景</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:#f87171"><b>NoSchedule</b></td>
+  <td>不容忍的 Pod <b>不会</b>调度到此 Node</td>
+  <td>不影响已在运行的 Pod</td>
+  <td>GPU 节点专用隔离</td>
+</tr>
+<tr>
+  <td style="color:#fbbf24"><b>PreferNoSchedule</b></td>
+  <td>尽量不调度，但没有其他选择时<b>可以</b></td>
+  <td>不影响已在运行的 Pod</td>
+  <td>非关键节点的软隔离</td>
+</tr>
+<tr>
+  <td style="color:#fb7185"><b>NoExecute</b></td>
+  <td>不容忍的 Pod <b>不会</b>调度到此 Node</td>
+  <td><b>已在运行且不容忍的 Pod 会被驱逐</b></td>
+  <td>节点故障、维护模式</td>
+</tr>
+</tbody>
+</table>
+
+<h3>常见 Taint 清单</h3>
+<table>
+<thead><tr><th>Taint Key</th><th>何时自动添加</th><th>Effect</th><th>你需要做什么</th></tr></thead>
+<tbody>
+<tr><td><code>node.kubernetes.io/not-ready</code></td><td>Node 状态变为 NotReady</td><td>NoExecute</td><td>系统自动管理；Pod 有默认 tolerationSeconds=300</td></tr>
+<tr><td><code>node.kubernetes.io/unreachable</code></td><td>Node 与 apiserver 失联</td><td>NoExecute</td><td>同上；失联超时后 Pod 被驱逐到其他 Node</td></tr>
+<tr><td><code>node.kubernetes.io/memory-pressure</code></td><td>节点内存不足</td><td>NoSchedule</td><td>kubelet 自动加减；根因是节点内存不够用</td></tr>
+<tr><td><code>node.kubernetes.io/disk-pressure</code></td><td>节点磁盘不足</td><td>NoSchedule</td><td>清理磁盘或扩容</td></tr>
+<tr><td><code>nvidia.com/gpu=present:NoSchedule</code></td><td>NVIDIA GPU Operator 配置</td><td>NoSchedule</td><td>GPU Pod 需配 toleration；非 GPU Pod 自动被挡</td></tr>
+</tbody>
+</table>
+
+<h3>YAML 示例：GPU 节点专用调度</h3>
+<pre># ===== 完整的 GPU 推理 Pod spec =====
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sglang-qwen3-72b
+  labels:
+    app: sglang-qwen3-72b
+spec:
+  # --- NodeAffinity：硬约束 + 软偏好 ---
+  affinity:
+    nodeAffinity:
+      # 硬约束：必须是 A100 或 H100 节点
+      requiredDuringSchedulingIgnoredDuringExecution:
+        nodeSelectorTerms:
+        - matchExpressions:
+          - key: nvidia.com/gpu.product          # NVIDIA device plugin 自动打的标签
+            operator: In
+            values:
+            - NVIDIA-A100-SXM4-80GB              # A100 80GB
+            - NVIDIA-H100-SXM5-80GB              # H100 80GB
+      # 软偏好：尽量选 NVSwitch 互联的节点（weight 80/100）
+      preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 80
+        preference:
+          matchExpressions:
+          - key: nvidia.com/gpu.interconnect
+            operator: In
+            values: ["nvswitch"]
+
+  # --- Toleration：容忍 GPU 节点的 taint ---
+  tolerations:
+  - key: nvidia.com/gpu                          # 匹配 GPU taint
+    operator: Exists                             # 不管 value 是什么都容忍
+    effect: NoSchedule
+  - key: node.kubernetes.io/not-ready            # 容忍短暂的 NotReady（5 分钟）
+    operator: Exists
+    effect: NoExecute
+    tolerationSeconds: 300                       # 超过 300s 才驱逐
+
+  containers:
+  - name: sglang
+    image: lmsysorg/sglang:latest
+    command: ["python3", "-m", "sglang.launch_server"]
+    args:
+    - "--model-path=/models/Qwen3-72B"
+    - "--tp=8"                                   # Tensor Parallel = 8 卡
+    resources:
+      requests:
+        nvidia.com/gpu: "8"                      # 声明请求 8 块 GPU
+        cpu: "32"
+        memory: "320Gi"
+      limits:
+        nvidia.com/gpu: "8"                      # GPU 的 limit 必须等于 request
+        memory: "320Gi"</pre>
+
+<div class="callout warn">
+<b>operator: Exists vs Equal</b><br/>
+• <code>Exists</code>：只匹配 key，不看 value → 适合"只要有 GPU taint 就容忍"<br/>
+• <code>Equal</code>：key + value + effect 全部精确匹配 → 适合区分不同类型 GPU 节点的 taint（如 <code>gpu-type=a100:NoSchedule</code> vs <code>gpu-type=h100:NoSchedule</code>）
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+<b>最佳实践：Taint + NodeAffinity 双重保护</b><br/>
+• <b>Taint</b>：GPU 节点加 <code>nvidia.com/gpu=present:NoSchedule</code> → 防止 CPU Pod 意外跑到 GPU 节点浪费资源<br/>
+• <b>NodeAffinity required</b>：GPU Pod 声明 <code>nvidia.com/gpu.product In [A100, H100]</code> → 防止 GPU Pod 跑到错误的 GPU 型号节点<br/>
+两者配合 = <b>双向隔离</b>：CPU Pod 进不去 GPU 节点，GPU Pod 也不会跑到错误的地方。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="topology"><span class="step">§5</span>TopologySpreadConstraints</h2>
+
+<div class="card">
+<h3>topologyKey 的含义</h3>
+<p><code>topologyKey</code> 是一个 Node label 的 key——拥有相同 value 的 Node 被视为同一个"拓扑域"：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 920 270" width="920">
+  <!-- Zone A -->
+  <rect x="20" y="30" width="430" height="220" rx="12" fill="none" stroke="#7dd3fc" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="40" y="55" fill="#7dd3fc" font-size="12" font-weight="600">Zone A（topology.kubernetes.io/zone=zone-a）</text>
+
+  <!-- Rack 1 -->
+  <rect x="40" y="70" width="190" height="160" rx="8" fill="none" stroke="#fbbf24" stroke-dasharray="4 2"/>
+  <text x="55" y="90" fill="#fbbf24" font-size="11">Rack 1（rack=rack-1）</text>
+  <rect x="55" y="105" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="65" y="127" fill="#6ee7b7" font-size="10">Node-1</text>
+  <rect x="140" y="105" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="150" y="127" fill="#6ee7b7" font-size="10">Node-2</text>
+  <rect x="55" y="155" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="65" y="177" fill="#6ee7b7" font-size="10">Node-3</text>
+  <rect x="140" y="155" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="150" y="177" fill="#6ee7b7" font-size="10">Node-4</text>
+
+  <!-- Rack 2 -->
+  <rect x="250" y="70" width="190" height="160" rx="8" fill="none" stroke="#fbbf24" stroke-dasharray="4 2"/>
+  <text x="265" y="90" fill="#fbbf24" font-size="11">Rack 2（rack=rack-2）</text>
+  <rect x="265" y="105" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="275" y="127" fill="#6ee7b7" font-size="10">Node-5</text>
+  <rect x="350" y="105" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="360" y="127" fill="#6ee7b7" font-size="10">Node-6</text>
+  <rect x="265" y="155" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="275" y="177" fill="#6ee7b7" font-size="10">Node-7</text>
+  <rect x="350" y="155" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="360" y="177" fill="#6ee7b7" font-size="10">Node-8</text>
+
+  <!-- Zone B -->
+  <rect x="470" y="30" width="430" height="220" rx="12" fill="none" stroke="#7dd3fc" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="490" y="55" fill="#7dd3fc" font-size="12" font-weight="600">Zone B（topology.kubernetes.io/zone=zone-b）</text>
+
+  <!-- Rack 3 -->
+  <rect x="490" y="70" width="190" height="160" rx="8" fill="none" stroke="#fbbf24" stroke-dasharray="4 2"/>
+  <text x="505" y="90" fill="#fbbf24" font-size="11">Rack 3（rack=rack-3）</text>
+  <rect x="505" y="105" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="515" y="127" fill="#6ee7b7" font-size="10">Node-9</text>
+  <rect x="590" y="105" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="600" y="127" fill="#6ee7b7" font-size="10">Node-10</text>
+  <rect x="505" y="155" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="515" y="177" fill="#6ee7b7" font-size="10">Node-11</text>
+  <rect x="590" y="155" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="600" y="177" fill="#6ee7b7" font-size="10">Node-12</text>
+
+  <!-- Rack 4 -->
+  <rect x="700" y="70" width="190" height="160" rx="8" fill="none" stroke="#fbbf24" stroke-dasharray="4 2"/>
+  <text x="715" y="90" fill="#fbbf24" font-size="11">Rack 4（rack=rack-4）</text>
+  <rect x="715" y="105" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="725" y="127" fill="#6ee7b7" font-size="10">Node-13</text>
+  <rect x="800" y="105" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="810" y="127" fill="#6ee7b7" font-size="10">Node-14</text>
+  <rect x="715" y="155" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="725" y="177" fill="#6ee7b7" font-size="10">Node-15</text>
+  <rect x="800" y="155" width="75" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="810" y="177" fill="#6ee7b7" font-size="10">Node-16</text>
+</svg>
+</div>
+
+<h3>maxSkew / whenUnsatisfiable 详解</h3>
+<table>
+<thead><tr><th>字段</th><th>含义</th><th>示例</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:#6ee7b7"><b>topologyKey</b></td>
+  <td>用哪个 Node label 的 key 划分拓扑域</td>
+  <td><code>kubernetes.io/hostname</code> → 每个 Node 一个域<br/><code>topology.kubernetes.io/zone</code> → 每个 AZ 一个域<br/><code>rack</code> → 每个机架一个域（自定义标签）</td>
+</tr>
+<tr>
+  <td style="color:#fbbf24"><b>maxSkew</b></td>
+  <td>各拓扑域中匹配 Pod 数量的最大差值</td>
+  <td><code>1</code> → 最严格均匀<br/><code>2</code> → 允许域间差 2 个 Pod</td>
+</tr>
+<tr>
+  <td style="color:#7dd3fc"><b>whenUnsatisfiable</b></td>
+  <td>无法满足 maxSkew 约束时的行为</td>
+  <td><code>DoNotSchedule</code> → Filter 阶段淘汰（硬约束）<br/><code>ScheduleAnyway</code> → Score 阶段降分（软约束）</td>
+</tr>
+<tr>
+  <td style="color:#8b93a7"><b>labelSelector</b></td>
+  <td>统计哪些 Pod 参与分散计算</td>
+  <td>匹配同一 Deployment 的 Pod labels</td>
+</tr>
+<tr>
+  <td style="color:#8b93a7"><b>minDomains</b>（1.25+）</td>
+  <td>至少使用多少个拓扑域</td>
+  <td><code>3</code> → 至少分散到 3 个域</td>
+</tr>
+</tbody>
+</table>
+
+<h3>推理场景：两种相反的需求</h3>
+
+<div class="grid cols-2">
+<div style="background:var(--panel2);border-radius:10px;padding:16px">
+<h4 style="margin-top:0">场景 A：多副本推理 · 跨机架打散</h4>
+<p style="font-size:12.5px;color:var(--mute)">同一模型 4 个推理副本（每个 TP8）分散到不同机架 → 一个机架 ToR 交换机故障只丢 1/4 流量</p>
+<pre style="font-size:11.5px">topologySpreadConstraints:
+- topologyKey: rack           # 按机架分散
+  maxSkew: 1                  # 机架间最多差 1
+  whenUnsatisfiable: DoNotSchedule  # 硬约束
+  labelSelector:
+    matchLabels:
+      app: sglang-qwen3-72b</pre>
+</div>
+<div style="background:var(--panel2);border-radius:10px;padding:16px">
+<h4 style="margin-top:0">场景 B：多卡推理 · 集中到同一 NVSwitch 域</h4>
+<p style="font-size:12.5px;color:var(--mute)">单个 TP8 Pod 的 8 张 GPU 必须在同一 NVSwitch 域内 → <b>不用 TopologySpread 解决</b></p>
+<pre style="font-size:11.5px"># 单 Pod 8 卡 → scheduler 天然保证
+# 同一 Pod 的资源来自同一 Node
+resources:
+  limits:
+    nvidia.com/gpu: 8   # 整机分配
+
+# 如果是多机 TP/PP，需要
+# nodeAffinity 限定同一 IB 网段
+affinity:
+  nodeAffinity:
+    requiredDuringScheduling...:
+      nodeSelectorTerms:
+      - matchExpressions:
+        - key: network-domain
+          operator: In
+          values: ["ib-domain-1"]</pre>
+</div>
+</div>
+
+<h3>完整 YAML 示例：跨 Zone + 跨机架双层分散</h3>
+<pre>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sglang-inference
+spec:
+  replicas: 6                                  # 6 个 TP8 推理副本
+  selector:
+    matchLabels:
+      app: sglang-inference
+  template:
+    metadata:
+      labels:
+        app: sglang-inference
+    spec:
+      topologySpreadConstraints:
+      # 第一层（硬约束）：跨 Zone 均匀分布
+      - topologyKey: topology.kubernetes.io/zone
+        maxSkew: 1                             # Zone 间最多差 1 个 Pod
+        whenUnsatisfiable: DoNotSchedule       # 不满足就不调度
+        labelSelector:
+          matchLabels:
+            app: sglang-inference
+      # 第二层（软约束）：同 Zone 内跨机架尽量打散
+      - topologyKey: rack
+        maxSkew: 1                             # 机架间尽量差不超过 1
+        whenUnsatisfiable: ScheduleAnyway      # 尽力而为，不强制
+        labelSelector:
+          matchLabels:
+            app: sglang-inference
+
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values: ["NVIDIA-A100-SXM4-80GB"]
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+
+      containers:
+      - name: sglang
+        image: lmsysorg/sglang:latest
+        resources:
+          requests:
+            nvidia.com/gpu: "8"
+            cpu: "32"
+            memory: "320Gi"
+          limits:
+            nvidia.com/gpu: "8"
+            memory: "320Gi"</pre>
+
+<div class="callout bad">
+<b>踩坑</b>：如果某些 Node 没有 <code>topologyKey</code> 对应的标签（比如没打 <code>rack</code> 标签），这些 Node <b>会被直接跳过</b>——视为不属于任何拓扑域。部署前务必用 <code>kubectl get nodes --show-labels | grep rack</code> 确认所有 GPU 节点都有该标签。
+</div>
+
+<div class="callout warn">
+<b>另一个坑</b>：<code>labelSelector</code> 必须与 Pod 自己的 label 匹配。如果写错了（比如漏了一个 label key），每个域都会被统计为 0 个 Pod → 约束形同虚设 → Pod 不会被打散。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+<b>多机推理（Pipeline Parallel 跨 2-4 台机器）</b>的调度挑战：<br/>
+• 需求：4 个 TP8 Pod 分布在 4 台不同机器上，但这 4 台必须在同一个 IB 网段（高带宽通信）<br/>
+• 解法：① <code>topologyKey: kubernetes.io/hostname</code> + <code>maxSkew: 1</code> + <code>DoNotSchedule</code> 保证分散到不同机器 ② <code>nodeAffinity required</code> 限定 <code>network-domain=ib-domain-1</code> 保证同一网段 ③ 考虑用 Gang Scheduling（Volcano / Coscheduling）确保 4 个 Pod 同时调度成功或全部不调度
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="preemption"><span class="step">§6</span>抢占（Preemption）</h2>
+
+<div class="card">
+<h3>PriorityClass 定义</h3>
+<p>抢占的前提是 Pod 有不同优先级。通过 <code>PriorityClass</code> 声明：</p>
+
+<pre># ===== 推理集群的三级优先级 =====
+
+# 最高优先级：在线推理服务
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: online-inference
+value: 1000000                         # 值越大优先级越高（int32 范围）
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority  # 允许抢占比自己低的 Pod
+description: "在线推理服务 — 面向终端用户，不可中断"
+---
+# 中等优先级：离线批量推理 / 评测
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: batch-inference
+value: 100000
+globalDefault: false
+preemptionPolicy: PreemptLowerPriority  # 可以抢占开发 Pod
+description: "离线批推理 — 无实时要求，可被在线服务抢占"
+---
+# 最低优先级：开发调试
+apiVersion: scheduling.k8s.io/v1
+kind: PriorityClass
+metadata:
+  name: dev-workload
+value: 1000
+globalDefault: true                     # 没指定 priorityClassName 的 Pod 用这个
+preemptionPolicy: Never                 # 自己不会去抢占任何人
+description: "开发调试 — 随时可被正式负载抢占"</pre>
+
+<h3>抢占流程详解</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 920 270" width="920">
+  <!-- Step 1 -->
+  <rect x="20" y="30" width="260" height="55" rx="8" fill="#1f2937" stroke="#f87171"/>
+  <text x="40" y="52" fill="#f87171" font-size="11" font-weight="600">① 高优先级 Pod 的 Filter 全部失败</text>
+  <text x="40" y="70" fill="#8b93a7" font-size="10">所有 Node 都不满足 → 触发 PostFilter</text>
+
+  <path d="M280 57 L310 57" stroke="#8b93a7" stroke-width="1.2"/>
+
+  <!-- Step 2 -->
+  <rect x="310" y="30" width="280" height="55" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="330" y="52" fill="#fb7185" font-size="11" font-weight="600">② DefaultPreemption 扫描各节点</text>
+  <text x="330" y="70" fill="#8b93a7" font-size="10">模拟：如果驱逐某些低优 Pod 后，该 Node 能否容纳高优 Pod？</text>
+
+  <path d="M590 57 L620 57" stroke="#8b93a7" stroke-width="1.2"/>
+
+  <!-- Step 3 -->
+  <rect x="620" y="30" width="280" height="55" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="640" y="52" fill="#fbbf24" font-size="11" font-weight="600">③ 选择"驱逐代价最小"的 Node</text>
+  <text x="640" y="70" fill="#8b93a7" font-size="10">优先选：驱逐 Pod 数最少 / 被驱逐 Pod 优先级最低</text>
+
+  <!-- Step 4 -->
+  <path d="M760 85 L760 115" stroke="#8b93a7" stroke-width="1.2"/>
+  <rect x="620" y="115" width="280" height="55" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="640" y="137" fill="#a78bfa" font-size="11" font-weight="600">④ 设 nominatedNodeName + 发驱逐请求</text>
+  <text x="640" y="155" fill="#8b93a7" font-size="10">高优 Pod 标记"预定此 Node" · 低优 Pod 收到 DELETE</text>
+
+  <!-- Step 5 -->
+  <path d="M620 142 L380 142" stroke="#8b93a7" stroke-width="1.2"/>
+  <rect x="20" y="115" width="360" height="55" rx="8" fill="#1f2937" stroke="#f87171"/>
+  <text x="40" y="137" fill="#f87171" font-size="11" font-weight="600">⑤ 被驱逐 Pod 走优雅下线流程</text>
+  <text x="40" y="155" fill="#8b93a7" font-size="10">SIGTERM → preStop → 等 terminationGracePeriodSeconds → SIGKILL</text>
+
+  <!-- Step 6 -->
+  <path d="M200 170 L200 200" stroke="#8b93a7" stroke-width="1.2"/>
+  <rect x="20" y="200" width="360" height="50" rx="8" fill="#1f2937" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="40" y="222" fill="#6ee7b7" font-size="11" font-weight="700">⑥ 资源释放 → 高优 Pod 回到 activeQ → 正常调度绑定</text>
+  <text x="40" y="238" fill="#8b93a7" font-size="10">整个过程耗时 = 被驱逐 Pod 的 gracePeriod + 调度延迟</text>
+</svg>
+</div>
+
+<div class="callout warn">
+<b>抢占不是"立即生效"</b>——从触发到高优 Pod 真正运行，需要等被驱逐 Pod 的 <code>terminationGracePeriodSeconds</code> 走完。如果被驱逐的离线推理 Pod 设了 grace=600s（排空长推理请求），高优 Pod 可能要等 10 分钟才能调度上去。<br/>
+<b>优化</b>：离线批推理 Pod 的 grace period 设短一点（如 30s），定期做 checkpoint，被抢占后从 checkpoint 恢复。
+</div>
+
+<h3>推理场景的优先级设计</h3>
+
+<table>
+<thead><tr><th>负载类型</th><th>PriorityClass</th><th>value</th><th>抢占策略</th><th>被抢占后的处理</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:#f87171"><b>在线推理</b></td>
+  <td>online-inference</td>
+  <td>1000000</td>
+  <td>可抢占离线和开发</td>
+  <td>不应被抢占（最高优先级）</td>
+</tr>
+<tr>
+  <td style="color:#fbbf24"><b>离线批推理</b></td>
+  <td>batch-inference</td>
+  <td>100000</td>
+  <td>可抢占开发</td>
+  <td>从 checkpoint 恢复继续</td>
+</tr>
+<tr>
+  <td style="color:#8b93a7"><b>开发调试</b></td>
+  <td>dev-workload</td>
+  <td>1000</td>
+  <td>Never（不抢占任何人）</td>
+  <td>重新提交即可</td>
+</tr>
+</tbody>
+</table>
+
+<pre># 在 Pod spec 中引用 PriorityClass
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sglang-online
+spec:
+  priorityClassName: online-inference    # 使用高优先级
+  terminationGracePeriodSeconds: 90      # 排空长推理请求
+  containers:
+  - name: sglang
+    image: lmsysorg/sglang:latest
+    resources:
+      limits:
+        nvidia.com/gpu: 8</pre>
+
+<div class="callout bad">
+<b>抢占的代价</b>：被驱逐的低优先级 Pod 如果正在处理请求，已执行的计算全部丢失。<br/>
+• 离线批推理：必须实现 checkpoint + 幂等重试，否则被抢占 = 几小时白跑<br/>
+• 在线推理：如果被不合理地设为低优先级，被抢占意味着<b>线上故障</b>——响应中断、用户看到 5xx<br/>
+• 开发调试：无所谓，重新提交就行
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：preemptionPolicy: Never 的妙用</button>
+<div class="expand-content">
+<p><code>preemptionPolicy: Never</code> 表示：这个 PriorityClass 的 Pod <b>不会去抢占别人</b>，但<b>自己可以被更高优先级的 Pod 抢占</b>。</p>
+<p>用途：</p>
+<ul class="tight">
+  <li>开发调试 Pod 虽然优先级最低，但你不希望它去抢占更低优先级的系统 DaemonSet Pod</li>
+  <li>某些"可抢占但不抢占别人"的 workload，如低优先级的数据预处理任务</li>
+</ul>
+<p>设了 <code>Never</code> 的 Pod，当 Filter 全失败时不会触发 Preemption → 直接进 unschedulableQ 等待资源释放。</p>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+<b>典型 GPU 集群优先级金字塔</b>：<br/>
+<code>system-node-critical</code> (2000001000) → K8S 系统组件（kube-proxy, device-plugin）<br/>
+<code>online-inference</code> (1000000) → 在线推理服务（不可中断）<br/>
+<code>batch-inference</code> (100000) → 离线批量推理 / 训练 / 评测<br/>
+<code>dev-workload</code> (1000, preemptionPolicy:Never) → 开发调试<br/><br/>
+流量突增场景：Autoscaler 扩出新的在线推理 Pod → 集群资源不足 → Preemption 自动驱逐离线批推理 Pod 腾出 GPU → 在线服务扩容成功 → 流量回落后离线任务从 checkpoint 恢复。<b>整个过程无需人工干预。</b>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§7</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① 三个队列</div><div>activeQ → backoffQ → unschedulableQ · Pod Pending 时先确认它在哪个队列 · unschedulableQ 需要集群状态变化才能激活</div>
+  <div class="k">② 八大扩展点</div><div>PreFilter → Filter → PostFilter → PreScore → Score → Reserve → Permit → Bind · 插件化架构，每个阶段可定制</div>
+  <div class="k">③ Filter = 一票否决</div><div>NodeResourcesFit / NodeAffinity / TaintToleration / PodTopologySpread / InterPodAffinity · 任何一个说 No 就淘汰</div>
+  <div class="k">④ Score = 加权偏好</div><div>LeastAllocated(打散) vs MostAllocated(binpack) · preferred affinity 加分 · topology 打散加分 · 权重可配置</div>
+  <div class="k">⑤ GPU 推荐 Binpack</div><div>MostAllocated 填满少数节点 → 腾出完整 8 卡节点给大模型 · 配合 GPU weight=10 强化 GPU 维度 binpack</div>
+  <div class="k">⑥ Taint 双向隔离</div><div>GPU 节点加 NoSchedule taint → CPU Pod 进不来 · GPU Pod 加 nodeAffinity → 不会跑到错误节点</div>
+  <div class="k">⑦ Topology 两层</div><div>硬约束跨 Zone 打散（DoNotSchedule）+ 软约束跨机架尽力打散（ScheduleAnyway）</div>
+  <div class="k">⑧ 抢占金字塔</div><div>online > batch > dev · 离线任务做 checkpoint · preemptionPolicy:Never 防误伤</div>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点 · 综合配置：8 卡节点优先 binpack + 跨机架打散</div>
+<pre># ===== KubeSchedulerConfiguration =====
+apiVersion: kubescheduler.config.k8s.io/v1
+kind: KubeSchedulerConfiguration
+profiles:
+- schedulerName: default-scheduler
+  pluginConfig:
+  - name: NodeResourcesFit
+    args:
+      scoringStrategy:
+        type: MostAllocated              # GPU binpack
+        resources:
+        - name: nvidia.com/gpu
+          weight: 10
+        - name: cpu
+          weight: 1
+        - name: memory
+          weight: 1
+---
+# ===== Deployment =====
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sglang-qwen3-72b
+spec:
+  replicas: 4
+  selector:
+    matchLabels:
+      app: sglang-qwen3-72b
+  template:
+    metadata:
+      labels:
+        app: sglang-qwen3-72b
+    spec:
+      priorityClassName: online-inference       # 高优先级
+      terminationGracePeriodSeconds: 90         # 排空推理请求
+      affinity:
+        nodeAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+            nodeSelectorTerms:
+            - matchExpressions:
+              - key: nvidia.com/gpu.product
+                operator: In
+                values: ["NVIDIA-A100-SXM4-80GB"]
+      tolerations:
+      - key: nvidia.com/gpu
+        operator: Exists
+        effect: NoSchedule
+      topologySpreadConstraints:
+      - topologyKey: rack
+        maxSkew: 1
+        whenUnsatisfiable: ScheduleAnyway       # 跨机架尽力打散
+        labelSelector:
+          matchLabels:
+            app: sglang-qwen3-72b
+      containers:
+      - name: sglang
+        image: lmsysorg/sglang:latest
+        resources:
+          requests:
+            nvidia.com/gpu: "8"
+            cpu: "32"
+            memory: "320Gi"
+          limits:
+            nvidia.com/gpu: "8"
+            memory: "320Gi"</pre>
+<p style="margin-top:10px;color:var(--mute);font-size:12px">效果：4 个 8 卡推理副本优先填满 A100 节点（GPU binpack），同时跨机架尽力打散（topology spread），被 Taint + NodeAffinity 双重保护不受 CPU Pod 干扰，优先级最高可抢占离线任务。</p>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——调度器决策的核心依据是资源模型。Node 的 Allocatable 怎么算？requests 和 limits 分别意味着什么？GPU 作为 Extended Resource 的注册链路？为什么 requests 设少了会被 OOM Kill、设多了会浪费资源？→ <a href="07-resource-model.html" style="color:var(--brand)">07-resource-model.html</a>
+</div>
+</div>
+
+<div class="foot">
+第二层 · 06 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

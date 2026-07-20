@@ -1,0 +1,1013 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>13 · Req / TableManager · 请求的身份证与槽位</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.var{color:#fda4af}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.line{display:flex;justify-content:space-between;border-bottom:1px dashed var(--line);padding:4px 0;font-size:13px}
+.line .k{color:var(--mute);font-family:"SF Mono",monospace}
+.line .v{color:var(--brand);font-family:"SF Mono",monospace}
+.state-row{display:grid;grid-template-columns:110px repeat(5, 1fr);gap:4px;align-items:center;margin:4px 0;font-size:12px}
+.state-row .hdr{font-weight:600;color:var(--brand2);font-family:"SF Mono",monospace}
+.state-row .cell{background:#0a0d12;border:1px solid var(--line);border-radius:4px;padding:6px 8px;text-align:center;font-family:"SF Mono",monospace}
+.state-row .active{background:rgba(110,231,183,.12);border-color:var(--brand);color:var(--brand)}
+.state-row .title{font-family:"SF Mono",monospace;font-weight:600;color:var(--warn)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Req &amp; TableManager · 请求的身份证与槽位 <span class="tag">13</span></h1>
+<div class="sub">每个请求在系统里是怎么被"登记"的？三个长度字段为什么要这么多？TableManager 怎么一行 22 行代码搞定请求生命周期？</div>
+
+<div class="toc">
+  <a href="#why">为什么需要 Req 这个对象</a>
+  <a href="#three-lens">三个长度 · 最难的 30 分钟</a>
+  <a href="#evolution">Req 字段的演化推导</a>
+  <a href="#complete">complete_one / append_host</a>
+  <a href="#pending">PendingReq · 为什么不直接用 Req</a>
+  <a href="#chunked">ChunkedReq · 禁止被采样的 Req</a>
+  <a href="#table-why">TableManager 要解决什么</a>
+  <a href="#table-impl">TableManager 全量源码</a>
+  <a href="#dummy">dummy_req · 那多出的 +1 行</a>
+  <a href="#lifecycle">完整生命周期追踪</a>
+  <a href="#gotchas">容易踩错的 6 个细节</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">PART 1</span>为什么需要 Req？不能直接用 UserMsg 吗？</h2>
+
+<div class="card">
+
+<p>先看数据流里都有哪些"请求对象"：</p>
+
+<pre><code><span class="com"># 从客户端到完成, 一个请求会经历 4 种身份：</span>
+
+<span class="hl"><span class="var">UserMsg</span>     (message/backend.py)     <span class="com"># 跨进程传输消息，跨 ZMQ 边界</span></span>
+  ↓  scheduler 收到，需要排队等 prefill
+<span class="hl"><span class="var">PendingReq</span>  (scheduler/utils.py)     <span class="com"># 排队中，还没分配任何资源</span></span>
+  ↓  PrefillAdder 装箱成功，分配 table_idx + cache_handle
+<span class="hl"><span class="var">Req</span> / <span class="var">ChunkedReq</span>  (core.py)         <span class="com"># 进入 forward 流水线，有完整状态</span></span>
+  ↓  finish / abort
+资源释放</code></pre>
+
+<h3>为什么不直接用 UserMsg 一路到底？</h3>
+
+<table>
+<tr><th>角色</th><th>关心什么</th><th>不关心什么</th></tr>
+<tr><td>UserMsg</td><td>uid · input_ids · sampling_params</td><td>KV 在哪、槽位、长度状态（它只是一个"网络消息"）</td></tr>
+<tr><td>PendingReq</td><td>上面 3 样 + chunked_req 指针</td><td>table_idx、cache_handle（还没分配）</td></tr>
+<tr><td>Req</td><td>上面 + <strong>table_idx / cached_len / device_len / cache_handle</strong></td><td>—（它是"运行时全态"）</td></tr>
+</table>
+
+<div class="callout">
+<strong>关键设计：这 4 个对象严格分层，字段只增不减</strong>。
+<ul class="tight">
+  <li>UserMsg 是 msgpack 可序列化的，跨进程安全</li>
+  <li>PendingReq 活在 scheduler 主进程 CPU 内存里</li>
+  <li>Req 额外持有 GPU 资源（cache_handle 锁、table_idx 占位）</li>
+  <li>每次 transition 都是<u>"加字段 + 绑定资源"</u>，没有任何 transition 会丢字段</li>
+</ul>
+</div>
+
+<p>这样设计的好处：<strong>每一层都只携带该层需要的信息</strong>。UserMsg 不需要知道 table_idx 是啥（跨进程传也没用）；PendingReq 不需要 GPU 资源（它在排队，可能等很久）；只有进入 forward 流水线的那一刻才升格成 Req，此时必须有完整状态。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="three-lens"><span class="step">PART 2</span>三个长度 · 理解 Req 的核心 30 分钟</h2>
+
+<div class="card">
+
+<p>Req 有 3 个长度字段: <code>cached_len / device_len / max_device_len</code>。<u>读错任何一个</u>后面所有调度逻辑都会崩。我用"一个请求从到达到生成结束"整个生命周期铺开来看。</p>
+
+<h3>场景设定</h3>
+<p>prompt 25 个 token，max_tokens=5，全程会做：</p>
+<ul class="tight">
+  <li>1 次 prefill（把 25 个 token 全部塞进 KV）</li>
+  <li>5 次 decode（每次算 1 个 token）</li>
+  <li>共 30 个 token 时结束</li>
+</ul>
+
+<h3>三个长度在每一步的值</h3>
+
+<div class="state-row">
+  <div class="hdr">时刻</div>
+  <div class="hdr">cached_len</div>
+  <div class="hdr">device_len</div>
+  <div class="hdr">max_device_len</div>
+  <div class="hdr">extend_len</div>
+  <div class="hdr">remain_len</div>
+</div>
+
+<div class="state-row">
+  <div class="title">创建 Req</div>
+  <div class="cell">0</div>
+  <div class="cell active">25</div>
+  <div class="cell">30</div>
+  <div class="cell">25</div>
+  <div class="cell">5</div>
+</div>
+<div class="state-row">
+  <div class="title">prefill 完 → complete_one()</div>
+  <div class="cell active">25</div>
+  <div class="cell active">26</div>
+  <div class="cell">30</div>
+  <div class="cell">1</div>
+  <div class="cell">4</div>
+</div>
+<div class="state-row">
+  <div class="title">decode 1 完</div>
+  <div class="cell">26</div>
+  <div class="cell">27</div>
+  <div class="cell">30</div>
+  <div class="cell">1</div>
+  <div class="cell">3</div>
+</div>
+<div class="state-row">
+  <div class="title">decode 2 完</div>
+  <div class="cell">27</div>
+  <div class="cell">28</div>
+  <div class="cell">30</div>
+  <div class="cell">1</div>
+  <div class="cell">2</div>
+</div>
+<div class="state-row">
+  <div class="title">decode 3 完</div>
+  <div class="cell">28</div>
+  <div class="cell">29</div>
+  <div class="cell">30</div>
+  <div class="cell">1</div>
+  <div class="cell">1</div>
+</div>
+<div class="state-row">
+  <div class="title">decode 4 完 (最后一步)</div>
+  <div class="cell active">29</div>
+  <div class="cell active">30</div>
+  <div class="cell">30</div>
+  <div class="cell">1</div>
+  <div class="cell active">0 ← can_decode=False</div>
+</div>
+
+<h3>三个长度的物理意义</h3>
+
+<div class="grid cols-3">
+<div class="card">
+<h3>cached_len</h3>
+<p><strong>"KV cache 里<u>已经</u>有的 token 数"</strong></p>
+<ul class="tight">
+  <li>等价说法："attention 可以读到的历史长度"</li>
+  <li>Radix 命中时初始 &gt; 0</li>
+  <li>每次 forward 完后推进</li>
+  <li>kernel 里 cu_seqlens_k[i+1] − cu_seqlens_k[i] 的前半部分</li>
+</ul>
+</div>
+<div class="card">
+<h3>device_len</h3>
+<p><strong>"本次 forward 想让 KV cache 到达的长度"</strong></p>
+<ul class="tight">
+  <li>prefill 时 = input_len（要把全部 prompt 塞进去）</li>
+  <li>decode 时 = cached_len + 1（每次算 1 个新位置）</li>
+  <li>kernel 的 cu_seqlens_k 的整体长度</li>
+  <li>决定 allocate_paged 需要多少新页</li>
+</ul>
+</div>
+<div class="card">
+<h3>max_device_len</h3>
+<p><strong>"这个请求一生的上限"</strong></p>
+<ul class="tight">
+  <li>= input_len + max_tokens</li>
+  <li>创建后不变（sampling_params 决定）</li>
+  <li>决定 can_decode 什么时候变 False</li>
+  <li>"完结线"</li>
+</ul>
+</div>
+</div>
+
+<h3>两个派生属性</h3>
+<pre><code><span class="com"># core.py:44</span>
+<span class="kw">@property</span>
+<span class="kw">def</span> <span class="fn">extend_len</span>(self) -> <span class="kw">int</span>:
+    <span class="kw">return</span> self.device_len - self.cached_len
+    <span class="com"># = "本次 forward 要新算的 token 数"</span>
+    <span class="com"># prefill 时 = input_len - cached_len (大)</span>
+    <span class="com"># decode 时 = 1 (小, 每次只新算 1 个)</span>
+
+<span class="kw">@property</span>
+<span class="kw">def</span> <span class="fn">remain_len</span>(self) -> <span class="kw">int</span>:
+    <span class="kw">return</span> self.max_device_len - self.device_len
+    <span class="com"># = "还剩多少 token 没生成"</span>
+    <span class="com"># 0 时 can_decode 返回 False</span></code></pre>
+
+<div class="callout warn">
+<strong>记忆技巧（永远不混）：</strong>
+<ul class="tight">
+  <li><code>cached_len</code> = "<u>过去</u>" (已经完成)</li>
+  <li><code>device_len</code> = "<u>现在</u>" (正在算到这)</li>
+  <li><code>max_device_len</code> = "<u>未来上限</u>" (最多能到这)</li>
+  <li><code>extend_len</code> = 现在 − 过去 = "<u>本步活儿</u>"</li>
+  <li><code>remain_len</code> = 未来上限 − 现在 = "<u>还剩多少工作</u>"</li>
+</ul>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="evolution"><span class="step">PART 3</span>Req 字段的演化推导（为什么每个字段必须存在）</h2>
+
+<div class="card">
+<p>像 05 章那样，让我们从"最简单的请求对象"开始，每加一个字段都解释"它解决了什么问题"。</p>
+
+<h3>v0 · 最朴素：就是 input_ids + uid</h3>
+<pre><code><span class="kw">class</span> <span class="fn">ReqV0</span>:
+    uid: <span class="kw">int</span>
+    input_ids: torch.Tensor</code></pre>
+
+<p>够用吗？马上不够了：</p>
+
+<h3>v1 · 需要采样参数</h3>
+<p>问题：如何知道 max_tokens、temperature？→ 加 <code>sampling_params</code>。</p>
+<pre><code><span class="kw">class</span> <span class="fn">ReqV1</span>:
+    uid: <span class="kw">int</span>
+    input_ids: torch.Tensor
+    <span class="hl">sampling_params: SamplingParams</span>       <span class="com"># 新增: max_tokens, temperature, top_k, top_p</span></code></pre>
+
+<h3>v2 · 需要知道"还剩多少 token 要生成"</h3>
+<p>问题：<code>decode_manager.running_reqs</code> 里的 req 怎么判断什么时候完成？→ 加长度字段。</p>
+<pre><code><span class="kw">class</span> <span class="fn">ReqV2</span>:
+    ...
+    <span class="hl">output_len: <span class="kw">int</span></span>                       <span class="com"># = sampling_params.max_tokens, 冗余但方便</span>
+    <span class="hl">device_len: <span class="kw">int</span></span>                       <span class="com"># 当前 KV 到哪</span>
+    <span class="hl">max_device_len: <span class="kw">int</span></span>                   <span class="com"># = input_len + output_len, 上限</span></code></pre>
+
+<h3>v3 · 引入 KV cache 复用 → 需要 cached_len</h3>
+<p>问题：Radix 命中时，前面 80 个 token 已经在 KV 里了，我们只要算后面 20 个。kernel 怎么知道哪部分是历史、哪部分是新算的？→ 加 <code>cached_len</code>。</p>
+<pre><code><span class="kw">class</span> <span class="fn">ReqV3</span>:
+    ...
+    <span class="hl">cached_len: <span class="kw">int</span></span>                      <span class="com"># 前多少 token 已在 KV</span>
+    <span class="com"># 派生量: extend_len = device_len - cached_len</span></code></pre>
+
+<h3>v4 · 引入 paged KV → 需要 table_idx</h3>
+<p>问题：paged KV 有个 page_table 二维数组，每个请求占一行。是哪一行？→ 加 <code>table_idx</code>。</p>
+<pre><code><span class="kw">class</span> <span class="fn">ReqV4</span>:
+    ...
+    <span class="hl">table_idx: <span class="kw">int</span></span>                       <span class="com"># = page_table 里的行号</span></code></pre>
+
+<h3>v5 · 引入 Radix Cache 锁机制 → 需要 cache_handle</h3>
+<p>问题：多个 req 共享 prefix 时，怎么防止 prefix 被 evict？→ 每个 req 持有一个"锁句柄"，ref_count 机制保证被用到的不会被清掉。</p>
+<pre><code><span class="kw">class</span> <span class="fn">ReqV5</span>:
+    ...
+    <span class="hl">cache_handle: BaseCacheHandle</span>         <span class="com"># Radix Tree 里的一个节点引用</span></code></pre>
+
+<h3>最终版本（core.py:28 实际源码）</h3>
+
+<pre><code><span class="kw">@dataclass</span>(eq=<span class="kw">False</span>)        <span class="com"># ★ eq=False: 用 id() 判断相等, 放进 set 安全</span>
+<span class="kw">class</span> <span class="fn">Req</span>:
+    input_ids: torch.Tensor    <span class="com"># cpu tensor - 每次 decode 后 append</span>
+    table_idx: <span class="kw">int</span>
+    cached_len: <span class="kw">int</span>
+    output_len: <span class="kw">int</span>
+    uid: <span class="kw">int</span>
+    sampling_params: SamplingParams
+    cache_handle: BaseCacheHandle
+
+    <span class="kw">def</span> <span class="fn">__post_init__</span>(self) -> <span class="kw">None</span>:
+        <span class="kw">assert</span> self.input_ids.is_cpu
+        self.device_len = <span class="fn">len</span>(self.input_ids)
+        self.max_device_len = <span class="fn">len</span>(self.input_ids) + self.output_len
+        <span class="kw">assert</span> <span class="num">0</span> &lt;= self.cached_len &lt; self.device_len &lt;= self.max_device_len</code></pre>
+
+<div class="callout info">
+<strong>注意 <code>@dataclass(eq=False)</code></strong>。默认 dataclass 会根据所有字段生成 <code>__eq__</code> 和 <code>__hash__</code>，但 Req 里有 tensor（不可 hash）。<code>eq=False</code> 让它回退到 <code>object.__eq__</code>（按 id 比较）和 <code>object.__hash__</code>（id 哈希）——这样 <strong>Req 可以直接放进 <code>set</code></strong>，这是 DecodeManager 能用 Set 存 running_reqs 的前提。
+</div>
+
+<div class="callout warn">
+<strong>__post_init__ 里的断言极其重要：</strong>
+<pre><code><span class="kw">assert</span> <span class="num">0</span> &lt;= self.cached_len &lt; self.device_len &lt;= self.max_device_len</code></pre>
+这个不等式是 Req 类的<u>不变式</u>：
+<ul class="tight">
+  <li>cached_len &lt; device_len （严格小于）→ 至少有 1 token 要算，否则这个 req 进 forward 没意义</li>
+  <li>device_len ≤ max_device_len → 不能超过上限</li>
+  <li>cached_len 可以 = 0 → 没命中 Radix 时的初始状态</li>
+</ul>
+任何时候违反这个不变式都会 assert 崩溃——这是防御性编程的典范。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="complete"><span class="step">PART 4</span>complete_one / append_host · 两个至关重要的"时刻"</h2>
+
+<div class="card">
+
+<h3>complete_one · 推进长度状态机</h3>
+
+<pre><code><span class="com"># core.py:52</span>
+<span class="kw">def</span> <span class="fn">complete_one</span>(self) -> <span class="kw">None</span>:
+    self.cached_len = self.device_len    <span class="com"># "现在" 变成 "过去"</span>
+    self.device_len += <span class="num">1</span>                 <span class="com"># "现在" 向前推一步</span></code></pre>
+
+<p>两行，<u>但调用时机是整个系统最精妙的一环</u>：</p>
+
+<pre><code><span class="com"># engine/engine.py:198  forward_batch</span>
+<span class="kw">def</span> <span class="fn">forward_batch</span>(self, batch, args) -> ForwardOutput:
+    ...
+    <span class="hl"><span class="kw">with</span> self.ctx.<span class="fn">forward_batch</span>(batch):
+        <span class="kw">if</span> self.graph_runner.<span class="fn">can_use_cuda_graph</span>(batch):
+            logits = self.graph_runner.<span class="fn">replay</span>(batch)
+        <span class="kw">else</span>:
+            logits = self.model.<span class="fn">forward</span>()</span>
+
+    <span class="hl"><span class="kw">for</span> req <span class="kw">in</span> batch.reqs:
+        req.<span class="fn">complete_one</span>()          <span class="com">★ 这里！GPU 还在 async 跑，但 CPU 已经更新状态</span></span>
+
+    next_tokens_gpu = self.sampler.<span class="fn">sample</span>(logits[:batch.size], args)
+    ...</code></pre>
+
+<div class="callout warn">
+<strong>为什么 complete_one 发生在 sampler.sample 之<u>前</u>？</strong>
+<br><br>
+这是 overlap scheduling 的刚性需求。调度流水线的下一步（下一轮 overlap_loop 的 <code>_schedule_next_batch</code>）需要立刻用<u>最新的</u> cached_len 和 device_len 来决定：
+<ul class="tight">
+  <li>下一轮要给 decode 这个 req 分配哪些新 page（需要最新 device_len）</li>
+  <li>下一轮的 cu_seqlens_k 是多少（需要最新 device_len）</li>
+  <li>can_decode 还是 True 吗（需要最新 remain_len）</li>
+</ul>
+<u>如果 complete_one 放到 _process_last_data 里才调用</u>，意味着下一轮调度看到的还是"老的" cached_len——正好<u>晚一步</u>，会导致 KV 重算或越界。
+</div>
+
+<h3>append_host · 追加新生成的 token 到 input_ids</h3>
+
+<pre><code><span class="com"># core.py:56</span>
+<span class="kw">def</span> <span class="fn">append_host</span>(self, next_token: torch.Tensor) -> <span class="kw">None</span>:
+    self.input_ids = torch.<span class="fn">cat</span>([self.input_ids, next_token])</code></pre>
+
+<p>调用点在 <code>_process_last_data</code>：</p>
+<pre><code><span class="com"># scheduler/scheduler.py:149</span>
+next_token = next_tokens_cpu[i]
+<span class="hl">req.<span class="fn">append_host</span>(next_token.<span class="fn">unsqueeze</span>(0))     <span class="com"># 把新 token 接到 CPU input_ids 尾部</span></span>
+finished = <span class="kw">not</span> req.can_decode <span class="kw">or</span> next_token == self.eos_token_id</code></pre>
+
+<div class="callout">
+<strong>为什么要维护 CPU 侧的 input_ids？</strong>
+<ul class="tight">
+  <li>GPU 上的 <code>token_pool[table_idx]</code> 也存着完整 token 序列，理论上够用</li>
+  <li>但某些场景（abort、resume、Radix Cache insert_prefix）要在 <u>CPU</u> 上用 input_ids 做树查，读 GPU 要同步开销大</li>
+  <li><code>cache_req</code> 时的 <code>req.input_ids[:req.cached_len]</code> 就是在 CPU 上访问</li>
+  <li>另外 CPU 侧留一份也是容错备份——GPU OOM 时还能序列化状态</li>
+</ul>
+代价是每次 decode 要做一次 <code>torch.cat</code>（在 CPU 上），不到 1µs，可以忽略。
+</div>
+
+<p>这两个方法加起来就是 Req 的"成长"：</p>
+<div class="svg-wrap">
+<svg viewBox="0 0 1100 160" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="550" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">一次 forward 后 Req 状态的变化</text>
+  <defs>
+    <marker id="a13" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7dd3fc"/></marker>
+  </defs>
+
+  <!-- Before -->
+  <g transform="translate(40, 50)">
+    <rect x="0" y="0" width="300" height="80" fill="#1f2937" stroke="#fbbf24" rx="8"/>
+    <text x="150" y="22" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">forward 前</text>
+    <text x="10" y="44" fill="#cbd5e1" font-size="11" font-family="SF Mono">cached_len = 25</text>
+    <text x="10" y="60" fill="#cbd5e1" font-size="11" font-family="SF Mono">device_len = 26</text>
+    <text x="10" y="76" fill="#8b93a7" font-size="11">input_ids: [..., t₂₅]  (长 26)</text>
+  </g>
+
+  <g transform="translate(380, 75)">
+    <text x="30" y="0" fill="#7dd3fc" font-size="11">complete_one()</text>
+    <text x="30" y="16" fill="#8b93a7" font-size="10">在 forward_batch 里</text>
+    <line x1="0" y1="20" x2="130" y2="20" stroke="#7dd3fc" stroke-width="2" marker-end="url(#a13)"/>
+  </g>
+
+  <g transform="translate(540, 50)">
+    <rect x="0" y="0" width="300" height="80" fill="#1f2937" stroke="#34d399" rx="8"/>
+    <text x="150" y="22" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">forward 后 (GPU 算完, sample 前)</text>
+    <text x="10" y="44" fill="#cbd5e1" font-size="11" font-family="SF Mono">cached_len = 26  ★</text>
+    <text x="10" y="60" fill="#cbd5e1" font-size="11" font-family="SF Mono">device_len = 27  ★</text>
+    <text x="10" y="76" fill="#8b93a7" font-size="11">input_ids: [..., t₂₅]  (还是 26)</text>
+  </g>
+
+  <g transform="translate(880, 75)">
+    <text x="30" y="0" fill="#7dd3fc" font-size="11">append_host()</text>
+    <text x="30" y="16" fill="#8b93a7" font-size="10">在 _process_last_data</text>
+    <line x1="0" y1="20" x2="130" y2="20" stroke="#7dd3fc" stroke-width="2" marker-end="url(#a13)"/>
+  </g>
+</svg>
+</div>
+
+<p>所以状态演化其实分两拍：</p>
+<ol class="tight">
+  <li><strong>complete_one</strong> (GPU 算完后立即) → cached_len / device_len 推进，让下一轮调度用上新状态</li>
+  <li><strong>append_host</strong> (下一轮 _process_last_data) → input_ids 追加，让 CPU 侧也有完整上下文</li>
+</ol>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="pending"><span class="step">PART 5</span>PendingReq · 为什么不直接用 Req</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># scheduler/utils.py:14</span>
+<span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="fn">PendingReq</span>:
+    uid: <span class="kw">int</span>
+    input_ids: torch.Tensor
+    sampling_params: SamplingParams
+    chunked_req: ChunkedReq | <span class="kw">None</span> = <span class="kw">None</span>
+
+    <span class="kw">@property</span>
+    <span class="kw">def</span> <span class="fn">input_len</span>(self) -> <span class="kw">int</span>:
+        <span class="kw">return</span> <span class="fn">len</span>(self.input_ids)
+
+    <span class="kw">@property</span>
+    <span class="kw">def</span> <span class="fn">output_len</span>(self) -> <span class="kw">int</span>:
+        <span class="kw">return</span> self.sampling_params.max_tokens</code></pre>
+
+<p>注意它<strong>没有</strong>：<code>table_idx / cached_len / cache_handle</code>——这些字段是 Req 独有的。</p>
+
+<h3>为什么需要分开？</h3>
+<table>
+<tr><th>原因</th><th>说明</th></tr>
+<tr><td>排队期间不占 GPU 资源</td><td>PendingReq 可能在队列里等几秒——如果一进来就分配 table_idx 和锁 Radix 节点，系统很容易资源耗尽</td></tr>
+<tr><td>Radix 状态会变</td><td>等到真要跑时才 match_prefix，<u>这时才反映最新的 Radix 树</u>——如果提前 match 保存，其他 req 可能已经让树长出了新节点</td></tr>
+<tr><td>Req 的 cached_len 必须 &gt; 0 && input_ids 对齐</td><td>Req 的 __post_init__ 有不变式约束，PendingReq 阶段还没分配资源无法满足</td></tr>
+<tr><td>abort 更轻量</td><td>PendingReq 直接从 list 删除即可；Req 要 free table_idx + unlock cache_handle</td></tr>
+</table>
+
+<h3>chunked_req 这个字段干啥的？</h3>
+
+<p>它是 <strong>"状态机桥接指针"</strong>——让一个 PendingReq 可以跨多轮 schedule，其中某些轮产出了 ChunkedReq（部分 prefill），并把这个 ChunkedReq 挂回 PendingReq 供下一轮接续：</p>
+
+<pre><code><span class="com"># scheduler/prefill.py:140  PrefillManager.schedule_next_batch</span>
+<span class="kw">for</span> pending_req <span class="kw">in</span> self.pending_list:
+    <span class="kw">if</span> req := adder.<span class="fn">try_add_one</span>(pending_req):
+        <span class="hl">pending_req.chunked_req = <span class="kw">None</span></span>           <span class="com"># 默认清除</span>
+        <span class="kw">if</span> isinstance(req, ChunkedReq):
+            <span class="hl">pending_req.chunked_req = req</span>            <span class="com"># 没装完，记下来下轮接续</span>
+            chunked_list.<span class="fn">append</span>(pending_req)
+        reqs.<span class="fn">append</span>(req)</code></pre>
+
+<p>然后在 <code>try_add_one</code> 里：</p>
+<pre><code><span class="com"># scheduler/prefill.py:96</span>
+<span class="hl"><span class="kw">if</span> chunked_req := pending_req.chunked_req:</span>       <span class="com"># ★ 上轮有未完成的 chunk</span>
+    <span class="kw">return</span> self.<span class="fn">_add_one_req</span>(
+        pending_req=pending_req,
+        cache_handle=chunked_req.cache_handle,      <span class="com"># 复用上轮的</span>
+        table_idx=chunked_req.table_idx,             <span class="com"># 复用上轮的</span>
+        cached_len=chunked_req.cached_len,           <span class="com"># 接上次结尾</span>
+    )</code></pre>
+
+<div class="callout">
+<strong>关键洞察：</strong>一个 PendingReq 的 cache_handle 和 table_idx 在 chunked prefill 期间<u>不会释放、不会变</u>，ChunkedReq 作为"进度书签"挂在 PendingReq 上。下一轮 schedule 时直接从书签接续，不需要重新 match_prefix、不需要重新 allocate table_idx。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="chunked"><span class="step">PART 6</span>ChunkedReq · 禁止被采样的特殊 Req</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># scheduler/prefill.py:23</span>
+<span class="kw">class</span> <span class="fn">ChunkedReq</span>(Req):
+    <span class="kw">def</span> <span class="fn">append_host</span>(self, next_token: torch.Tensor) -> <span class="kw">None</span>:
+        <span class="kw">raise</span> <span class="fn">NotImplementedError</span>(<span class="str">"ChunkedReq should not be sampled"</span>)
+
+    <span class="kw">@property</span>
+    <span class="kw">def</span> <span class="fn">can_decode</span>(self) -> <span class="kw">bool</span>:
+        <span class="kw">return</span> <span class="kw">False</span>  <span class="com"># avoid being added to decode manager</span></code></pre>
+
+<p>整个类就 2 个覆盖——但这 2 个覆盖封死了所有错误路径。</p>
+
+<h3>为什么要"禁止采样"？</h3>
+
+<p>设想：一个 long prompt 被切成 chunk 1 (8192 token) + chunk 2 (1808 token)。chunk 1 跑完 forward，得到 logits。但<u>这个 logits 对应的是 prompt 的第 8192 个位置</u>，不是下一个要生成的位置——<strong>采样它会产出错误的 token</strong>！</p>
+
+<p>所以 ChunkedReq 用这两个覆盖：</p>
+
+<table>
+<tr><th>覆盖</th><th>防住了什么</th></tr>
+<tr><td><code>append_host → raise</code></td><td>如果 <code>_process_last_data</code> 不小心采样了它然后 append_host，会立刻崩溃而不是悄悄产出错误输出</td></tr>
+<tr><td><code>can_decode → False</code></td><td>防止 <code>filter_reqs</code> 把它加进 DecodeManager（否则它会跟正常 req 一样参与 decode，但它的 KV 还没完全建好）</td></tr>
+</table>
+
+<h3>_process_last_data 里的防御</h3>
+<pre><code><span class="com"># scheduler/scheduler.py:147</span>
+<span class="kw">for</span> i, req <span class="kw">in</span> enumerate(batch.reqs):
+    <span class="hl"><span class="kw">if</span> isinstance(req, ChunkedReq):
+        <span class="kw">continue</span>                    <span class="com"># ★ 显式跳过 ChunkedReq</span></span>
+    next_token = next_tokens_cpu[i]
+    req.<span class="fn">append_host</span>(next_token.<span class="fn">unsqueeze</span>(0))
+    ...</code></pre>
+
+<p>就算上面的 <code>continue</code> 被误删，<code>append_host</code> 也会 raise 兜底——<strong>两层保险</strong>。</p>
+
+<div class="callout info">
+<strong>继承 Req 但重写关键方法</strong>这种模式：看起来简单，但这是把"不变式"编码进类型系统——只要你给 scheduler 一个 ChunkedReq，它<u>绝不可能</u>被当作普通 req 产出错误结果。比用 if-else 控制流安全得多。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="table-why"><span class="step">PART 7</span>TableManager 要解决什么问题</h2>
+
+<div class="card">
+
+<p>现在转到 TableManager。它只有 22 行代码，但定位极其关键。</p>
+
+<h3>它是什么？</h3>
+
+<p><strong>"请求槽位号"的发号器 + page_table / token_pool 这两个 GPU 大数组的拥有者。</strong></p>
+
+<pre><code>TableManager 维护：
+├── _free_slots      : List[int]             <span class="com"># 空闲槽位号池</span>
+├── page_table       : GPU int32 tensor      <span class="com"># [max_running_req+1, max_seq_len]</span>
+└── token_pool       : GPU int32 tensor      <span class="com"># [max_running_req+1, max_seq_len]</span></code></pre>
+
+<h3>为什么需要"槽位号"？</h3>
+
+<p>回到 paged attention 的设计：每个活跃请求占 <code>page_table</code> 的一行。这行就是它的"寄存器"，所有针对这个请求的操作（写 KV 物理位置、查历史 token id）都在这一行上进行。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1100 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="550" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">page_table 是 [max_running_req+1, max_seq_len] 的 GPU int32 tensor</text>
+
+  <!-- Table rendering -->
+  <g transform="translate(40, 50)">
+    <rect x="0" y="0" width="80" height="30" fill="#1f2937" stroke="#fb7185"/>
+    <text x="40" y="20" text-anchor="middle" fill="#fb7185" font-size="11" font-weight="600">row</text>
+
+    <rect x="80" y="0" width="800" height="30" fill="#1f2937" stroke="#fb7185"/>
+    <text x="480" y="20" text-anchor="middle" fill="#fb7185" font-size="11" font-weight="600">列 = token 位置 0, 1, 2, ..., max_seq_len−1</text>
+
+    <!-- rows for active reqs -->
+    <g transform="translate(0, 30)">
+      <rect x="0" y="0" width="80" height="30" fill="#2a1f0b" stroke="#fbbf24"/>
+      <text x="40" y="20" text-anchor="middle" fill="#fbbf24" font-size="11">0</text>
+      <rect x="80" y="0" width="800" height="30" fill="#0a1812" stroke="#262b38"/>
+      <text x="480" y="20" text-anchor="middle" fill="#cbd5e1" font-size="10">Req A 的 page 索引序列 [p₀, p₁, p₂, ...]</text>
+    </g>
+    <g transform="translate(0, 60)">
+      <rect x="0" y="0" width="80" height="30" fill="#0b1f2a" stroke="#7dd3fc"/>
+      <text x="40" y="20" text-anchor="middle" fill="#7dd3fc" font-size="11">1</text>
+      <rect x="80" y="0" width="800" height="30" fill="#0a1812" stroke="#262b38"/>
+      <text x="480" y="20" text-anchor="middle" fill="#cbd5e1" font-size="10">Req B 的 page 索引序列</text>
+    </g>
+    <g transform="translate(0, 90)">
+      <rect x="0" y="0" width="80" height="30" fill="#1a0f2a" stroke="#a78bfa"/>
+      <text x="40" y="20" text-anchor="middle" fill="#a78bfa" font-size="11">2</text>
+      <rect x="80" y="0" width="800" height="30" fill="#0a1812" stroke="#262b38"/>
+      <text x="480" y="20" text-anchor="middle" fill="#cbd5e1" font-size="10">Req C</text>
+    </g>
+    <g transform="translate(0, 120)">
+      <rect x="0" y="0" width="80" height="30" fill="#1f2937" stroke="#374151"/>
+      <text x="40" y="20" text-anchor="middle" fill="#9ca3af" font-size="11">3</text>
+      <rect x="80" y="0" width="800" height="30" fill="#1f2937" stroke="#374151"/>
+      <text x="480" y="20" text-anchor="middle" fill="#9ca3af" font-size="10">(空闲槽位)</text>
+    </g>
+    <g transform="translate(0, 150)">
+      <rect x="0" y="0" width="80" height="30" fill="#1f2937" stroke="#374151"/>
+      <text x="40" y="20" text-anchor="middle" fill="#9ca3af" font-size="11">...</text>
+      <rect x="80" y="0" width="800" height="30" fill="#1f2937" stroke="#374151"/>
+    </g>
+    <g transform="translate(0, 180)">
+      <rect x="0" y="0" width="80" height="30" fill="#1f2937" stroke="#374151"/>
+      <text x="40" y="20" text-anchor="middle" fill="#9ca3af" font-size="11">255</text>
+      <rect x="80" y="0" width="800" height="30" fill="#1f2937" stroke="#374151"/>
+      <text x="480" y="20" text-anchor="middle" fill="#9ca3af" font-size="10">(空闲槽位)</text>
+    </g>
+    <g transform="translate(0, 210)">
+      <rect x="0" y="0" width="80" height="30" fill="#0f2a1f" stroke="#34d399"/>
+      <text x="40" y="20" text-anchor="middle" fill="#34d399" font-size="11">256 ★</text>
+      <rect x="80" y="0" width="800" height="30" fill="#0a0d12" stroke="#34d399"/>
+      <text x="480" y="20" text-anchor="middle" fill="#34d399" font-size="10">dummy_req (CUDA Graph padding 专用)</text>
+    </g>
+  </g>
+
+  <text x="550" y="295" text-anchor="middle" fill="#cbd5e1" font-size="11">"table_idx" 就是这一行的行号 · TableManager 负责发号和回收</text>
+</svg>
+</div>
+
+<h3>为什么用 <code>List[int]</code> 而不是 bitmap 或 freelist?</h3>
+<p>Python list 的 append/pop 都是 O(1)，且 <code>max_running_req</code> 通常 ≤ 256，线性操作也快。用 bitmap 反而增加复杂度。<u>简单暴力最优雅</u>。</p>
+
+<h3>page_table 和 token_pool 的形状为什么相同？</h3>
+<pre><code><span class="com"># table.py:11</span>
+self.page_table = page_table
+self.token_pool = torch.<span class="fn">zeros_like</span>(page_table, dtype=torch.int32)   <span class="com"># ★ 同 shape, 同 dtype</span></code></pre>
+
+<table>
+<tr><th>维度</th><th>page_table[i, j] 含义</th><th>token_pool[i, j] 含义</th></tr>
+<tr><td>row i</td><td>请求的 table_idx</td><td>请求的 table_idx</td></tr>
+<tr><td>col j</td><td>第 j 个 token 所在的物理 KV 页号</td><td>第 j 个 token 的 token_id (int32)</td></tr>
+</table>
+
+<p>每个请求<u>两份数据</u>，按同样的 <code>[table_idx, pos]</code> 索引：一份告诉 attention kernel "KV 在 pool 哪一页"，另一份告诉 model 输入"这个位置是哪个 token id"。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="table-impl"><span class="step">PART 8</span>TableManager 全量源码（22 行）</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># scheduler/table.py 全文</span>
+<span class="kw">class</span> <span class="fn">TableManager</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, max_running_reqs: <span class="kw">int</span>, page_table: torch.Tensor) -> <span class="kw">None</span>:
+        self._max_running_reqs = max_running_reqs
+        <span class="hl">self._free_slots = list(<span class="fn">range</span>(max_running_reqs))</span>    <span class="com"># 初始全部空闲</span>
+        self.page_table = page_table
+        <span class="com"># NOTE: dummy request also use this pool to get the input ids, so we need to</span>
+        <span class="com"># make sure the token pool is initialized with valid values (token_id = 0).</span>
+        <span class="hl">self.token_pool = torch.<span class="fn">zeros_like</span>(page_table, dtype=torch.int32)</span>
+
+    <span class="kw">@property</span>
+    <span class="kw">def</span> <span class="fn">available_size</span>(self) -> <span class="kw">int</span>:
+        <span class="kw">return</span> <span class="fn">len</span>(self._free_slots)
+
+    <span class="kw">def</span> <span class="fn">allocate</span>(self) -> <span class="kw">int</span>:
+        <span class="kw">return</span> self._free_slots.<span class="fn">pop</span>()             <span class="com"># 从末尾取, O(1)</span>
+
+    <span class="kw">def</span> <span class="fn">free</span>(self, slot: <span class="kw">int</span>) -> <span class="kw">None</span>:
+        self._free_slots.<span class="fn">append</span>(slot)             <span class="com"># 放末尾, O(1)</span></code></pre>
+
+<h3>核心接口只有 3 个</h3>
+
+<table>
+<tr><th>接口</th><th>语义</th><th>被谁调用</th></tr>
+<tr><td><code>allocate() -&gt; int</code></td><td>分配一个空闲槽位，返回 table_idx</td><td><code>PrefillAdder._try_allocate_one</code>（req 新进入时）</td></tr>
+<tr><td><code>free(slot)</code></td><td>释放一个槽位回池</td><td><code>Scheduler._free_req_resources</code>（req finished 或 abort 时）</td></tr>
+<tr><td><code>available_size</code></td><td>剩余槽位数</td><td><code>PrefillAdder</code> 先检查再 allocate</td></tr>
+</table>
+
+<h3>分配的"LIFO" 策略</h3>
+<pre><code>_free_slots = [<span class="num">0</span>, <span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>, ..., <span class="num">254</span>, <span class="num">255</span>]
+              ↑ 前面                  后面 ↑
+            .pop() 从这里取   = <span class="num">255</span>
+            .append() 放回这里</code></pre>
+
+<p>所以前几个活跃请求会分到 <code>table_idx = 255, 254, 253, ...</code>——<strong>从大到小分配</strong>。这是个无所谓的实现细节，但解释了为什么你日志里看到的 table_idx 常常是高位。</p>
+
+<h3>无锁并发安全？</h3>
+<div class="callout">
+<strong>不需要锁</strong>——因为 Scheduler 是<u>单线程事件循环</u>。TableManager 的所有接口都只在主循环里调用，没有并发冲突。这是 mini-sglang 整个调度层都没加锁的设计根基。
+</div>
+
+<h3>available_size 的流程图</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 1100 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="550" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">PrefillAdder 如何用 TableManager</text>
+
+  <g transform="translate(40, 50)">
+    <rect x="0" y="0" width="280" height="190" fill="#0f1218" stroke="#fbbf24" rx="8"/>
+    <text x="140" y="24" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700">PrefillAdder._try_allocate_one</text>
+
+    <rect x="20" y="46" width="240" height="32" fill="#2a1f0b" rx="4"/>
+    <text x="140" y="65" text-anchor="middle" fill="#fbbf24" font-size="11" font-family="SF Mono">table.available_size == 0?</text>
+
+    <rect x="20" y="90" width="240" height="32" fill="#2a1f0b" rx="4"/>
+    <text x="140" y="109" text-anchor="middle" fill="#fbbf24" font-size="11" font-family="SF Mono">match_req + check 容量</text>
+
+    <rect x="20" y="134" width="240" height="32" fill="#2a1f0b" rx="4"/>
+    <text x="140" y="153" text-anchor="middle" fill="#fbbf24" font-size="11" font-family="SF Mono">table.allocate() → table_idx</text>
+
+    <rect x="20" y="178" width="240" height="-12" fill="#2a1f0b" rx="4"/>
+  </g>
+
+  <defs>
+    <marker id="a13b" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#fbbf24"/></marker>
+  </defs>
+
+  <line x1="320" y1="150" x2="400" y2="150" stroke="#fbbf24" stroke-width="2" marker-end="url(#a13b)"/>
+
+  <g transform="translate(420, 50)">
+    <rect x="0" y="0" width="280" height="190" fill="#0f1218" stroke="#fb7185" rx="8"/>
+    <text x="140" y="24" text-anchor="middle" fill="#fb7185" font-size="13" font-weight="700">TableManager</text>
+
+    <rect x="20" y="50" width="240" height="40" fill="#2a0f0f" rx="4"/>
+    <text x="140" y="68" text-anchor="middle" fill="#cbd5e1" font-size="11" font-family="SF Mono">_free_slots: [0..255]</text>
+    <text x="140" y="83" text-anchor="middle" fill="#8b93a7" font-size="10">(list of int)</text>
+
+    <rect x="20" y="100" width="240" height="40" fill="#2a0f0f" rx="4"/>
+    <text x="140" y="118" text-anchor="middle" fill="#cbd5e1" font-size="11" font-family="SF Mono">page_table  [257, max_seq]</text>
+    <text x="140" y="133" text-anchor="middle" fill="#8b93a7" font-size="10">GPU int32</text>
+
+    <rect x="20" y="150" width="240" height="40" fill="#2a0f0f" rx="4"/>
+    <text x="140" y="168" text-anchor="middle" fill="#cbd5e1" font-size="11" font-family="SF Mono">token_pool  [257, max_seq]</text>
+    <text x="140" y="183" text-anchor="middle" fill="#8b93a7" font-size="10">GPU int32 (zeros)</text>
+  </g>
+
+  <line x1="700" y1="150" x2="780" y2="150" stroke="#34d399" stroke-width="2" marker-end="url(#a13c)"/>
+
+  <defs>
+    <marker id="a13c" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#34d399"/></marker>
+  </defs>
+
+  <g transform="translate(800, 50)">
+    <rect x="0" y="0" width="260" height="190" fill="#0f1218" stroke="#34d399" rx="8"/>
+    <text x="130" y="24" text-anchor="middle" fill="#34d399" font-size="13" font-weight="700">Req</text>
+    <text x="20" y="60" fill="#cbd5e1" font-size="11" font-family="SF Mono">.table_idx = 255</text>
+    <text x="20" y="80" fill="#8b93a7" font-size="10">← 从此后所有对这个 req 的</text>
+    <text x="20" y="96" fill="#8b93a7" font-size="10">   访问都通过 page_table[255, :]</text>
+    <text x="20" y="116" fill="#8b93a7" font-size="10">   和 token_pool[255, :]</text>
+    <text x="20" y="150" fill="#fbbf24" font-size="11" font-family="SF Mono">req 结束：</text>
+    <text x="20" y="168" fill="#cbd5e1" font-size="10" font-family="SF Mono">table.free(255)</text>
+  </g>
+</svg>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="dummy"><span class="step">PART 9</span>dummy_req · 为什么 page_table 行数是 max_running_req + 1</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># scheduler/config.py &amp; engine/engine.py:89</span>
+self.dummy_req = <span class="fn">Req</span>(
+    input_ids=torch.<span class="fn">tensor</span>([<span class="num">0</span>], dtype=torch.int32, device=<span class="str">"cpu"</span>),
+    <span class="hl">table_idx=config.max_running_req,</span>       <span class="com"># ★ 最大索引, 就是那"多出来的"那一行</span>
+    cached_len=<span class="num">0</span>,
+    output_len=<span class="num">1</span>,
+    uid=-<span class="num">1</span>,
+    sampling_params=<span class="kw">None</span>,
+    cache_handle=<span class="kw">None</span>,
+)
+<span class="hl">self.page_table[self.dummy_req.table_idx].<span class="fn">fill_</span>(num_tokens)</span>
+<span class="com"># ↑ 让 dummy 行的所有位置都指向"dummy 页"（池的最后一个位置, 边界外但合法）</span></code></pre>
+
+<h3>这 dummy 行的作用</h3>
+
+<p>CUDA Graph 录制需要"形状固定"的输入（见 07 章）。bs=8 的 graph 需要 batch 里<u>真的有</u> 8 个 req。当实际只有 3 个真 req 时，PrefillAdder 之后 pad_batch 会塞 5 个 dummy_req 凑到 8。</p>
+
+<pre><code><span class="com"># engine/graph.py:161</span>
+batch.padded_reqs = batch.reqs + [self.dummy_req] * (padded_size - batch.size)</code></pre>
+
+<h3>为什么 dummy_req 能安全地被 attention kernel 读？</h3>
+
+<ul class="tight">
+  <li>它的 <code>table_idx = max_running_req</code>（page_table 的最后一行，不跟任何真实 req 冲突）</li>
+  <li>这一行所有位置都指向 <code>page_indices = num_tokens</code>（KV pool 最后一个位置，算是"占位页"——不是真实数据但是合法地址，读不会越界）</li>
+  <li>它的 <code>cached_len = 0</code>，<code>input_ids = [0]</code>（1 个假 token，值为 0）</li>
+  <li>它参与 forward 会产出一行垃圾 logits，但 <code>_process_last_data</code> 用 <code>batch.size</code>（不是 padded_size）来切片，<u>垃圾 logits 根本不会被采样</u></li>
+</ul>
+
+<h3>设计的精妙</h3>
+
+<div class="callout info">
+<strong>整个系统的"不变式"被 dummy_req 精巧地维护：</strong>
+<ul class="tight">
+  <li>attention kernel 不需要知道 dummy 的存在，它把 dummy 当真 req 正常算</li>
+  <li>sampler 只看 <code>logits[:batch.size]</code>，自动裁掉 dummy 那几行</li>
+  <li>page_table 多开一行的代价：<code>max_seq_len × 4 字节</code>，几十 KB，微不足道</li>
+  <li>dummy 不占 _free_slots（初始化时 <code>list(range(max_running_req))</code> 不含 max_running_req），永远不会被分出去给真 req</li>
+</ul>
+这是<u>用一个固定的"假身份"来让 CUDA Graph 的形状假设成立</u>——优雅的 workaround。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="lifecycle"><span class="step">PART 10</span>一个请求的完整生命周期追踪</h2>
+
+<div class="card">
+<p>把上面所有知识点串起来：一个请求从 HTTP 进来到最终释放，经历了哪些对象和 TableManager 的哪些调用？</p>
+
+<pre><code><span class="com"># ============= 阶段 1: 进入 scheduler =============</span>
+<span class="num">1</span>. Tokenizer 把 UserMsg 推给 scheduler
+<span class="num">2</span>. _process_one_msg → prefill_manager.add_one_req(msg)
+   → <span class="hl">PendingReq</span> 创建, 入 pending_list  (uid, input_ids, params, chunked_req=<span class="kw">None</span>)
+
+<span class="com"># ============= 阶段 2: 被 PrefillAdder 选中 =============</span>
+<span class="num">3</span>. scheduler._schedule_next_batch() → PrefillAdder.try_add_one(pending)
+<span class="num">4</span>. PrefillAdder._try_allocate_one:
+   a. <span class="hl">table.available_size</span> 检查 → 通过
+   b. cache_manager.match_req(pending) → handle (cached_len=0 或 &gt;0)
+   c. 容量检查 → 通过
+   d. cache_manager.lock(handle)        <span class="com"># 锁住 Radix 节点</span>
+   e. <span class="hl">table.allocate()</span> → <span class="var">table_idx=255</span>
+   f. 写 token_pool[255, :cached_len] (如果有 cache 命中)
+<span class="num">5</span>. PrefillAdder._add_one_req:
+   - 创建 <span class="hl">Req</span>(input_ids[:cached_len+chunk_size], table_idx=255, cached_len=..., cache_handle=handle)
+   - 或 <span class="hl">ChunkedReq</span> (如果 chunk_size &lt; remain)
+   - 写 token_pool[255, cached_len:cached_len+chunk_size]
+
+<span class="com"># ============= 阶段 3: forward (prefill) =============</span>
+<span class="num">6</span>. scheduler._prepare_batch:
+   - cache.allocate_paged([req]) → 写 page_table[255, cached_len:device_len]
+   - attn.prepare_metadata(batch) → cu_seqlens, indices 等
+<span class="num">7</span>. engine.forward_batch → model forward
+<span class="num">8</span>. req.<span class="hl">complete_one()</span> → cached_len=device_len, device_len+=1
+<span class="num">9</span>. sampler.sample → next_tokens (on GPU)
+<span class="num">10</span>. 下一轮 loop 开始, last_data = 这轮的 forward_output
+
+<span class="com"># ============= 阶段 4: _process_last_data (上一轮结果) =============</span>
+<span class="num">11</span>. copy_done.synchronize() → next_tokens_cpu 可读
+<span class="num">12</span>. req.<span class="hl">append_host</span>(next_token) → input_ids 长度 +1
+<span class="num">13</span>. finished = <span class="kw">not</span> req.can_decode <span class="kw">or</span> next_token == eos_token_id
+<span class="num">14</span>. batch.is_prefill → cache.<span class="hl">cache_req</span>(req, finished=<span class="kw">False</span>)
+    → prefix_cache.insert_prefix(input_ids[:cached_len], page_table[255, :cached_len])
+    → 可能更新 req.cache_handle 指向新节点
+<span class="num">15</span>. req 加入 decode_manager.running_reqs (通过 filter_reqs)
+
+<span class="com"># ============= 阶段 5: decode 循环 =============</span>
+<span class="num">16</span>. 每轮 decode: device_len += 1, 算 1 token, append_host, 判断 finished
+<span class="num">17</span>. 需要新 page 时: cache.allocate_paged → page_table[255, 新位置] = 新页号
+
+<span class="com"># ============= 阶段 6: 结束 =============</span>
+<span class="num">18</span>. 某轮 remain_len==0 or next_token==eos → finished=True
+<span class="num">19</span>. decode_manager.<span class="hl">remove_req</span>(req)
+<span class="num">20</span>. scheduler._free_req_resources:
+    a. <span class="hl">table.free(255)</span>                  <span class="com"># 槽位回池</span>
+    b. cache.cache_req(req, finished=<span class="kw">True</span>)
+       → insert_prefix (让后续请求可命中)
+       → unlock old_handle
+       → _free(冗余 pages) 送回 free_slots</code></pre>
+
+<h3>关键时刻图</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">Req 对象的"身份升级"与资源生命周期</text>
+
+  <!-- Timeline bar -->
+  <line x1="40" y1="320" x2="1160" y2="320" stroke="#262b38" stroke-width="2"/>
+
+  <!-- Phase boxes -->
+  <g>
+    <rect x="40" y="60" width="180" height="240" fill="#0a0d12" stroke="#7dd3fc" rx="8"/>
+    <text x="130" y="82" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="700">排队</text>
+    <text x="130" y="110" text-anchor="middle" fill="#cbd5e1" font-size="11">PendingReq</text>
+    <text x="130" y="135" text-anchor="middle" fill="#8b93a7" font-size="10">uid, input_ids,</text>
+    <text x="130" y="150" text-anchor="middle" fill="#8b93a7" font-size="10">sampling_params</text>
+    <text x="130" y="175" text-anchor="middle" fill="#fb7185" font-size="10">❌ 无 table_idx</text>
+    <text x="130" y="190" text-anchor="middle" fill="#fb7185" font-size="10">❌ 无 cache_handle</text>
+    <text x="130" y="215" text-anchor="middle" fill="#8b93a7" font-size="10">可能排队几秒</text>
+  </g>
+
+  <g>
+    <rect x="240" y="60" width="240" height="240" fill="#0a0d12" stroke="#fbbf24" rx="8"/>
+    <text x="360" y="82" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">(Chunked)Req · prefill</text>
+    <text x="360" y="115" text-anchor="middle" fill="#cbd5e1" font-size="11">PrefillAdder 装箱后</text>
+    <text x="260" y="145" fill="#34d399" font-size="10">✅ table_idx (从 table.allocate)</text>
+    <text x="260" y="162" fill="#34d399" font-size="10">✅ cache_handle (lock 住)</text>
+    <text x="260" y="179" fill="#34d399" font-size="10">✅ cached_len / device_len</text>
+    <text x="260" y="196" fill="#34d399" font-size="10">✅ page_table 行被写入</text>
+    <text x="260" y="220" fill="#8b93a7" font-size="10">单 forward 或多 chunk</text>
+  </g>
+
+  <g>
+    <rect x="500" y="60" width="320" height="240" fill="#0a0d12" stroke="#34d399" rx="8"/>
+    <text x="660" y="82" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">Req · decode 循环</text>
+    <text x="660" y="115" text-anchor="middle" fill="#cbd5e1" font-size="11">每轮 extend_len=1</text>
+    <text x="520" y="145" fill="#cbd5e1" font-size="10">每轮：</text>
+    <text x="540" y="163" fill="#8b93a7" font-size="10">complete_one() → device_len += 1</text>
+    <text x="540" y="180" fill="#8b93a7" font-size="10">可能 allocate 新 page</text>
+    <text x="540" y="197" fill="#8b93a7" font-size="10">append_host(new_token)</text>
+    <text x="540" y="214" fill="#8b93a7" font-size="10">check finished</text>
+    <text x="520" y="245" fill="#fbbf24" font-size="10">直到 remain_len=0 或 EOS</text>
+  </g>
+
+  <g>
+    <rect x="840" y="60" width="320" height="240" fill="#0a0d12" stroke="#fb7185" rx="8"/>
+    <text x="1000" y="82" text-anchor="middle" fill="#fb7185" font-size="12" font-weight="700">完成 · 释放</text>
+    <text x="860" y="115" fill="#cbd5e1" font-size="10">_free_req_resources:</text>
+    <text x="880" y="135" fill="#34d399" font-size="10">table.free(255)  ← 槽位回池</text>
+    <text x="880" y="152" fill="#34d399" font-size="10">cache_req(finished=True)</text>
+    <text x="880" y="169" fill="#8b93a7" font-size="10">  → insert_prefix 让后人可命中</text>
+    <text x="880" y="186" fill="#8b93a7" font-size="10">  → unlock old_handle</text>
+    <text x="880" y="203" fill="#8b93a7" font-size="10">  → _free 冗余 pages</text>
+    <text x="860" y="240" fill="#fbbf24" font-size="10">Req 对象被 GC</text>
+    <text x="860" y="260" fill="#8b93a7" font-size="10">但它留下的 Radix 节点继续存在</text>
+  </g>
+
+  <!-- arrows -->
+  <line x1="220" y1="180" x2="240" y2="180" stroke="#cbd5e1" stroke-width="2" marker-end="url(#a13d)"/>
+  <line x1="480" y1="180" x2="500" y2="180" stroke="#cbd5e1" stroke-width="2" marker-end="url(#a13d)"/>
+  <line x1="820" y1="180" x2="840" y2="180" stroke="#cbd5e1" stroke-width="2" marker-end="url(#a13d)"/>
+
+  <defs>
+    <marker id="a13d" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#cbd5e1"/></marker>
+  </defs>
+
+  <text x="130" y="340" text-anchor="middle" fill="#8b93a7" font-size="10">UserMsg ↓</text>
+  <text x="360" y="340" text-anchor="middle" fill="#8b93a7" font-size="10">PrefillAdder ↓</text>
+  <text x="660" y="340" text-anchor="middle" fill="#8b93a7" font-size="10">running_reqs ↓</text>
+  <text x="1000" y="340" text-anchor="middle" fill="#8b93a7" font-size="10">finished ↓</text>
+</svg>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gotchas"><span class="step">PART 11</span>容易踩错的 6 个细节</h2>
+
+<div class="card">
+
+<h3>坑 1 · 为什么 PendingReq 不持有 cache_handle？</h3>
+<p>如果 match_prefix 的时机在 PendingReq 创建时就做了，保存的 handle 会快速<u>过时</u>——其他 req 可能让 Radix 树重建、让命中的节点 evict 或 split。<strong>所以每次 PrefillAdder 尝试装箱才 match 一次</strong>。</p>
+
+<h3>坑 2 · try_add_one 成功 != 进入 batch</h3>
+<pre><code><span class="com"># scheduler/prefill.py:139</span>
+<span class="kw">for</span> pending_req <span class="kw">in</span> self.pending_list:
+    <span class="kw">if</span> req := adder.<span class="fn">try_add_one</span>(pending_req):
+        ...
+    <span class="kw">else</span>:
+        <span class="hl"><span class="kw">break</span></span>   <span class="com"># ★ 一遇到失败就 break, 不 continue!</span></code></pre>
+<p><strong>pending_list 按 FIFO 顺序处理，一遇到装不下就停</strong>——不会跳过这个去试下一个。这保证 head-of-line 的请求不会饿死（后面小请求插队）。如果改成 continue，先来的大 req 可能一直排不上。</p>
+
+<h3>坑 3 · PrefillAdder 的 reserved_size 初值</h3>
+<pre><code><span class="com"># scheduler/prefill.py:131</span>
+adder = <span class="fn">PrefillAdder</span>(
+    token_budget=prefill_budget,
+    <span class="hl">reserved_size=self.decode_manager.inflight_tokens,</span>   <span class="com"># ★ 关键</span>
+    ...
+)</code></pre>
+<p>初始就把"已经 running 的 decode req 未来还会用到的 token 数"占上，<strong>防止 prefill 贪心吃光 KV 导致 decode OOM</strong>。没有这一行系统会间歇性崩。</p>
+
+<h3>坑 4 · page_table / token_pool 多出的那一行永远指向 0</h3>
+<pre><code>self.token_pool = torch.<span class="fn">zeros_like</span>(page_table, dtype=torch.int32)</code></pre>
+<p>初始化<u>全零</u>——dummy_req 的 token_id 就是 0（vocab 里通常是 <code>&lt;pad&gt;</code> 或 <code>&lt;unk&gt;</code>）。这样 dummy 在 CUDA Graph capture 期间被 embed_tokens 读时不会出错。<strong>如果初始化为 garbage，embed 可能越界。</strong></p>
+
+<h3>坑 5 · abort 的两条路径</h3>
+<pre><code><span class="com"># scheduler/scheduler.py:_process_one_msg</span>
+req_to_free = self.prefill_manager.<span class="fn">abort_req</span>(msg.uid)    <span class="com"># 路径 A</span>
+req_to_free = req_to_free <span class="kw">or</span> self.decode_manager.<span class="fn">abort_req</span>(msg.uid)  <span class="com"># 路径 B</span>
+<span class="kw">if</span> req_to_free:
+    self.<span class="fn">_free_req_resources</span>(req_to_free)</code></pre>
+<ul class="tight">
+  <li>A: req 还在 pending_list（PendingReq 阶段）→ 直接 pop，<u>返回它的 chunked_req</u>（可能为 None）</li>
+  <li>B: req 已经在 running_reqs（Req 阶段）→ 从 set 删除，返回 Req</li>
+  <li>无论哪种，只要拿到 Req 就 _free_req_resources（回收 table_idx + cache handle）</li>
+  <li>PendingReq 没有资源可释放 → 如果 chunked_req 为 None 就啥都不做</li>
+</ul>
+
+<h3>坑 6 · @dataclass(eq=False) 和 Set 的隐含约束</h3>
+<p>DecodeManager.running_reqs 是 <code>Set[Req]</code>，依赖 Req 可 hash。<code>eq=False</code> 让 dataclass 用 <code>object.__hash__</code>（按对象 id）。这意味着：</p>
+<ul class="tight">
+  <li>即使两个 Req 内容相同（假设能），它们也是<u>不同的 set 元素</u></li>
+  <li>永远不能用 copy.copy 或 deepcopy 一个 Req 丢进同一个 set——id 会变，行为不可预测</li>
+  <li>一个 Req 在 filter_reqs 里被 union 多次是安全的——id 相同，set 只保留一份</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2>小结 · 快速索引</h2>
+
+<div class="card">
+<table>
+<tr><th>你想知道</th><th>去看</th></tr>
+<tr><td>Req 的字段含义</td><td>PART 2（三个长度）+ PART 3（字段演化）</td></tr>
+<tr><td>为什么有 complete_one + append_host 两步</td><td>PART 4</td></tr>
+<tr><td>PendingReq 和 Req 的区别</td><td>PART 5</td></tr>
+<tr><td>ChunkedReq 的防御式设计</td><td>PART 6</td></tr>
+<tr><td>TableManager 的 3 个接口</td><td>PART 8</td></tr>
+<tr><td>dummy_req 的意义</td><td>PART 9</td></tr>
+<tr><td>完整生命周期</td><td>PART 10</td></tr>
+<tr><td>实战踩坑</td><td>PART 11</td></tr>
+</table>
+
+<p><strong>一句话总结：</strong> Req 是请求的"运行时身份"（含所有资源指针），TableManager 是这个身份的"发号器和注册中心"（page_table 的行号池）。两者加起来定义了"一个活跃请求如何在 mini-sglang 里存在"。</p>
+</div>
+
+<div class="foot">
+<a href="index.html" style="color:var(--brand2)">← 回到学习手册首页</a> &nbsp;·&nbsp; <a href="03-cache-manager.html">下一篇 → CacheManager</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

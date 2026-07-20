@@ -1,0 +1,586 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>11 · Overlap Scheduling 深度剖析</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+@media (max-width:900px){.cols-2{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Overlap Scheduling 深度剖析 <span class="tag">11</span></h1>
+<div class="sub">02 章提过"两条 stream、CPU 和 GPU 并行"。这里真正讲清楚它是怎么工作的。</div>
+
+<div class="toc">
+  <a href="#problem">问题：CPU 和 GPU 的串行</a>
+  <a href="#idea">核心思想</a>
+  <a href="#streams">两条 CUDA Stream</a>
+  <a href="#loop">overlap_loop 逐行</a>
+  <a href="#timeline">时序图对比</a>
+  <a href="#tricky">细节坑点</a>
+  <a href="#benefits">实测收益</a>
+</div>
+
+<!-- ============ 1 ============ -->
+<h2 id="problem"><span class="step">PART 1</span>问题：不优化的话 CPU/GPU 是串行的</h2>
+
+<div class="card">
+<p>没有 overlap 时，一个 iteration 内的执行是这样的：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">❌ Naive Loop（normal_loop）：CPU 和 GPU 交替工作</text>
+
+  <!-- CPU row -->
+  <text x="30" y="80" fill="#fbbf24" font-size="12" font-weight="600">CPU</text>
+  <g>
+    <rect x="60" y="60" width="100" height="40" fill="#fbbf24" rx="4"/>
+    <text x="110" y="85" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">recv msg</text>
+
+    <rect x="160" y="60" width="140" height="40" fill="#fbbf24" rx="4"/>
+    <text x="230" y="85" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">schedule batch</text>
+
+    <rect x="300" y="60" width="140" height="40" fill="#fbbf24" rx="4"/>
+    <text x="370" y="85" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">prepare_batch</text>
+
+    <rect x="440" y="60" width="60" height="40" fill="#374151" rx="4"/>
+    <text x="470" y="85" text-anchor="middle" fill="#9ca3af" font-size="10">wait GPU</text>
+
+    <rect x="760" y="60" width="160" height="40" fill="#fbbf24" rx="4"/>
+    <text x="840" y="85" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">process result</text>
+
+    <rect x="920" y="60" width="120" height="40" fill="#fbbf24" rx="4"/>
+    <text x="980" y="85" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">send reply</text>
+  </g>
+
+  <!-- GPU row -->
+  <text x="30" y="160" fill="#34d399" font-size="12" font-weight="600">GPU</text>
+  <g>
+    <rect x="60" y="140" width="440" height="40" fill="#374151" rx="4"/>
+    <text x="280" y="165" text-anchor="middle" fill="#9ca3af" font-size="11">idle (等 CPU 准备)</text>
+
+    <rect x="500" y="140" width="260" height="40" fill="#34d399" rx="4"/>
+    <text x="630" y="165" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">model forward (decode)</text>
+
+    <rect x="760" y="140" width="280" height="40" fill="#374151" rx="4"/>
+    <text x="900" y="165" text-anchor="middle" fill="#9ca3af" font-size="11">idle (等 CPU 处理)</text>
+  </g>
+
+  <!-- tick marks -->
+  <line x1="60" y1="205" x2="1040" y2="205" stroke="#4b5563"/>
+  <line x1="60" y1="200" x2="60" y2="210" stroke="#4b5563"/>
+  <line x1="500" y1="200" x2="500" y2="210" stroke="#4b5563"/>
+  <line x1="760" y1="200" x2="760" y2="210" stroke="#4b5563"/>
+  <line x1="1040" y1="200" x2="1040" y2="210" stroke="#4b5563"/>
+  <text x="60" y="225" text-anchor="middle" fill="#8b93a7" font-size="10">0</text>
+  <text x="500" y="225" text-anchor="middle" fill="#8b93a7" font-size="10">CPU schedule 完</text>
+  <text x="760" y="225" text-anchor="middle" fill="#8b93a7" font-size="10">GPU forward 完</text>
+  <text x="1040" y="225" text-anchor="middle" fill="#8b93a7" font-size="10">iter 结束</text>
+
+  <text x="600" y="248" text-anchor="middle" fill="var(--bad)" font-size="11">总时间 = CPU + GPU + CPU · GPU 有 ~50% 时间空闲</text>
+</svg>
+</div>
+
+<div class="callout warn">
+<strong>核心痛点：CPU 在准备下一个 batch 时 GPU 在等，GPU 在算时 CPU 在等。</strong><br>
+每 iteration 的 CPU 部分（调度 + 结果处理）加起来大概 1-2 ms。GPU decode 部分也就 3-5 ms。CPU 占了总时间的 20-40%，这部分如果能"藏起来"就是纯收益。
+</div>
+</div>
+
+<!-- ============ 2 ============ -->
+<h2 id="idea"><span class="step">PART 2</span>核心思想：让 CPU 和 GPU 并行</h2>
+
+<div class="card">
+<p>关键观察：CPU 和 GPU 做的事<u>其实不依赖对方</u>——</p>
+<ul class="tight">
+  <li>CPU 在调度<strong>下一个 batch</strong>时，用的是自己的数据结构（pending_list、running_reqs 等），不需要 GPU 配合</li>
+  <li>GPU 在算<strong>当前 batch</strong>时，用的是已经准备好的输入，不需要 CPU 配合</li>
+</ul>
+
+<p>所以可以让它们<strong>同时做事</strong>——在一个 iteration 里，CPU 同时做两件事：</p>
+<ol>
+<li>为<u>下一批</u>做调度 + launch GPU 计算（异步，立即返回）</li>
+<li>处理<u>上一批</u>的 GPU 结果</li>
+</ol>
+
+<p>这两件事彼此不依赖，CPU 可以一气做完。GPU 则在后台跑 model forward。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 300" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">✅ Overlap Loop：CPU 和 GPU 并行</text>
+
+  <!-- CPU row -->
+  <text x="30" y="80" fill="#fbbf24" font-size="12" font-weight="600">CPU</text>
+  <g>
+    <rect x="60" y="60" width="80" height="40" fill="#fbbf24" rx="4"/>
+    <text x="100" y="85" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">recv</text>
+
+    <rect x="140" y="60" width="120" height="40" fill="#fbbf24" rx="4"/>
+    <text x="200" y="85" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">schedule+prepare</text>
+
+    <rect x="260" y="60" width="60" height="40" fill="#7dd3fc" rx="4"/>
+    <text x="290" y="85" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">launch</text>
+
+    <rect x="320" y="60" width="200" height="40" fill="#a78bfa" rx="4"/>
+    <text x="420" y="85" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">process last_data</text>
+
+    <text x="540" y="85" fill="#8b93a7" font-size="10">← 本轮 CPU 做完了</text>
+  </g>
+
+  <!-- GPU row -->
+  <text x="30" y="160" fill="#34d399" font-size="12" font-weight="600">GPU</text>
+  <g>
+    <!-- previous iter's work continuing -->
+    <rect x="60" y="140" width="260" height="40" fill="#34d399" opacity=".5" rx="4"/>
+    <text x="190" y="165" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">上一轮 forward (仍在算)</text>
+
+    <rect x="320" y="140" width="400" height="40" fill="#34d399" rx="4"/>
+    <text x="520" y="165" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">本轮 forward</text>
+  </g>
+
+  <!-- arrows -->
+  <line x1="290" y1="100" x2="320" y2="140" stroke="#7dd3fc" stroke-width="2" stroke-dasharray="3 3"/>
+  <text x="300" y="125" fill="#7dd3fc" font-size="9">launch</text>
+
+  <text x="600" y="220" text-anchor="middle" fill="var(--brand)" font-size="12" font-weight="600">CPU 的 process/reply 时间被 GPU forward 完全吃掉</text>
+  <text x="600" y="242" text-anchor="middle" fill="#8b93a7" font-size="11">理想情况：总时间 = max(CPU, GPU)，不再是加和</text>
+</svg>
+</div>
+</div>
+
+<!-- ============ 3 ============ -->
+<h2 id="streams"><span class="step">PART 3</span>两条 CUDA Stream 的角色分工</h2>
+
+<div class="card">
+<p>要实现 overlap，需要两条<strong>独立的 CUDA Stream</strong>——stream 是 CUDA 里 "一条命令队列"，同一 stream 内严格顺序执行，不同 stream 可并行。</p>
+
+<pre><code><span class="com"># scheduler/scheduler.py:52</span>
+self.device = self.engine.device
+<span class="hl">self.stream = torch.cuda.<span class="fn">Stream</span>(device=self.device)      <span class="com"># scheduler 自己的 stream</span></span>
+self.engine_stream_ctx = torch.cuda.<span class="fn">stream</span>(self.engine.stream)
+torch.cuda.<span class="fn">set_stream</span>(self.stream)                         <span class="com"># 默认用 scheduler.stream</span></code></pre>
+
+<h3>两条 stream 各管什么</h3>
+<table>
+<tr><th>stream</th><th>干啥</th><th>典型操作</th></tr>
+<tr><td><code>scheduler.stream</code></td><td>调度元数据相关</td><td>page table 写入、H2D copy（positions、mapping）、attn metadata 准备</td></tr>
+<tr><td><code>engine.stream</code></td><td>模型 forward + sampler</td><td>所有 kernel: embed, QKV, attention, O, MLP, LM head, sample</td></tr>
+</table>
+
+<h3>两条 stream 之间的依赖：wait_stream</h3>
+
+<pre><code><span class="com"># scheduler/scheduler.py:100</span>
+<span class="kw">with</span> self.engine_stream_ctx:            <span class="com"># 切到 engine.stream 当默认</span>
+    <span class="hl">self.engine.stream.<span class="fn">wait_stream</span>(self.stream)</span>    <span class="com"># engine 等 scheduler 的准备完</span>
+    ongoing_data = (forward_input, self.<span class="fn">_forward</span>(forward_input))</code></pre>
+
+<div class="callout info">
+<strong><code>engine.stream.wait_stream(scheduler.stream)</code> 的语义：</strong><br>
+在 engine.stream 里插入一个"等待点"，等到 scheduler.stream <u>到此刻为止提交的所有操作</u>都完成才继续。这保证 model forward 读的 metadata 是已经写好的。<br>
+注意这是<u>GPU 侧的同步</u>，不是 CPU 侧——CPU 不会被阻塞，只是 engine.stream 里的新 kernel 要等 scheduler.stream 的前置操作做完才启动。
+</div>
+
+<h3>图解</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">两条 stream 并行 + wait_stream 同步</text>
+
+  <!-- Scheduler stream -->
+  <text x="30" y="80" fill="#fbbf24" font-size="11" font-weight="600">scheduler</text>
+  <text x="30" y="95" fill="#fbbf24" font-size="11" font-weight="600">.stream</text>
+  <g>
+    <rect x="100" y="60" width="120" height="40" fill="#fbbf24" rx="4"/>
+    <text x="160" y="85" text-anchor="middle" fill="#0b0d12" font-size="10">H2D positions</text>
+    <rect x="220" y="60" width="120" height="40" fill="#fbbf24" rx="4"/>
+    <text x="280" y="85" text-anchor="middle" fill="#0b0d12" font-size="10">write page_table</text>
+    <rect x="340" y="60" width="120" height="40" fill="#fbbf24" rx="4"/>
+    <text x="400" y="85" text-anchor="middle" fill="#0b0d12" font-size="10">attn metadata</text>
+  </g>
+
+  <!-- Sync point -->
+  <g>
+    <path d="M 460 80 Q 500 80 500 180" stroke="#7dd3fc" stroke-width="3" fill="none"/>
+    <circle cx="500" cy="180" r="8" fill="#7dd3fc"/>
+    <text x="510" y="150" fill="#7dd3fc" font-size="10" font-weight="600">wait_stream</text>
+  </g>
+
+  <!-- Engine stream -->
+  <text x="30" y="200" fill="#34d399" font-size="11" font-weight="600">engine</text>
+  <text x="30" y="215" fill="#34d399" font-size="11" font-weight="600">.stream</text>
+  <g>
+    <rect x="500" y="180" width="120" height="40" fill="#34d399" rx="4"/>
+    <text x="560" y="205" text-anchor="middle" fill="#0b0d12" font-size="10">embed</text>
+    <rect x="620" y="180" width="140" height="40" fill="#34d399" rx="4"/>
+    <text x="690" y="205" text-anchor="middle" fill="#0b0d12" font-size="10">attention × 28</text>
+    <rect x="760" y="180" width="100" height="40" fill="#34d399" rx="4"/>
+    <text x="810" y="205" text-anchor="middle" fill="#0b0d12" font-size="10">lm_head</text>
+    <rect x="860" y="180" width="80" height="40" fill="#34d399" rx="4"/>
+    <text x="900" y="205" text-anchor="middle" fill="#0b0d12" font-size="10">sample</text>
+    <rect x="940" y="180" width="100" height="40" fill="#34d399" rx="4"/>
+    <text x="990" y="205" text-anchor="middle" fill="#0b0d12" font-size="10">D2H copy</text>
+  </g>
+
+  <!-- while engine is running, scheduler can do the NEXT prep -->
+  <g>
+    <rect x="560" y="60" width="120" height="40" fill="#fbbf24" opacity=".6" rx="4"/>
+    <text x="620" y="85" text-anchor="middle" fill="#0b0d12" font-size="10">下批 H2D</text>
+    <rect x="680" y="60" width="120" height="40" fill="#fbbf24" opacity=".6" rx="4"/>
+    <text x="740" y="85" text-anchor="middle" fill="#0b0d12" font-size="10">下批 page_table</text>
+    <rect x="800" y="60" width="120" height="40" fill="#fbbf24" opacity=".6" rx="4"/>
+    <text x="860" y="85" text-anchor="middle" fill="#0b0d12" font-size="10">下批 metadata</text>
+  </g>
+
+  <text x="600" y="280" text-anchor="middle" fill="var(--brand)" font-size="12" font-weight="600">engine.stream 跑 forward 期间，scheduler.stream 已经在为下一批做准备</text>
+</svg>
+</div>
+</div>
+
+<!-- ============ 4 ============ -->
+<h2 id="loop"><span class="step">PART 4</span>overlap_loop 逐行拆解</h2>
+
+<div class="card">
+<pre><code><span class="com"># scheduler/scheduler.py:83</span>
+<span class="kw">def</span> <span class="fn">overlap_loop</span>(self, last_data: ForwardData | <span class="kw">None</span>) -> ForwardData | <span class="kw">None</span>:
+    blocking = <span class="kw">not</span> (
+        last_data <span class="kw">is not</span> <span class="kw">None</span>                    <span class="com"># 有 last 要处理</span>
+        <span class="kw">or</span> self.prefill_manager.runnable
+        <span class="kw">or</span> self.decode_manager.runnable
+    )
+    <span class="kw">for</span> msg <span class="kw">in</span> self.<span class="fn">receive_msg</span>(blocking=blocking):  <span class="com"># ① 收 ZMQ</span>
+        self.<span class="fn">_process_one_msg</span>(msg)
+
+    forward_input = self.<span class="fn">_schedule_next_batch</span>()       <span class="com"># ② 调度 + 准备 metadata</span>
+    ongoing_data = <span class="kw">None</span>
+    <span class="kw">if</span> forward_input <span class="kw">is not</span> <span class="kw">None</span>:
+        <span class="kw">with</span> self.engine_stream_ctx:                 <span class="com"># ③ 切到 engine.stream</span>
+            self.engine.stream.<span class="fn">wait_stream</span>(self.stream)
+            <span class="hl">ongoing_data = (forward_input, self.<span class="fn">_forward</span>(forward_input))</span>
+            <span class="com"># ↑ launch model.forward + sample, 异步返回</span>
+
+    self.<span class="fn">_process_last_data</span>(last_data)              <span class="com"># ④ CPU 处理上轮结果</span>
+    <span class="kw">return</span> ongoing_data                           <span class="com"># 下一轮作为 last_data</span></code></pre>
+
+<h3>5 个阶段的详细时间线</h3>
+<table>
+<tr><th>阶段</th><th>在哪条 stream</th><th>做什么</th><th>阻塞 CPU？</th></tr>
+<tr><td>① receive_msg</td><td>CPU only</td><td>从 ZMQ 拉消息，filter 入队</td><td>blocking=True 时阻塞</td></tr>
+<tr><td>② schedule_next_batch</td><td>scheduler.stream</td><td>PrefillAdder 装箱 + allocate_paged + prepare_metadata（触发一堆 H2D copy）</td><td>不阻塞（copy 是 async）</td></tr>
+<tr><td>③ _forward (launch)</td><td>engine.stream</td><td>launch model.forward + sample + D2H copy</td><td>不阻塞（launch 返回立即）</td></tr>
+<tr><td>④ _process_last_data</td><td>CPU only</td><td>copy_done.synchronize 等上轮 D2H 完；然后 cache_req / send reply</td><td><strong>阻塞</strong>，等 copy event</td></tr>
+<tr><td>⑤ return</td><td>—</td><td>本轮的 ongoing_data 给下一轮做 last_data</td><td>—</td></tr>
+</table>
+
+<div class="callout warn">
+<strong>关键：第 ③ 和第 ④ 步是<u>并行</u>的——③ launch 完立刻返回（不等 GPU 算完），④ 在 CPU 上处理上轮的结果。GPU 在后台跑本轮的 forward，与 CPU 的 ④ 并行。</strong>
+</div>
+
+<h3>blocking 逻辑</h3>
+<pre><code>blocking = <span class="kw">not</span> (
+    last_data <span class="kw">is not</span> <span class="kw">None</span>
+    <span class="kw">or</span> self.prefill_manager.runnable
+    <span class="kw">or</span> self.decode_manager.runnable
+)</code></pre>
+
+<p>只有<strong>所有三件事都没</strong>——没上批要处理、没 pending prefill、没 running decode——才阻塞等 ZMQ。否则非阻塞 drain，有多少收多少。</p>
+
+<p>这样系统<u>忙时不停歇</u>，闲时优雅阻塞不消耗 CPU。</p>
+</div>
+
+<!-- ============ 5 ============ -->
+<h2 id="timeline"><span class="step">PART 5</span>多 iteration 时序图</h2>
+
+<div class="card">
+<p>把 3 个连续 iteration 画出来，看 "iter N 的 CPU" 和 "iter N-1 的 GPU" 怎么并行：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">连续 3 个 iteration 的完整时序（稳态 decode）</text>
+
+  <!-- CPU row -->
+  <text x="20" y="70" fill="#fbbf24" font-size="11" font-weight="600">CPU</text>
+
+  <!-- iter 1 CPU -->
+  <g>
+    <rect x="60" y="50" width="60" height="40" fill="#fbbf24" rx="3"/>
+    <text x="90" y="75" text-anchor="middle" fill="#0b0d12" font-size="9">sched 1</text>
+    <rect x="120" y="50" width="40" height="40" fill="#7dd3fc" rx="3"/>
+    <text x="140" y="75" text-anchor="middle" fill="#0b0d12" font-size="9">launch</text>
+    <rect x="160" y="50" width="50" height="40" fill="#374151" rx="3"/>
+    <text x="185" y="75" text-anchor="middle" fill="#9ca3af" font-size="9">no last</text>
+  </g>
+
+  <!-- iter 2 CPU -->
+  <g>
+    <rect x="220" y="50" width="60" height="40" fill="#fbbf24" rx="3"/>
+    <text x="250" y="75" text-anchor="middle" fill="#0b0d12" font-size="9">sched 2</text>
+    <rect x="280" y="50" width="40" height="40" fill="#7dd3fc" rx="3"/>
+    <text x="300" y="75" text-anchor="middle" fill="#0b0d12" font-size="9">launch</text>
+    <rect x="320" y="50" width="130" height="40" fill="#a78bfa" rx="3"/>
+    <text x="385" y="75" text-anchor="middle" fill="#0b0d12" font-size="10">process last=1</text>
+  </g>
+
+  <!-- iter 3 CPU -->
+  <g>
+    <rect x="460" y="50" width="60" height="40" fill="#fbbf24" rx="3"/>
+    <text x="490" y="75" text-anchor="middle" fill="#0b0d12" font-size="9">sched 3</text>
+    <rect x="520" y="50" width="40" height="40" fill="#7dd3fc" rx="3"/>
+    <text x="540" y="75" text-anchor="middle" fill="#0b0d12" font-size="9">launch</text>
+    <rect x="560" y="50" width="130" height="40" fill="#a78bfa" rx="3"/>
+    <text x="625" y="75" text-anchor="middle" fill="#0b0d12" font-size="10">process last=2</text>
+  </g>
+
+  <!-- iter 4 CPU -->
+  <g>
+    <rect x="700" y="50" width="60" height="40" fill="#fbbf24" rx="3"/>
+    <text x="730" y="75" text-anchor="middle" fill="#0b0d12" font-size="9">sched 4</text>
+    <rect x="760" y="50" width="40" height="40" fill="#7dd3fc" rx="3"/>
+    <text x="780" y="75" text-anchor="middle" fill="#0b0d12" font-size="9">launch</text>
+    <rect x="800" y="50" width="130" height="40" fill="#a78bfa" rx="3"/>
+    <text x="865" y="75" text-anchor="middle" fill="#0b0d12" font-size="10">process last=3</text>
+  </g>
+
+  <!-- GPU row -->
+  <text x="20" y="170" fill="#34d399" font-size="11" font-weight="600">GPU</text>
+
+  <!-- iter 1 GPU -->
+  <g>
+    <rect x="160" y="150" width="220" height="40" fill="#34d399" rx="3"/>
+    <text x="270" y="175" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">forward 1</text>
+  </g>
+
+  <!-- iter 2 GPU -->
+  <g>
+    <rect x="380" y="150" width="240" height="40" fill="#34d399" rx="3"/>
+    <text x="500" y="175" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">forward 2</text>
+  </g>
+
+  <!-- iter 3 GPU -->
+  <g>
+    <rect x="620" y="150" width="240" height="40" fill="#34d399" rx="3"/>
+    <text x="740" y="175" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">forward 3</text>
+  </g>
+
+  <!-- iter 4 GPU -->
+  <g>
+    <rect x="860" y="150" width="240" height="40" fill="#34d399" rx="3"/>
+    <text x="980" y="175" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">forward 4</text>
+  </g>
+
+  <!-- Overlap highlight -->
+  <g>
+    <rect x="320" y="210" width="130" height="20" fill="#a78bfa" opacity=".3"/>
+    <rect x="380" y="210" width="70" height="20" fill="#34d399" opacity=".3"/>
+    <text x="385" y="225" text-anchor="middle" fill="#cbd5e1" font-size="10">↑ CPU process 1</text>
+    <text x="415" y="245" text-anchor="middle" fill="#cbd5e1" font-size="10">同时 GPU 在算 forward 2</text>
+  </g>
+
+  <!-- Dashed lines showing "launch points" -->
+  <line x1="140" y1="90" x2="160" y2="150" stroke="#7dd3fc" stroke-dasharray="3 3"/>
+  <line x1="300" y1="90" x2="380" y2="150" stroke="#7dd3fc" stroke-dasharray="3 3"/>
+  <line x1="540" y1="90" x2="620" y2="150" stroke="#7dd3fc" stroke-dasharray="3 3"/>
+  <line x1="780" y1="90" x2="860" y2="150" stroke="#7dd3fc" stroke-dasharray="3 3"/>
+
+  <!-- Legend -->
+  <g transform="translate(40, 280)">
+    <rect x="0" y="0" width="16" height="16" fill="#fbbf24"/><text x="22" y="12" fill="#cbd5e1" font-size="11">receive+schedule+prepare</text>
+    <rect x="220" y="0" width="16" height="16" fill="#7dd3fc"/><text x="242" y="12" fill="#cbd5e1" font-size="11">launch GPU</text>
+    <rect x="340" y="0" width="16" height="16" fill="#a78bfa"/><text x="362" y="12" fill="#cbd5e1" font-size="11">process last_data</text>
+    <rect x="500" y="0" width="16" height="16" fill="#34d399"/><text x="522" y="12" fill="#cbd5e1" font-size="11">GPU forward</text>
+  </g>
+
+  <text x="600" y="330" text-anchor="middle" fill="var(--brand)" font-size="12" font-weight="600">每 iter 只有 sched 1 是"独占 CPU"的，process last 和 GPU forward 并行</text>
+</svg>
+</div>
+
+<h3>读这张图的关键点</h3>
+<ul class="tight">
+  <li><strong>iter 1 特殊</strong>：没有 last_data，所以 CPU 最后那段是空闲。这是"启动期"的一次性浪费。</li>
+  <li><strong>iter 2 开始稳态</strong>：CPU 在 launch 完 iter 2 之后立刻去处理 iter 1 的结果，GPU 同时在算 iter 2。</li>
+  <li><strong>GPU 几乎不间断</strong>：forward 1 → forward 2 → ... 衔接紧密（中间只有 launch 那一小段 gap）。</li>
+  <li><strong>CPU 的 "process last" 被 GPU 吃掉</strong>：只要 GPU forward 比 CPU process 长（通常是这样），process 时间完全不影响总 iter 时长。</li>
+</ul>
+</div>
+
+<!-- ============ 6 ============ -->
+<h2 id="tricky"><span class="step">PART 6</span>细节坑点</h2>
+
+<div class="card">
+
+<h3>坑 1 · copy_done.synchronize() 到底在等什么？</h3>
+<pre><code><span class="com"># scheduler/scheduler.py:142</span>
+<span class="kw">def</span> <span class="fn">_process_last_data</span>(self, last_data):
+    batch, (_, next_tokens_cpu, copy_done) = last_data[0].batch, last_data[1]
+    <span class="hl">copy_done.<span class="fn">synchronize</span>()   <span class="com"># ★ 在等上轮的 D2H copy 完成</span></span>
+    ...
+    <span class="kw">for</span> i, req <span class="kw">in</span> enumerate(batch.reqs):
+        next_token = next_tokens_cpu[i]   <span class="com"># 现在可以读 cpu tensor 了</span></code></pre>
+
+<p>它等的是<u>上一轮 forward 结束后那个 D2H async copy</u>。如果 GPU 还在算，这里会阻塞 CPU。但正常情况下，当 CPU 走到 _process_last_data 时，上一轮 forward 早就完了（整个 overlap 的加速就靠这个时间差）。</p>
+
+<h3>坑 2 · lazy_free_region 为什么要存在？</h3>
+<pre><code><span class="com"># scheduler/cache.py:93</span>
+<span class="kw">@contextmanager</span>
+<span class="kw">def</span> <span class="fn">lazy_free_region</span>(self):
+    <span class="kw">def</span> <span class="fn">lazy_free</span>(indices):
+        lazy_free_list.<span class="fn">append</span>(indices[:: self.page_size])
+    lazy_free_list = []
+    <span class="kw">try</span>:
+        self._free = lazy_free
+        <span class="kw">yield</span>
+    <span class="kw">finally</span>:
+        <span class="kw">del</span> self._free
+        self.free_slots = torch.<span class="fn">cat</span>([self.free_slots] + lazy_free_list)</code></pre>
+
+<div class="callout warn">
+在 <code>_process_last_data</code> 里处理多个 req，每个 finish 都要 free 一堆 page。如果每次都 torch.cat，内存分配开销巨大。<br>
+<strong>lazy_free_region</strong> 把所有 free 攒起来，最后一次性 cat。这是个 GPU tensor 内存管理的常见优化。
+</div>
+
+<h3>坑 3 · 为什么 complete_one 在 forward_batch 里（不在 process_last_data）？</h3>
+<pre><code><span class="com"># engine/engine.py:200</span>
+<span class="kw">for</span> req <span class="kw">in</span> batch.reqs:
+    req.<span class="fn">complete_one</span>()     <span class="com"># cached_len ← device_len; device_len += 1</span></code></pre>
+
+<p>注意这是在 forward_batch <u>里面</u>调用的，不是 _process_last_data。为什么？</p>
+
+<p><strong>因为 overlap loop 要求 req 的长度状态必须立刻更新</strong>，以便下一轮 schedule_next_batch 能正确计算 device_len / extend_len。如果等到 _process_last_data 才更新（已经是下一轮），schedule 就会基于过时的状态，导致错误。</p>
+
+<h3>坑 4 · finished_reqs 集合的作用</h3>
+<pre><code><span class="com"># scheduler/scheduler.py:165</span>
+self.finished_reqs: Set[Req] = <span class="fn">set</span>()
+<span class="com"># ...</span>
+<span class="kw">if</span> finished <span class="kw">and</span> req <span class="kw">not in</span> self.finished_reqs:
+    self.decode_manager.<span class="fn">remove_req</span>(req)
+    self.<span class="fn">_free_req_resources</span>(req)
+    new_finished_reqs.<span class="fn">add</span>(req)
+<span class="com"># ...</span>
+self.finished_reqs = new_finished_reqs</code></pre>
+
+<div class="callout warn">
+<strong>防止 "double free"：</strong>overlap loop 下，同一个 req 可能在连续两个 iter 都被判定为 finished（上一轮 forward 出 EOS，这一轮 process_last_data 看到；但同时本轮 forward 又跑了一步，产出同一个 req 的另一个"下一 token"）。<br>
+<code>finished_reqs</code> 记住上轮已经 free 过的 req，防止重复调用 <code>_free_req_resources</code>（会导致 table_idx 被 free 两次）。<br>
+这是 overlap 引入的微妙并发问题，不做就会偶发 crash。
+</div>
+
+<h3>坑 5 · set_stream 的作用</h3>
+<pre><code><span class="com"># scheduler/scheduler.py:55</span>
+torch.cuda.<span class="fn">set_stream</span>(self.stream)    <span class="com"># 把默认 stream 设成 scheduler.stream</span></code></pre>
+
+<p>所有不显式指定 stream 的 PyTorch 操作（比如 <code>tensor.to(device, non_blocking=True)</code>）都走默认 stream。set_stream 让这些操作落在 scheduler.stream 上，不会污染 engine.stream。这样 wait_stream 才能精确同步。</p>
+
+<h3>坑 6 · normal_loop 作为 ablation</h3>
+<pre><code><span class="com"># scheduler/scheduler.py:120</span>
+<span class="kw">if</span> ENV.DISABLE_OVERLAP_SCHEDULING:
+    <span class="kw">with</span> self.engine_stream_ctx:
+        self.engine.stream.<span class="fn">wait_stream</span>(self.stream)
+        <span class="kw">while</span> <span class="kw">True</span>:
+            self.<span class="fn">normal_loop</span>()
+<span class="kw">else</span>:
+    <span class="kw">while</span> <span class="kw">True</span>:
+        data = self.<span class="fn">overlap_loop</span>(data)</code></pre>
+
+<p>normal_loop 是串行版本——没有 last_data 概念，每次调度 → forward → 立刻 process。用 <code>MINISGL_DISABLE_OVERLAP_SCHEDULING=1</code> 启用，方便对比测量 overlap 的收益。</p>
+</div>
+
+<!-- ============ 7 ============ -->
+<h2 id="benefits"><span class="step">PART 7</span>实测收益与适用场景</h2>
+
+<div class="card">
+<h3>什么时候 overlap 有效？</h3>
+<table>
+<tr><th>场景</th><th>CPU 时间</th><th>GPU 时间</th><th>overlap 收益</th></tr>
+<tr><td>大 batch decode</td><td>~1.5 ms（多 req 的 process 开销大）</td><td>~4 ms</td><td>大 (~30%)</td></tr>
+<tr><td>小 batch decode（bs=1）</td><td>~0.8 ms</td><td>~2 ms</td><td>中 (~25%)</td></tr>
+<tr><td>prefill</td><td>~0.5 ms</td><td>~20 ms</td><td>小 (&lt; 5%)</td></tr>
+<tr><td>有 radix eviction 的复杂调度</td><td>~2 ms</td><td>~4 ms</td><td>大 (~35%)</td></tr>
+</table>
+
+<div class="callout info">
+<strong>一般规律：CPU 时间 / GPU 时间 的比值越高，overlap 收益越大。</strong><br>
+当 GPU 时间远大于 CPU 时间（prefill 场景），CPU 时间本来就被淹没，overlap 省不了多少。<br>
+当 CPU/GPU 比值接近 1:1（大 decode batch），overlap 能把总时间压到 max(CPU, GPU)，近似翻倍吞吐。
+</div>
+
+<h3>实测（mini-sglang benchmark/offline，H200, Qwen3-0.6B）</h3>
+<pre><code><span class="com"># 默认 (overlap on)</span>
+python benchmark/offline/bench.py --model Qwen/Qwen3-0.6B
+<span class="com"># throughput: ~5500 token/s</span>
+
+<span class="com"># overlap off</span>
+MINISGL_DISABLE_OVERLAP_SCHEDULING=1 python benchmark/offline/bench.py ...
+<span class="com"># throughput: ~4200 token/s</span>
+
+<span class="com"># → overlap 贡献 ~31% 吞吐</span></code></pre>
+
+<h3>跟 CUDA Graph 是什么关系？</h3>
+<div class="callout warn">
+<strong>两者独立，叠加生效。</strong>
+<ul class="tight">
+  <li>CUDA Graph 压缩 <u>GPU 侧的 launch 开销</u>（CPU dispatch 时间降到几 µs）</li>
+  <li>Overlap Scheduling 隐藏 <u>CPU 侧的 scheduler 开销</u>（把它藏在 GPU forward 后面）</li>
+  <li>开 graph 后 CPU launch 只用 5 µs，但 CPU 的 schedule + process_last 仍需 1-2 ms，overlap 仍然有用</li>
+  <li>mini-sglang 默认两者都开</li>
+</ul>
+</div>
+
+<h3>调试时建议关 overlap</h3>
+<p>因为 overlap 引入的时序复杂性（last_data 跨 iter、finished_reqs 去重）会让 bug 更难定位。调试时用 <code>MINISGL_DISABLE_OVERLAP_SCHEDULING=1</code> 切到 normal_loop 做干净的单步推理，定位清楚后再开回来看。</p>
+</div>
+
+<!-- ============ 8 ============ -->
+<h2>总结：overlap 的三层机制</h2>
+<div class="card">
+<ol class="tight">
+  <li><strong>并行</strong>：CPU 处理本批 launch + 上批结果，GPU 跑本批 forward，两者时间重叠</li>
+  <li><strong>同步</strong>：用两条 CUDA stream + wait_stream，保证 metadata 准备和 forward 之间的 happens-before 关系</li>
+  <li><strong>缓存</strong>：ForwardData（forward_input + forward_output + copy_done event）在迭代间传递，让下一轮能处理上一轮的结果</li>
+</ol>
+
+<p><strong>核心抽象</strong>：把每个 iter 从"串行 3 步"（recv → forward → reply）变成"并行 2 路"（CPU: 本批 launch + 上批 reply · GPU: 本批 forward）。</p>
+</div>
+
+<div class="foot">
+<a href="index.html" style="color:var(--brand2)">← 回到学习手册首页</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,472 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>TopK & Router 源码深读 · SGLang 学习</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--purple);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--purple);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--purple)}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--purple);color:var(--purple)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>TopK &amp; Router 源码深读 <span class="tag">MoE · 03/07</span></h1>
+<p class="sub">深入 SGLang 的路由选择实现：从三种输出格式到 Fused Router Kernel</p>
+
+<div class="toc">
+  <a href="#outputs">§0 三种输出格式</a>
+  <a href="#fused-router">§1 Fused Router Kernel</a>
+  <a href="#grouped-topk">§2 Grouped TopK</a>
+  <a href="#config">§3 TopKConfig 参数</a>
+  <a href="#callchain">§4 源码关键路径</a>
+</div>
+
+<!-- §0 -->
+<h2 id="outputs"><span class="step">§0</span>TopK 的三种输出格式</h2>
+
+<div class="card">
+<p>SGLang 的 TopK 模块根据不同的下游消费者，输出三种不同的数据结构：</p>
+</div>
+
+<div class="grid cols-3">
+<div class="card">
+  <h4>StandardTopKOutput</h4>
+  <p>最通用的格式，被大多数 Runner 使用：</p>
+  <pre><code><span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="fn">StandardTopKOutput</span>:
+    topk_weights: Tensor
+    <span class="com"># [num_tokens, top_k]</span>
+    topk_ids: Tensor
+    <span class="com"># [num_tokens, top_k]</span>
+    router_logits: Tensor
+    <span class="com"># [num_tokens, num_experts]</span>
+</code></pre>
+  <p style="color:var(--mute);font-size:12px">用于 StandardDispatcher + 所有 Runner 后端</p>
+</div>
+<div class="card">
+  <h4>TritonKernelTopKOutput</h4>
+  <p>专为 Triton kernel routing 优化：</p>
+  <pre><code><span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="fn">TritonKernelTopKOutput</span>:
+    topk_weights: Tensor
+    topk_ids: Tensor
+    sorted_token_ids: Tensor
+    expert_ids: Tensor
+    num_tokens_post_pad: Tensor
+</code></pre>
+  <p style="color:var(--mute);font-size:12px">预排序，Triton kernel 直接消费无需再 dispatch</p>
+</div>
+<div class="card">
+  <h4>BypassedTopKOutput</h4>
+  <p>CUDA Graph 场景，跳过动态 top-k：</p>
+  <pre><code><span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="fn">BypassedTopKOutput</span>:
+    topk_weights: Tensor
+    topk_ids: Tensor
+    <span class="com"># 预计算，不做实时路由</span>
+    <span class="com"># 用于 piecewise CUDA</span>
+    <span class="com"># graph replay</span>
+</code></pre>
+  <p style="color:var(--mute);font-size:12px">decode 阶段 CUDA Graph 需要固定形状</p>
+</div>
+</div>
+
+<div class="callout info">
+<strong>设计意图：</strong>三种输出格式体现了 SGLang 的"按需适配"哲学——同一个 TopK 逻辑，根据下游 Runner/Dispatcher 的需求，
+输出最高效的中间表示，避免不必要的数据变换。
+</div>
+
+<!-- §1 -->
+<h2 id="fused-router"><span class="step">§1</span>Fused Router Kernel</h2>
+
+<div class="card">
+<h3>为什么要融合 Router？</h3>
+<p>传统实现中，路由分三步 kernel：</p>
+<ol>
+  <li><code>gate_linear</code>: x @ W_gate → router_logits（GEMM kernel）</li>
+  <li><code>softmax</code>: logits → probabilities（element-wise kernel）</li>
+  <li><code>topk</code>: 选出 top-k indices 和 weights（排序 kernel）</li>
+</ol>
+<p>每一步都产生 HBM 读写。Fused Router 将三步合并为 <strong>一个 Triton kernel</strong>，中间结果全部在寄存器/SRAM 中完成。</p>
+</div>
+
+<div class="card">
+<h3>核心 Triton Kernel 代码</h3>
+<pre><code><span class="com"># 来源: sglang/srt/layers/moe/topk.py → fused_moe_router_cudacore_kernel</span>
+
+<span class="kw">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">fused_moe_router_cudacore_kernel</span>(
+    input_ptr,         <span class="com"># hidden_states [M, K]</span>
+    gate_ptr,          <span class="com"># W_gate [K, E]</span>
+    topk_weights_ptr,  <span class="com"># output: [M, top_k]</span>
+    topk_ids_ptr,      <span class="com"># output: [M, top_k]</span>
+    correction_bias_ptr,
+    M, K, E, top_k,
+    softcap,
+    BLOCK_M: <span class="kw">tl.constexpr</span>,
+    BLOCK_K: <span class="kw">tl.constexpr</span>,
+    BLOCK_E: <span class="kw">tl.constexpr</span>,
+):
+    <span class="com"># ─── Step 1: 计算 router_logits = input @ gate ───</span>
+    pid_m = tl.<span class="fn">program_id</span>(<span class="num">0</span>)
+    offs_m = pid_m * BLOCK_M + tl.<span class="fn">arange</span>(<span class="num">0</span>, BLOCK_M)
+    offs_k = tl.<span class="fn">arange</span>(<span class="num">0</span>, BLOCK_K)
+    offs_e = tl.<span class="fn">arange</span>(<span class="num">0</span>, BLOCK_E)
+
+    <span class="com"># Accumulate dot product in registers</span>
+    logits = tl.<span class="fn">zeros</span>([BLOCK_M, BLOCK_E], dtype=tl.float32)
+    <span class="kw">for</span> k_start <span class="kw">in</span> <span class="fn">range</span>(<span class="num">0</span>, K, BLOCK_K):
+        x = tl.<span class="fn">load</span>(input_ptr + offs_m[:, <span class="kw">None</span>] * K + (k_start + offs_k)[<span class="kw">None</span>, :])
+        g = tl.<span class="fn">load</span>(gate_ptr + (k_start + offs_k)[:, <span class="kw">None</span>] * E + offs_e[<span class="kw">None</span>, :])
+        logits += tl.<span class="fn">dot</span>(x, g)
+
+    <span class="com"># ─── Step 2: Softcap (optional, 用于 Gemma 等模型) ───</span>
+    <span class="kw">if</span> softcap > <span class="num">0</span>:
+        logits = softcap * tl.<span class="fn">math.tanh</span>(logits / softcap)
+
+    <span class="com"># ─── Step 3: Correction bias (DeepSeek-V3) ───</span>
+    <span class="kw">if</span> correction_bias_ptr <span class="kw">is not None</span>:
+        bias = tl.<span class="fn">load</span>(correction_bias_ptr + offs_e)
+        logits += bias[<span class="kw">None</span>, :]
+
+    <span class="com"># ─── Step 4: Softmax ───</span>
+    logits_max = tl.<span class="fn">max</span>(logits, axis=<span class="num">1</span>)[:, <span class="kw">None</span>]
+    logits = logits - logits_max
+    exp_logits = tl.<span class="fn">exp</span>(logits)
+    sum_exp = tl.<span class="fn">sum</span>(exp_logits, axis=<span class="num">1</span>)[:, <span class="kw">None</span>]
+    probs = exp_logits / sum_exp
+
+    <span class="com"># ─── Step 5: Top-K selection (register-level) ───</span>
+    <span class="com"># Iteratively find top-k by masking used indices</span>
+    <span class="kw">for</span> i <span class="kw">in</span> <span class="fn">range</span>(top_k):
+        max_val = tl.<span class="fn">max</span>(probs, axis=<span class="num">1</span>)
+        max_idx = tl.<span class="fn">argmax</span>(probs, axis=<span class="num">1</span>)
+        tl.<span class="fn">store</span>(topk_weights_ptr + offs_m * top_k + i, max_val)
+        tl.<span class="fn">store</span>(topk_ids_ptr + offs_m * top_k + i, max_idx)
+        <span class="com"># Mask selected expert</span>
+        mask = tl.<span class="fn">arange</span>(<span class="num">0</span>, BLOCK_E)[<span class="kw">None</span>, :] == max_idx[:, <span class="kw">None</span>]
+        probs = tl.<span class="fn">where</span>(mask, <span class="num">0.0</span>, probs)
+</code></pre>
+</div>
+
+<div class="callout">
+<strong>性能收益：</strong>Fused Router 将 3 次 HBM 读写减少为 1 次（只读 input + gate，写 topk 结果）。
+对于 256 expert 的 DeepSeek-V3，这可节省约 <strong>2× 的 router 延迟</strong>。
+</div>
+
+<div class="card">
+<h3>Kernel 内部数据流图</h3>
+<div class="svg-wrap">
+<svg width="580" height="200" viewBox="0 0 580 200" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Boxes -->
+  <rect x="10" y="80" width="90" height="40" rx="8" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="55" y="95" text-anchor="middle" fill="#a78bfa" font-size="10" font-weight="600">input × gate</text>
+  <text x="55" y="110" text-anchor="middle" fill="#8b93a7" font-size="9">dot product</text>
+
+  <path d="M105 100 L125 100" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#ak)"/>
+
+  <rect x="130" y="80" width="80" height="40" rx="8" fill="#1a1f2b" stroke="#fbbf24"/>
+  <text x="170" y="95" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">softcap</text>
+  <text x="170" y="110" text-anchor="middle" fill="#8b93a7" font-size="9">tanh clamp</text>
+
+  <path d="M215 100 L235 100" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#ak)"/>
+
+  <rect x="240" y="80" width="80" height="40" rx="8" fill="#1a1f2b" stroke="#6ee7b7"/>
+  <text x="280" y="95" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="600">+ bias</text>
+  <text x="280" y="110" text-anchor="middle" fill="#8b93a7" font-size="9">correction</text>
+
+  <path d="M325 100 L345 100" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#ak)"/>
+
+  <rect x="350" y="80" width="80" height="40" rx="8" fill="#1a1f2b" stroke="#7dd3fc"/>
+  <text x="390" y="95" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="600">softmax</text>
+  <text x="390" y="110" text-anchor="middle" fill="#8b93a7" font-size="9">normalize</text>
+
+  <path d="M435 100 L455 100" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#ak)"/>
+
+  <rect x="460" y="80" width="100" height="40" rx="8" fill="#1a1f2b" stroke="#fb7185"/>
+  <text x="510" y="95" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="600">top-k select</text>
+  <text x="510" y="110" text-anchor="middle" fill="#8b93a7" font-size="9">argmax × k</text>
+
+  <!-- All in registers label -->
+  <rect x="10" y="140" width="550" height="30" rx="6" fill="rgba(110,231,183,.08)" stroke="#6ee7b7" stroke-dasharray="4 3"/>
+  <text x="285" y="160" text-anchor="middle" fill="#6ee7b7" font-size="11">▲ 全部在寄存器 / Shared Memory 中完成，无中间 HBM 读写</text>
+
+  <!-- HBM labels -->
+  <text x="55" y="50" text-anchor="middle" fill="#8b93a7" font-size="9">HBM Read</text>
+  <path d="M55 55 L55 75" stroke="#8b93a7" stroke-width="1" stroke-dasharray="3 2"/>
+  <text x="510" y="50" text-anchor="middle" fill="#8b93a7" font-size="9">HBM Write</text>
+  <path d="M510 55 L510 75" stroke="#8b93a7" stroke-width="1" stroke-dasharray="3 2"/>
+
+  <defs><marker id="ak" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0 0 L7 2.5 L0 5z" fill="#6ee7b7"/></marker></defs>
+</svg>
+</div>
+</div>
+
+<!-- §2 -->
+<h2 id="grouped-topk"><span class="step">§2</span>Grouped TopK for DeepSeek</h2>
+
+<div class="card">
+<h3>问题：256 个 Expert 的负载均衡</h3>
+<p>DeepSeek-V3 有 256 个 routed expert，直接选 top-8 容易集中在少数 expert。
+<strong>Grouped TopK</strong> 两阶段选择确保 diversity：</p>
+
+<ol>
+  <li><strong>选组：</strong>将 256 expert 分为 <code>num_expert_group=8</code> 组（每组 32 expert），选出 <code>topk_group=4</code> 个组</li>
+  <li><strong>组内选 expert：</strong>在选中的 4 个组内选 top-8（每组约 2 个）</li>
+</ol>
+</div>
+
+<div class="card">
+<h3>实现代码</h3>
+<pre><code><span class="com"># 来源: flashinfer fused_topk_deepseek (被 SGLang 调用)</span>
+
+<span class="kw">def</span> <span class="fn">grouped_topk</span>(
+    hidden_states: Tensor,       <span class="com"># [M, hidden]</span>
+    router_logits: Tensor,       <span class="com"># [M, num_experts=256]</span>
+    top_k: <span class="kw">int</span> = <span class="num">8</span>,
+    renormalize: <span class="kw">bool</span> = <span class="kw">True</span>,
+    num_expert_group: <span class="kw">int</span> = <span class="num">8</span>,   <span class="com"># 分 8 组</span>
+    topk_group: <span class="kw">int</span> = <span class="num">4</span>,         <span class="com"># 选 4 组</span>
+):
+    scores = <span class="fn">softmax</span>(router_logits, dim=-<span class="num">1</span>)  <span class="com"># [M, 256]</span>
+
+    <span class="com"># Step 1: 每组取 max score 作为组得分</span>
+    scores_grouped = scores.<span class="fn">view</span>(M, num_expert_group, -<span class="num">1</span>)  <span class="com"># [M, 8, 32]</span>
+    group_scores = scores_grouped.<span class="fn">max</span>(dim=-<span class="num">1</span>).values          <span class="com"># [M, 8]</span>
+
+    <span class="com"># Step 2: 选出 top-4 组</span>
+    _, top_groups = <span class="fn">torch.topk</span>(group_scores, k=topk_group)    <span class="com"># [M, 4]</span>
+
+    <span class="com"># Step 3: 屏蔽未选中组的 score</span>
+    group_mask = <span class="fn">torch.zeros_like</span>(group_scores).<span class="fn">scatter_</span>(<span class="num">1</span>, top_groups, <span class="num">1.0</span>)
+    expert_mask = group_mask.<span class="fn">repeat_interleave</span>(<span class="num">32</span>, dim=<span class="num">1</span>)      <span class="com"># [M, 256]</span>
+    scores = scores * expert_mask
+
+    <span class="com"># Step 4: 在剩余中选 top-8</span>
+    topk_weights, topk_ids = <span class="fn">torch.topk</span>(scores, k=top_k)
+
+    <span class="kw">if</span> renormalize:
+        topk_weights = topk_weights / topk_weights.<span class="fn">sum</span>(dim=-<span class="num">1</span>, keepdim=<span class="kw">True</span>)
+
+    <span class="kw">return</span> topk_weights, topk_ids
+</code></pre>
+</div>
+
+<div class="callout warn">
+<strong>注意：</strong>Grouped TopK 的分组方式是在训练时确定的，推理时必须与训练一致。
+<code>num_expert_group</code> 和 <code>topk_group</code> 来自模型配置文件。
+</div>
+
+<!-- §3 -->
+<h2 id="config"><span class="step">§3</span>TopKConfig 参数详解</h2>
+
+<div class="card" style="overflow:auto">
+<table>
+<tr><th>字段</th><th>类型</th><th>默认值</th><th>说明</th></tr>
+<tr>
+  <td><code>top_k</code></td>
+  <td>int</td>
+  <td>—</td>
+  <td>每个 token 选择的 expert 数量</td>
+</tr>
+<tr>
+  <td><code>use_grouped_topk</code></td>
+  <td>bool</td>
+  <td>False</td>
+  <td>是否启用分组选择（DeepSeek 风格）</td>
+</tr>
+<tr>
+  <td><code>topk_group</code></td>
+  <td>int</td>
+  <td>None</td>
+  <td>选中的组数（需配合 use_grouped_topk）</td>
+</tr>
+<tr>
+  <td><code>num_expert_group</code></td>
+  <td>int</td>
+  <td>None</td>
+  <td>expert 分组总数</td>
+</tr>
+<tr>
+  <td><code>renormalize</code></td>
+  <td>bool</td>
+  <td>True</td>
+  <td>选中的权重是否重新归一化到 sum=1</td>
+</tr>
+<tr>
+  <td><code>scoring_func</code></td>
+  <td>str</td>
+  <td>"softmax"</td>
+  <td>打分函数："softmax" 或 "sigmoid"</td>
+</tr>
+<tr>
+  <td><code>routed_scaling_factor</code></td>
+  <td>float</td>
+  <td>1.0</td>
+  <td>路由权重的缩放因子（DeepSeek-V3 使用）</td>
+</tr>
+<tr>
+  <td><code>correction_bias</code></td>
+  <td>Tensor</td>
+  <td>None</td>
+  <td>每个 expert 的偏置修正项，用于负载均衡</td>
+</tr>
+<tr>
+  <td><code>softcap</code></td>
+  <td>float</td>
+  <td>0.0</td>
+  <td>logits 的 tanh softcap（Gemma 模型使用）</td>
+</tr>
+</table>
+</div>
+
+<div class="callout">
+<strong>scoring_func 区别：</strong>
+<ul style="margin:4px 0">
+  <li><code>softmax</code>：权重总和为 1，适合传统 MoE（Mixtral）</li>
+  <li><code>sigmoid</code>：各 expert 独立评分，配合 <code>routed_scaling_factor</code> 缩放，适合 DeepSeek-V3 风格</li>
+</ul>
+</div>
+
+<!-- §4 -->
+<h2 id="callchain"><span class="step">§4</span>源码关键路径</h2>
+
+<div class="card">
+<h3>调用链</h3>
+
+<div class="svg-wrap">
+<svg width="650" height="240" viewBox="0 0 650 240" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Box 1 -->
+  <rect x="10" y="10" width="200" height="50" rx="10" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="110" y="30" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="600">SparseMoeBlock.forward()</text>
+  <text x="110" y="47" text-anchor="middle" fill="#8b93a7" font-size="9.5">hidden_states 进入 MoE 层</text>
+
+  <path d="M110 63 L110 80" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#ac)"/>
+
+  <!-- Box 2 -->
+  <rect x="10" y="83" width="200" height="50" rx="10" fill="#1a1f2b" stroke="#7dd3fc"/>
+  <text x="110" y="103" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">self.gate(hidden_states)</text>
+  <text x="110" y="120" text-anchor="middle" fill="#8b93a7" font-size="9.5">nn.Linear → router_logits</text>
+
+  <path d="M110 136 L110 153" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#ac)"/>
+
+  <!-- Box 3 -->
+  <rect x="10" y="156" width="200" height="50" rx="10" fill="#1a1f2b" stroke="#6ee7b7"/>
+  <text x="110" y="176" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">self.topk(x, router_logits)</text>
+  <text x="110" y="193" text-anchor="middle" fill="#8b93a7" font-size="9.5">→ TopKOutput</text>
+
+  <!-- Branch to variants -->
+  <path d="M215 181 L280 140" stroke="#fbbf24" stroke-width="1.2"/>
+  <path d="M215 181 L280 181" stroke="#6ee7b7" stroke-width="1.2"/>
+  <path d="M215 181 L280 220" stroke="#fb7185" stroke-width="1.2"/>
+
+  <!-- Variant boxes -->
+  <rect x="285" y="118" width="200" height="40" rx="8" fill="#161a23" stroke="#fbbf24"/>
+  <text x="385" y="134" text-anchor="middle" fill="#fbbf24" font-size="10">FusedRouterTopK</text>
+  <text x="385" y="148" text-anchor="middle" fill="#8b93a7" font-size="9">单 kernel gate+softmax+topk</text>
+
+  <rect x="285" y="163" width="200" height="40" rx="8" fill="#161a23" stroke="#6ee7b7"/>
+  <text x="385" y="179" text-anchor="middle" fill="#6ee7b7" font-size="10">StandardTopK</text>
+  <text x="385" y="193" text-anchor="middle" fill="#8b93a7" font-size="9">PyTorch 标准实现</text>
+
+  <rect x="285" y="208" width="200" height="40" rx="8" fill="#161a23" stroke="#fb7185"/>
+  <text x="385" y="224" text-anchor="middle" fill="#fb7185" font-size="10">GroupedTopK (DeepSeek)</text>
+  <text x="385" y="238" text-anchor="middle" fill="#8b93a7" font-size="9">flashinfer fused_topk_deepseek</text>
+
+  <!-- Result arrow -->
+  <path d="M490 181 L530 181" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#ac)"/>
+
+  <rect x="535" y="161" width="105" height="40" rx="8" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="587" y="177" text-anchor="middle" fill="#a78bfa" font-size="10" font-weight="600">FusedMoE Layer</text>
+  <text x="587" y="191" text-anchor="middle" fill="#8b93a7" font-size="9">dispatch → compute</text>
+
+  <defs><marker id="ac" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0 0 L7 2.5 L0 5z" fill="#6ee7b7"/></marker></defs>
+</svg>
+</div>
+</div>
+
+<div class="card">
+<h3>代码片段：SparseMoeBlock.forward</h3>
+<pre><code><span class="com"># 以 Qwen3MoeSparseMoeBlock 为例（简化）</span>
+
+<span class="kw">class</span> <span class="fn">Qwen3MoeSparseMoeBlock</span>(nn.Module):
+    <span class="kw">def</span> <span class="fn">forward</span>(<span class="kw">self</span>, hidden_states: Tensor) -> Tensor:
+        <span class="com"># Step 1: 计算 router logits</span>
+        router_logits = <span class="kw">self</span>.gate(hidden_states)  <span class="com"># nn.Linear(hidden, num_experts)</span>
+
+        <span class="com"># Step 2: TopK 路由选择</span>
+        topk_output = <span class="kw">self</span>.topk(hidden_states, router_logits)
+
+        <span class="com"># Step 3: FusedMoE 计算</span>
+        final_hidden = <span class="kw">self</span>.fused_moe(
+            hidden_states=hidden_states,
+            topk_output=topk_output,
+            w13=<span class="kw">self</span>.w13,
+            w2=<span class="kw">self</span>.w2,
+        )
+
+        <span class="com"># Step 4: 加上 shared expert（如果有）</span>
+        <span class="kw">if</span> <span class="kw">self</span>.shared_expert <span class="kw">is not None</span>:
+            shared_out = <span class="kw">self</span>.shared_expert(hidden_states)
+            final_hidden = final_hidden + shared_out
+
+        <span class="kw">return</span> final_hidden
+</code></pre>
+</div>
+
+<div class="callout info">
+<strong>Fused Router 的触发条件：</strong>当以下条件同时满足时启用 FusedRouterTopK：
+<ul style="margin:4px 0">
+  <li>模型 expert 数 ≤ BLOCK_E（通常 256）</li>
+  <li>未使用 grouped_topk（DeepSeek 用单独路径）</li>
+  <li>Triton 可用</li>
+</ul>
+否则回退到 StandardTopK (PyTorch 实现)。
+</div>
+
+<!-- Navigation -->
+<div class="nav">
+  <a href="02-architecture-overview.html">← 02 · 架构总览</a>
+  <a href="04-fused-moe-layer.html">04 · FusedMoE Layer →</a>
+</div>
+
+<p class="foot">mini-sglang-study · MoE Deep Dive · Page 3/7</p>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

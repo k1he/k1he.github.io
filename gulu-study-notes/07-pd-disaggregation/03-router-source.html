@@ -1,0 +1,1092 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Router：双池路由 + bootstrap 注入</title>
+<style>
+
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+  --R0:#fbbf24;--R1:#7dd3fc;--R2:#a78bfa;--R3:#34d399;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+.cols-4{grid-template-columns:repeat(4,1fr)}
+@media (max-width:900px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+
+/* Demo */
+.demo{background:#0f1218;border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}
+.demo-title{font-size:16px;font-weight:600;color:var(--brand);margin:0 0 4px}
+.demo-sub{color:var(--mute);font-size:12.5px;margin-bottom:14px}
+.demo-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
+.demo-btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:7px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:all .12s}
+.demo-btn:hover{border-color:var(--brand);color:var(--brand)}
+.demo-btn.primary{background:var(--brand);color:var(--bg);border-color:var(--brand);font-weight:600}
+.demo-btn.primary:hover{background:#5cd6a4}
+.demo-step{font-family:"SF Mono",monospace;font-size:12px;color:var(--mute);margin-left:auto;background:#1a1f2b;padding:4px 10px;border-radius:6px;border:1px solid var(--line)}
+.demo-narration{background:rgba(110,231,183,.08);border-left:3px solid var(--brand);padding:10px 14px;border-radius:0 8px 8px 0;margin-top:12px;color:#cbd5e1;font-size:13px;min-height:42px;transition:all .3s}
+
+.rank-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}
+.rank-card{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px;text-align:center;transition:all .3s}
+.rank-card.active{border-color:var(--brand);box-shadow:0 0 12px rgba(110,231,183,.3)}
+.rank-card .rid{font-family:"SF Mono",monospace;font-weight:700;font-size:14px;margin-bottom:6px}
+.rank-card .body{color:var(--mute);font-family:"SF Mono",monospace;font-size:11px;line-height:1.5}
+.bar-h{display:flex;flex-direction:column;gap:3px;margin:8px 0}
+.bar-row{display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center;font-size:11px}
+.bar-row .lbl{color:var(--mute);font-family:"SF Mono",monospace}
+.bar-track{height:24px;background:#0a0d12;border:1px solid var(--line);border-radius:4px;position:relative;overflow:hidden}
+.bar-seg{position:absolute;top:2px;bottom:2px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0b0d12;transition:all .35s}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.pulse{animation:pulse 1s ease-in-out infinite}
+.kpi{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace}
+.kpi span{background:#1a1f2b;padding:3px 8px;border-radius:5px;border:1px solid var(--line)}
+.kpi span b{color:var(--brand)}
+
+
+.queue-box{background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:12px;min-height:110px;position:relative}
+.queue-title{font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace;margin-bottom:8px;display:flex;justify-content:space-between}
+.queue-title .cnt{color:var(--brand)}
+.req-chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:11px;font-family:"SF Mono",monospace;margin:3px;transition:all .35s;cursor:pointer}
+.req-chip.bootstrapping{border-color:var(--warn);color:var(--warn)}
+.req-chip.waiting{border-color:var(--brand2);color:var(--brand2)}
+.req-chip.transferring{border-color:var(--purple);color:var(--purple);animation:pulse 1s ease-in-out infinite}
+.req-chip.success{border-color:var(--brand);color:var(--brand);background:rgba(110,231,183,0.15)}
+.req-chip.failed{border-color:var(--bad);color:var(--bad)}
+.req-chip.active{box-shadow:0 0 10px currentColor}
+.msg-line{font-family:"SF Mono",monospace;font-size:11.5px;padding:4px 10px;margin:2px 0;border-radius:4px;background:#0f1218;border-left:2px solid var(--line);color:var(--mute)}
+.msg-line.active{border-color:var(--brand);color:var(--ink);background:rgba(110,231,183,0.05)}
+.msg-line .ts{color:var(--purple);margin-right:8px}
+.msg-line .tag{color:var(--warn);margin-right:8px}
+.path{color:var(--mute);font-size:11px;font-family:"SF Mono",monospace}
+.hl{background:rgba(251,191,36,.15);color:var(--warn);padding:0 3px;border-radius:3px}
+.step-badge{display:inline-block;background:var(--brand);color:var(--bg);border-radius:50%;width:22px;height:22px;line-height:22px;text-align:center;font-size:12px;font-weight:700;margin-right:8px}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--brand)}
+.flow-node{fill:#11141b;stroke:#262b38;stroke-width:1.5}
+.flow-node.active{stroke:#6ee7b7;stroke-width:2.2}
+.flow-node.active-warn{stroke:#fbbf24;stroke-width:2.2}
+.flow-node.active-blue{stroke:#7dd3fc;stroke-width:2.2}
+.flow-edge{stroke:#3a4050;stroke-width:1.5;fill:none}
+.flow-edge.active{stroke:#fbbf24;stroke-width:2}
+.flow-label{fill:#e6e8ee;font-family:"SF Mono",monospace;font-size:11px}
+.flow-label.sub{fill:#8b93a7;font-size:10px}
+.click-hint{font-size:11px;color:var(--mute);margin-top:6px;text-align:center}
+
+</style>
+</head><body><div class="wrap"><h1>Router：双池路由 + bootstrap 注入<span class="tag">PD · 3/7</span></h1><div class="sub">Router 原理、PDRouter 核心源码、select_pd_pair 两次策略调用、inject_bootstrap 生成 room_id、tokio::join! 双发。带两个可交互演示。</div><div class="toc"><a href="#role">Router 角色</a><a href="#cli">CLI 到 Router</a><a href="#struct">PDRouter 结构</a><a href="#flow">请求流转 8 步 🎬</a><a href="#select">select_pd_pair + 策略</a><a href="#howcache">cache_aware 内部机制 🌲</a><a href="#inject">bootstrap 注入</a><a href="#dual">双发返回</a><a href="#summary">要点回顾</a></div>
+<!-- ================ PART 1: Router 是什么 ================ -->
+<h2 id="role"><span class="step">PART 1</span>Router 在 PD 系统中的角色</h2>
+<div class="card">
+<p>PD 模式下的 Router（SGLang 源码里叫 <code>sgl-model-gateway</code>，二进制叫 <code>smg</code>）是整个系统的<strong>唯一入口</strong>。它不是普通的反向代理，而是一个<strong>同时知道 Prefill 池和 Decode 池</strong>、能把一个请求<strong>同时分派到 P 和 D</strong>的特殊 LB。</p>
+
+<h3>它解决的三个问题</h3>
+<table>
+<tr><th>问题</th><th>普通 LB 做不到</th><th>PD Router 怎么做</th></tr>
+<tr><td>同一个请求需要由 P+D 两个 worker 协作</td><td>普通 LB 只会选一个后端</td><td>两个独立 worker pool，一次请求两次 dispatch</td></tr>
+<tr><td>P/D 之间必须通过 bootstrap_room 认亲</td><td>LB 不参与 payload 修改</td><td>生成 <code>bootstrap_room</code>，把 <code>(host,port,room)</code> 写进请求 JSON</td></tr>
+<tr><td>P 和 D 需要几乎同时接到请求</td><td>顺序路由会让 P 或 D 干等</td><td><code>tokio::join!</code> 并发双发</td></tr>
+</table>
+
+<h3>Router 内部四大组件</h3>
+<div class="grid cols-2" style="margin-top:14px">
+<div class="card" style="margin:0;background:var(--panel2)">
+<h4 style="color:var(--brand)">WorkerRegistry</h4>
+<p>维护 <code>WorkerType::Prefill</code> 和 <code>WorkerType::Decode</code> 两个列表。启动时通过 <code>--prefill / --decode</code> 注入，运行时通过 <code>/workers</code> API 动态 add/remove。</p>
+</div>
+<div class="card" style="margin:0;background:var(--panel2)">
+<h4 style="color:var(--brand2)">PolicyRegistry</h4>
+<p>同时持有 <code>prefill_policy</code> 和 <code>decode_policy</code> 两个策略对象。默认：P 用 <code>cache_aware</code>，D 用 <code>power_of_two</code>。</p>
+</div>
+<div class="card" style="margin:0;background:var(--panel2)">
+<h4 style="color:var(--warn)">PDRouter</h4>
+<p>真正执行路由的入口。所有 <code>/v1/chat/completions</code>、<code>/generate</code> 等都经过 <code>execute_dual_dispatch</code>。</p>
+</div>
+<div class="card" style="margin:0;background:var(--panel2)">
+<h4 style="color:var(--pink)">RetryExecutor</h4>
+<p>包一层重试：P 或 D 某个 worker 5xx 时重新 <code>select_pd_pair</code>，新的 room_id、新的 worker 对。</p>
+</div>
+</div>
+</div>
+
+<!-- ================ PART 2: CLI / Config ================ -->
+<h2 id="cli"><span class="step">PART 2</span>入口参数：CLI 到 Router 实例</h2>
+<div class="card">
+<p>启动命令：</p>
+<pre><span class="com"># 2 个 Prefill + 2 个 Decode + cache_aware/power_of_two 双策略</span>
+smg launch <span class="kw">--pd-disaggregation</span> \
+  <span class="kw">--prefill</span> http://p1:30001 <span class="num">9001</span> \
+  <span class="kw">--prefill</span> http://p2:30002 <span class="num">9002</span> \
+  <span class="kw">--decode</span>  http://d1:30003 \
+  <span class="kw">--decode</span>  http://d2:30004 \
+  <span class="kw">--prefill-policy</span> cache_aware \
+  <span class="kw">--decode-policy</span>  power_of_two \
+  <span class="kw">--port</span> <span class="num">30000</span></pre>
+
+<p><code>--prefill URL [bootstrap_port]</code> 的第二个参数是 P 侧<strong>另一个端口</strong>：HTTP (30001) 处理 client 请求，bootstrap (9001) 专门给 D 的 KV Manager 发控制消息。这两个端口是分开的，不要混淆。</p>
+
+<h3>源码：CLI 参数解析</h3>
+<pre><span class="path">// sgl-model-gateway/src/main.rs:23-52</span>
+<span class="kw">fn</span> <span class="fn">parse_prefill_args</span>() -> Vec<(String, Option&lt;u16&gt;)> {
+    <span class="kw">let</span> args: Vec&lt;String&gt; = std::env::args().collect();
+    <span class="kw">let mut</span> prefill_entries = Vec::new();
+    <span class="kw">let mut</span> i = 0;
+    <span class="kw">while</span> i &lt; args.len() {
+        <span class="kw">if</span> args[i] == <span class="str">"--prefill"</span> && i + 1 &lt; args.len() {
+            <span class="kw">let</span> url = args[i + 1].clone();
+            <span class="com">// 可选的第 2 个参数：bootstrap_port</span>
+            <span class="kw">let</span> bootstrap_port = <span class="kw">if</span> i + 2 &lt; args.len() && !args[i + 2].starts_with(<span class="str">"--"</span>) {
+                args[i + 2].parse::&lt;u16&gt;().ok()
+            } <span class="kw">else</span> { <span class="kw">None</span> };
+            prefill_entries.push((url, bootstrap_port));
+            i += 2;
+        } <span class="kw">else</span> { i += 1; }
+    }
+    prefill_entries
+}</pre>
+
+<p>解析结果最终被 <code>factory.rs</code> 转成 <code>Arc&lt;Worker&gt;</code> 列表，塞进 <code>WorkerRegistry</code>。</p>
+</div>
+
+<!-- ================ PART 3: PDRouter 源码结构 ================ -->
+<h2 id="struct"><span class="step">PART 3</span>PDRouter 结构与主路径</h2>
+<div class="card">
+<pre><span class="path">// sgl-model-gateway/src/routers/http/pd_router.rs:48</span>
+<span class="kw">pub struct</span> PDRouter {
+    <span class="kw">pub</span> worker_registry: Arc&lt;WorkerRegistry&gt;,
+    <span class="kw">pub</span> policy_registry: Arc&lt;PolicyRegistry&gt;,
+    <span class="kw">pub</span> client: Client,                  <span class="com">// reqwest HTTP client</span>
+    <span class="kw">pub</span> retry_config: RetryConfig,
+    <span class="kw">pub</span> api_key: Option&lt;String&gt;,
+    <span class="kw">pub</span> enable_igw: <span class="kw">bool</span>,
+}</pre>
+
+<h3>请求进入时经过的 4 个关键方法</h3>
+<table>
+<tr><th>顺序</th><th>方法</th><th>源码位置</th><th>职责</th></tr>
+<tr><td>1</td><td><code>route_chat/route_generate</code></td><td>pd_router.rs 顶层</td><td>HTTP handler，调 execute_dual_dispatch</td></tr>
+<tr><td>2</td><td><code>execute_dual_dispatch</code></td><td>pd_router.rs:277</td><td>封 RetryExecutor 循环</td></tr>
+<tr><td>3</td><td><code>select_pd_pair</code></td><td>pd_router.rs:702</td><td>两次 policy 调用，分别选 P 和 D</td></tr>
+<tr><td>4</td><td><code>inject_bootstrap_into_value</code></td><td>pd_router.rs:217</td><td>生成 room_id，写进 JSON</td></tr>
+<tr><td>5</td><td><code>execute_dual_dispatch_internal</code></td><td>pd_router.rs:533</td><td>tokio::join! 双发、流式响应转发</td></tr>
+</table>
+</div>
+
+<!-- ================ PART 4: 请求到达后的 step-by-step ================ -->
+<h2 id="flow"><span class="step">PART 4</span>一个请求到达 Router 后发生什么</h2>
+<div class="card">
+<p>假设 client 发了一个 <code>POST /v1/chat/completions</code>，body 是：</p>
+<pre>{
+  <span class="str">"model"</span>: <span class="str">"llama-3-70b"</span>,
+  <span class="str">"messages"</span>: [{<span class="str">"role"</span>:<span class="str">"user"</span>, <span class="str">"content"</span>:<span class="str">"介绍一下 MLA"</span>}],
+  <span class="str">"stream"</span>: <span class="kw">true</span>
+}</pre>
+
+<p>Router 侧按下面 8 步处理：</p>
+</div>
+
+<!-- Interactive demo: step-by-step router flow -->
+<div class="demo">
+<div class="demo-title">🧭 Router 处理单个请求的 8 步</div>
+<div class="demo-sub">按 ▶ 看一个请求如何被 Router 选 P/D、注入 room、双发出去</div>
+
+<div class="demo-controls">
+  <button class="demo-btn primary" id="rt-play">▶ 播放</button>
+  <button class="demo-btn" id="rt-next">下一步</button>
+  <button class="demo-btn" id="rt-reset">↻ 重置</button>
+  <span class="demo-step" id="rt-step">step 0 / 8</span>
+</div>
+
+<div style="background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px">
+  <svg viewBox="0 0 960 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+    <defs><marker id="rtar" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#fbbf24"/></marker></defs>
+
+    <!-- Client -->
+    <rect id="n-client" class="flow-node" x="20" y="140" width="110" height="60" rx="8"/>
+    <text class="flow-label" x="75" y="170" text-anchor="middle">Client</text>
+    <text class="flow-label sub" x="75" y="186" text-anchor="middle">POST /v1/chat</text>
+
+    <!-- Router box (big) -->
+    <rect x="170" y="50" width="440" height="240" rx="12" fill="#0f1218" stroke="#262b38" stroke-width="1.5"/>
+    <text class="flow-label sub" x="390" y="70" text-anchor="middle">PDRouter (Rust)</text>
+
+    <rect id="n-parse"    class="flow-node" x="190" y="90"  width="130" height="50" rx="7"/>
+    <text class="flow-label" x="255" y="111" text-anchor="middle">parse body</text>
+    <text class="flow-label sub" x="255" y="126" text-anchor="middle">serde_json</text>
+
+    <rect id="n-select"   class="flow-node" x="340" y="90"  width="130" height="50" rx="7"/>
+    <text class="flow-label" x="405" y="111" text-anchor="middle">select_pd_pair</text>
+    <text class="flow-label sub" x="405" y="126" text-anchor="middle">policy × 2</text>
+
+    <rect id="n-inject"   class="flow-node" x="490" y="90"  width="110" height="50" rx="7"/>
+    <text class="flow-label" x="545" y="111" text-anchor="middle">inject room</text>
+    <text class="flow-label sub" x="545" y="126" text-anchor="middle">gen u64 id</text>
+
+    <rect id="n-pbuild"   class="flow-node" x="190" y="165" width="180" height="50" rx="7"/>
+    <text class="flow-label" x="280" y="186" text-anchor="middle">build P request</text>
+    <text class="flow-label sub" x="280" y="201" text-anchor="middle">Client::post(P.url)</text>
+
+    <rect id="n-dbuild"   class="flow-node" x="400" y="165" width="180" height="50" rx="7"/>
+    <text class="flow-label" x="490" y="186" text-anchor="middle">build D request</text>
+    <text class="flow-label sub" x="490" y="201" text-anchor="middle">Client::post(D.url)</text>
+
+    <rect id="n-join"     class="flow-node" x="240" y="235" width="280" height="45" rx="7"/>
+    <text class="flow-label" x="380" y="256" text-anchor="middle">tokio::join!(p.send(), d.send())</text>
+    <text class="flow-label sub" x="380" y="270" text-anchor="middle">并发双发</text>
+
+    <!-- P and D -->
+    <rect id="n-p" class="flow-node" x="650" y="60"  width="130" height="100" rx="9"/>
+    <text class="flow-label" x="715" y="95" text-anchor="middle">Prefill worker</text>
+    <text class="flow-label sub" x="715" y="112" text-anchor="middle">http://p1:30001</text>
+    <text class="flow-label sub" x="715" y="128" text-anchor="middle">bootstrap :9001</text>
+
+    <rect id="n-d" class="flow-node" x="650" y="180" width="130" height="100" rx="9"/>
+    <text class="flow-label" x="715" y="215" text-anchor="middle">Decode worker</text>
+    <text class="flow-label sub" x="715" y="232" text-anchor="middle">http://d1:30003</text>
+
+    <!-- Return stream -->
+    <rect id="n-stream" class="flow-node" x="820" y="140" width="120" height="60" rx="8"/>
+    <text class="flow-label" x="880" y="170" text-anchor="middle">SSE stream</text>
+    <text class="flow-label sub" x="880" y="186" text-anchor="middle">back to client</text>
+
+    <!-- Edges -->
+    <path id="e1" class="flow-edge" d="M130,170 L190,115" marker-end="url(#rtar)"/>
+    <path id="e2" class="flow-edge" d="M320,115 L340,115" marker-end="url(#rtar)"/>
+    <path id="e3" class="flow-edge" d="M470,115 L490,115" marker-end="url(#rtar)"/>
+    <path id="e4a" class="flow-edge" d="M545,140 L280,165" marker-end="url(#rtar)"/>
+    <path id="e4b" class="flow-edge" d="M545,140 L490,165" marker-end="url(#rtar)"/>
+    <path id="e5a" class="flow-edge" d="M280,215 L360,235" marker-end="url(#rtar)"/>
+    <path id="e5b" class="flow-edge" d="M490,215 L400,235" marker-end="url(#rtar)"/>
+    <path id="e6a" class="flow-edge" d="M520,250 L650,110" marker-end="url(#rtar)"/>
+    <path id="e6b" class="flow-edge" d="M520,260 L650,230" marker-end="url(#rtar)"/>
+    <path id="e7" class="flow-edge" d="M780,230 L820,180" marker-end="url(#rtar)"/>
+    <path id="e8" class="flow-edge" d="M820,180 L130,180" marker-end="url(#rtar)" stroke-dasharray="4 3"/>
+  </svg>
+
+  <div style="margin-top:14px;font-family:'SF Mono',monospace;font-size:11.5px;background:#0f1218;border:1px solid var(--line);border-radius:8px;padding:10px">
+    <div style="color:var(--mute);margin-bottom:6px">JSON payload (Router 侧视角)</div>
+    <div id="rt-json" style="white-space:pre-wrap;color:#cbd5e1">{
+  "model": "llama-3-70b",
+  "messages": [...],
+  "stream": true
+}</div>
+  </div>
+
+  <div class="kpi" id="rt-kpi" style="margin-top:10px">
+    <span>已选 P: <b id="rt-p">-</b></span>
+    <span>已选 D: <b id="rt-d">-</b></span>
+    <span>room_id: <b id="rt-room">-</b></span>
+  </div>
+</div>
+
+<div class="demo-narration" id="rt-narration">点 ▶ 看一个请求是怎么被 Router 选 P/D、注入 bootstrap、然后双发的。注意 P/D 是<u>独立 pool 各选一次</u>，不是绑定对。</div>
+</div>
+
+<script>
+(function(){
+  const TOTAL = 8;
+  const P_WORKERS = [
+    {url:'http://p1:30001', bp:9001, load:420},
+    {url:'http://p2:30002', bp:9002, load:380},
+  ];
+  const D_WORKERS = [
+    {url:'http://d1:30003', load:1200},
+    {url:'http://d2:30004', load:1100},
+  ];
+
+  // 每步：高亮的 node 列表 / edge 列表 / narration / json / kpi
+  let selP = null, selD = null, roomId = null;
+
+  function pickP(){
+    // cache_aware 简化：挑 load 最小
+    return P_WORKERS.reduce((a,b)=>a.load<=b.load?a:b);
+  }
+  function pickD(){
+    // power_of_two 简化：随机两个中 load 小的（固定选 D2 演示）
+    const cand = [...D_WORKERS].sort(()=>Math.random()-0.5).slice(0,2);
+    return cand.reduce((a,b)=>a.load<=b.load?a:b);
+  }
+  function genRoom(){
+    // 64-bit random masked to i64::MAX, 简化为 16 位 hex
+    return '0x' + Math.floor(Math.random()*0xffffffff).toString(16).padStart(8,'0')
+                + Math.floor(Math.random()*0xffffffff).toString(16).padStart(8,'0');
+  }
+
+  const steps = [
+    null,
+    {
+      nodes:['n-client','n-parse'], edges:['e1'],
+      narr:'① <strong>请求到达</strong>：Router 是 <code>axum</code> HTTP server，匹配 <code>/v1/chat/completions</code> 路由，进到 <code>PDRouter::route_chat</code>。先用 <code>serde_json</code> 反序列化 body 成 <code>Value</code>，方便后面改字段。',
+      action:()=>{}
+    },
+    {
+      nodes:['n-select'], edges:['e2'],
+      narr:'② <strong>select_pd_pair</strong>：<u>分别</u>调 <code>prefill_policy.select_worker</code> 和 <code>decode_policy.select_worker</code>。这里 P 用 cache_aware（prefix tree 命中 + load 均衡），D 用 power_of_two（随机 2 个取 load 小的）。',
+      action:()=>{
+        selP = pickP(); selD = pickD();
+        document.getElementById('rt-p').textContent = selP.url;
+        document.getElementById('rt-d').textContent = selD.url;
+      }
+    },
+    {
+      nodes:['n-inject'], edges:['e3'],
+      narr:'③ <strong>inject_bootstrap_into_value</strong>：调 <code>generate_room_id()</code> 生成 64-bit 随机数（mask 到 i64 范围，和 Python 侧对齐）；然后把 <code>bootstrap_host = P.url.host</code>、<code>bootstrap_port = P.bp</code>、<code>bootstrap_room = room_id</code> 写进 JSON。',
+      action:()=>{
+        roomId = genRoom();
+        document.getElementById('rt-room').textContent = roomId;
+        const pHost = selP.url.replace('http://','').split(':')[0];
+        document.getElementById('rt-json').textContent =
+`{
+  "model": "llama-3-70b",
+  "messages": [...],
+  "stream": true,
+  "bootstrap_host": "${pHost}",
+  "bootstrap_port": ${selP.bp},
+  "bootstrap_room": ${roomId}
+}`;
+      }
+    },
+    {
+      nodes:['n-pbuild'], edges:['e4a'],
+      narr:'④ <strong>build P request</strong>：克隆刚才的 JSON，用 <code>client.post(P.url + "/generate")</code> 组装出一个带完整 header 的 reqwest Request。',
+      action:()=>{}
+    },
+    {
+      nodes:['n-dbuild'], edges:['e4b'],
+      narr:'⑤ <strong>build D request</strong>：<u>同一份 JSON</u>（同 bootstrap_room），换 URL 发给 D。这就是为什么 P/D 能通过 room 认亲：Router 写入一次，两端读取。',
+      action:()=>{}
+    },
+    {
+      nodes:['n-join','n-p','n-d'], edges:['e5a','e5b','e6a','e6b'],
+      narr:'⑥ <strong>tokio::join!</strong>：<code>let (pr, dr) = tokio::join!(p.send(), d.send())</code>。两个 send 在同一个 tokio 运行时并发。不是先 P 后 D，而是几乎同时打到后端。',
+      action:()=>{}
+    },
+    {
+      nodes:['n-stream'], edges:['e7'],
+      narr:'⑦ <strong>返回流</strong>：Router 关心的是 D 的响应（D 才 stream token）。拿到 decode_response 的 <code>bytes_stream()</code>，开始把每一块 SSE 直接转发回 client。P 的响应只用来取 input_token_logprobs（可选）。',
+      action:()=>{}
+    },
+    {
+      nodes:['n-client'], edges:['e8'],
+      narr:'⑧ <strong>Client 收到首 token</strong>：第一个 SSE chunk 到达 client，TTFT 结束。从 Router 视角，这次请求的工作完成；但实际上 P 和 D 还在后台通过 Mooncake 搬 KV、D 还在 running_batch 继续 decode。',
+      action:()=>{}
+    }
+  ];
+
+  let cur = 0, timer = null;
+
+  function clearAll(){
+    document.querySelectorAll('[id^="n-"]').forEach(el=>el.classList.remove('active','active-warn','active-blue'));
+    document.querySelectorAll('[id^="e"]').forEach(el=>el.classList.remove('active'));
+  }
+  function render(step){
+    clearAll();
+    document.getElementById('rt-step').textContent = `step ${step} / ${TOTAL}`;
+    if(step===0){
+      document.getElementById('rt-narration').innerHTML = '点 ▶ 看一个请求是怎么被 Router 选 P/D、注入 bootstrap、然后双发的。';
+      document.getElementById('rt-p').textContent = '-';
+      document.getElementById('rt-d').textContent = '-';
+      document.getElementById('rt-room').textContent = '-';
+      document.getElementById('rt-json').textContent = '{\n  "model": "llama-3-70b",\n  "messages": [...],\n  "stream": true\n}';
+      return;
+    }
+    const s = steps[step];
+    s.action && s.action();
+    s.nodes.forEach(id=>{
+      const cls = id.includes('-p')?'active':(id.includes('-d')?'active-blue':'active-warn');
+      const el = document.getElementById(id);
+      if(el) el.classList.add(cls);
+    });
+    s.edges.forEach(id=>{ const el=document.getElementById(id); if(el) el.classList.add('active'); });
+    document.getElementById('rt-narration').innerHTML = s.narr;
+  }
+  render(0);
+  document.getElementById('rt-play').addEventListener('click',()=>{
+    if(timer) return;
+    timer = setInterval(()=>{ cur++; render(cur); if(cur>=TOTAL){clearInterval(timer); timer=null;} },1400);
+  });
+  document.getElementById('rt-next').addEventListener('click',()=>{ if(cur<TOTAL){cur++; render(cur);}});
+  document.getElementById('rt-reset').addEventListener('click',()=>{ clearInterval(timer); timer=null; cur=0; render(0); });
+})();
+</script>
+
+<!-- ================ PART 5: select_pd_pair 深读 ================ -->
+<h2 id="select"><span class="step">PART 5</span>select_pd_pair 深读 + 两种策略</h2>
+<div class="card">
+<pre><span class="path">// pd_router.rs:702-781</span>
+<span class="kw">async fn</span> <span class="fn">select_pd_pair</span>(&amp;self, request_text, model_id, headers)
+    -> Result&lt;(Arc&lt;dyn Worker&gt;, Arc&lt;dyn Worker&gt;), String&gt;
+{
+    <span class="kw">let</span> prefill_workers = self.worker_registry.get_prefill_workers();
+    <span class="kw">let</span> decode_workers  = self.worker_registry.get_decode_workers();
+    <span class="kw">let</span> prefill_policy  = self.policy_registry.get_prefill_policy();
+    <span class="kw">let</span> decode_policy   = self.policy_registry.get_decode_policy();
+
+    <span class="kw">let</span> hash_ring = self.worker_registry.get_hash_ring(model_id_or_default);
+
+    <span class="com">// 关键：两次独立的策略调用</span>
+    <span class="kw">let</span> prefill = <span class="fn">pick_worker_by_policy_arc</span>(&amp;prefill_workers, &amp;*prefill_policy,
+        request_text, headers, hash_ring.clone(), <span class="str">"prefill"</span>).await?;
+    <span class="kw">let</span> decode  = <span class="fn">pick_worker_by_policy_arc</span>(&amp;decode_workers,  &amp;*decode_policy,
+        request_text, headers, hash_ring,         <span class="str">"decode"</span>).await?;
+    Ok((prefill, decode))
+}</pre>
+
+<div class="callout">
+<strong>关键认知</strong>：P 和 D 是<u>两次完全独立</u>的 policy 调用。"哪台 P 拿到请求"和"哪台 D 拿到请求"没有绑定关系，它们在后端通过 <code>bootstrap_room</code> 认亲，不是在 Router 里配对。
+</div>
+</div>
+
+<!-- Interactive: policy comparison -->
+<div class="demo">
+<div class="demo-title">🎯 cache_aware vs power_of_two：点击请求看路由决策</div>
+<div class="demo-sub">同一批请求，两种策略产生完全不同的分配。点每个请求看它为什么被分到这个 worker</div>
+
+<div class="demo-controls">
+  <button class="demo-btn primary" id="pol-gen">生成 5 个请求</button>
+  <button class="demo-btn" id="pol-reset">↻ 清空</button>
+</div>
+
+<div class="grid cols-2" style="margin-top:10px">
+  <div>
+    <div style="font-size:12.5px;color:var(--brand);font-weight:600;margin-bottom:6px">Prefill 池 · cache_aware</div>
+    <div id="pol-p-pool" style="display:flex;gap:10px">
+      <div class="queue-box" style="flex:1">
+        <div class="queue-title">P1 <span class="cnt" id="p1-cnt">0</span></div>
+        <div id="p1-reqs"></div>
+        <div class="path" id="p1-tree">prefix tree: ∅</div>
+      </div>
+      <div class="queue-box" style="flex:1">
+        <div class="queue-title">P2 <span class="cnt" id="p2-cnt">0</span></div>
+        <div id="p2-reqs"></div>
+        <div class="path" id="p2-tree">prefix tree: ∅</div>
+      </div>
+    </div>
+  </div>
+  <div>
+    <div style="font-size:12.5px;color:var(--brand2);font-weight:600;margin-bottom:6px">Decode 池 · power_of_two</div>
+    <div id="pol-d-pool" style="display:flex;gap:10px">
+      <div class="queue-box" style="flex:1">
+        <div class="queue-title">D1 <span class="cnt" id="d1-cnt">0</span></div>
+        <div id="d1-reqs"></div>
+        <div class="path" id="d1-load">load tokens: 1200</div>
+      </div>
+      <div class="queue-box" style="flex:1">
+        <div class="queue-title">D2 <span class="cnt" id="d2-cnt">0</span></div>
+        <div id="d2-reqs"></div>
+        <div class="path" id="d2-load">load tokens: 1100</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="click-hint">👆 点任何一个请求看它为什么被分到那个 worker</div>
+<div class="demo-narration" id="pol-narr">生成 5 个带不同 prefix 的请求，看 P 侧 prefix tree 如何让相似前缀聚集到同一台 P，D 侧 power_of_two 如何跟 load 走。</div>
+</div>
+
+<script>
+(function(){
+  const PREFIXES = [
+    {name:'sysA', text:'You are a helpful assistant. Question: '},
+    {name:'sysB', text:'You are a coding expert. Task: '},
+  ];
+  const P_LOAD = {p1:420, p2:380};
+  const D_LOAD = {d1:1200, d2:1100};
+  const P_TREE = {p1:new Set(), p2:new Set()};  // 简化：记录某 prefix_name 上次去了哪
+
+  let reqs = [];
+  let reqId = 0;
+
+  function pickP(prefixName){
+    // cache-aware 简化: 先查 tree 命中；否则选 load 小的
+    for(const w of ['p1','p2']){
+      if(P_TREE[w].has(prefixName)) return {w, reason:`prefix "${prefixName}" 命中 ${w.toUpperCase()} 的 prefix tree → 直接路由到 ${w.toUpperCase()}`};
+    }
+    const w = P_LOAD.p1 <= P_LOAD.p2 ? 'p1' : 'p2';
+    return {w, reason:`prefix "${prefixName}" 首次出现，走 load 最小路径。P1 load=${P_LOAD.p1}, P2 load=${P_LOAD.p2} → 选 ${w.toUpperCase()}`};
+  }
+  function pickD(){
+    // power-of-two: 抽 2 个（这里只有 2 个，全抽）取 load 小的
+    const w = D_LOAD.d1 <= D_LOAD.d2 ? 'd1' : 'd2';
+    return {w, reason:`power_of_two 随机抽到 (D1,D2)，取 load 小的。D1 load=${D_LOAD.d1}, D2 load=${D_LOAD.d2} → 选 ${w.toUpperCase()}`};
+  }
+
+  function render(){
+    ['p1','p2','d1','d2'].forEach(w=>{
+      document.getElementById(w+'-reqs').innerHTML = '';
+      document.getElementById(w+'-cnt').textContent = '0';
+    });
+    let cnt = {p1:0,p2:0,d1:0,d2:0};
+    reqs.forEach(r=>{
+      const pchip = document.createElement('span');
+      pchip.className='req-chip waiting';
+      pchip.textContent = `#${r.id} ${r.prefix}`;
+      pchip.title = r.pReason;
+      pchip.onclick = ()=>{
+        document.getElementById('pol-narr').innerHTML =
+          `<strong>请求 #${r.id}</strong>：prefix = "${r.prefix}"<br>` +
+          `<span style="color:var(--brand)">P → ${r.pw.toUpperCase()}</span>：${r.pReason}<br>` +
+          `<span style="color:var(--brand2)">D → ${r.dw.toUpperCase()}</span>：${r.dReason}`;
+      };
+      document.getElementById(r.pw+'-reqs').appendChild(pchip);
+      cnt[r.pw]++;
+
+      const dchip = document.createElement('span');
+      dchip.className='req-chip transferring';
+      dchip.textContent = `#${r.id}`;
+      dchip.title = r.dReason;
+      dchip.onclick = pchip.onclick;
+      document.getElementById(r.dw+'-reqs').appendChild(dchip);
+      cnt[r.dw]++;
+    });
+    Object.keys(cnt).forEach(w=>document.getElementById(w+'-cnt').textContent=cnt[w]);
+    document.getElementById('p1-tree').textContent = 'prefix tree: {' + [...P_TREE.p1].join(', ') + '}';
+    document.getElementById('p2-tree').textContent = 'prefix tree: {' + [...P_TREE.p2].join(', ') + '}';
+    document.getElementById('d1-load').textContent = 'load tokens: ' + D_LOAD.d1;
+    document.getElementById('d2-load').textContent = 'load tokens: ' + D_LOAD.d2;
+  }
+
+  document.getElementById('pol-gen').addEventListener('click',()=>{
+    for(let i=0;i<5;i++){
+      const prefix = PREFIXES[Math.floor(Math.random()*PREFIXES.length)];
+      const p = pickP(prefix.name);
+      const d = pickD();
+      P_TREE[p.w].add(prefix.name);   // 插入 tree
+      P_LOAD[p.w] += 50;               // 假设每个请求给 P 贡献 50 load
+      D_LOAD[d.w] += 100;              // 给 D 贡献 100
+      reqs.push({id:++reqId, prefix:prefix.name, pw:p.w, dw:d.w, pReason:p.reason, dReason:d.reason});
+    }
+    render();
+    document.getElementById('pol-narr').innerHTML = '观察：相同 prefix 的请求倾向去同一台 P（prefix cache 命中）；D 则跟着 load 走。点任何请求看详细分配原因。';
+  });
+  document.getElementById('pol-reset').addEventListener('click',()=>{
+    reqs = []; reqId = 0;
+    P_TREE.p1.clear(); P_TREE.p2.clear();
+    P_LOAD.p1 = 420; P_LOAD.p2 = 380;
+    D_LOAD.d1 = 1200; D_LOAD.d2 = 1100;
+    render();
+  });
+  render();
+})();
+</script>
+
+<!-- ================ PART 5.5: how cache_aware actually senses ================ -->
+<h2 id="howcache"><span class="step">PART 5.5</span>cache_aware 到底是怎么感知的？——不是查 P 的 KV pool</h2>
+<div class="card">
+<p>经常被误解的一点：cache_aware <strong>不会</strong>去查每个 P 节点的真实 KV cache 状态。Router 和 P 之间<strong>没有任何</strong>"当前 prefix cache 占用"的 RPC 或 metric 上报。那它怎么"知道"哪台 P 有哪段前缀的 cache？</p>
+
+<div class="callout bad">
+<strong>不是这么做的</strong>：<br>
+❌ 遍历每个 P 节点查 prefix cache（没这个 API）<br>
+❌ 从 P 上报 cache 状态（没这个 channel）<br>
+❌ 让 P 做字符串匹配告诉 Router（P 根本不知道 Router 要送谁来）
+</div>
+
+<div class="callout">
+<strong>实际的做法（<span class="path">sgl-model-gateway/src/policies/tree.rs</span>）</strong>：<br>
+Router 在自己进程内维护一棵<strong>近似 radix tree (approximate prefix tree)</strong>，只记录"上次 prefix X 送到了哪台 worker"。不跟 P 做任何通信。根据 <strong>"同一个 prefix 我上次发给了 P1，所以 P1 应该还留着它的 KV cache"</strong> 这个猜测做路由。
+</div>
+</div>
+
+<h3 id="howcache-math"><span style="color:var(--brand2)">▸ 一次 select_worker 到底做了多少工作</h3>
+<div class="card">
+<table>
+<tr><th>步骤</th><th>操作</th><th>复杂度</th></tr>
+<tr><td>1</td><td>求所有 worker 的 min_load / max_load（单次 fold 遍历）</td><td>O(N_workers)，N 通常 &lt; 50</td></tr>
+<tr><td>2</td><td>判断 imbalanced：<code>max - min &gt; abs && max &gt; min * rel</code></td><td>O(1)</td></tr>
+<tr><td>3</td><td><strong>关键</strong>：沿着 root 按 char 向下走 radix tree，每步查一次 DashMap 的 shard</td><td><b>O(prefix 长度)</b>，和 worker 数无关</td></tr>
+<tr><td>4</td><td>拿到命中节点的 tenant（上次去的 worker URL）</td><td>O(1)（leaf 有 last_tenant 缓存）</td></tr>
+<tr><td>5</td><td>在 worker 数组里找 URL 对应的 index</td><td>O(N_workers)</td></tr>
+<tr><td>6</td><td>把本次 text 也插进 tree（异步副作用）</td><td>O(prefix 长度)</td></tr>
+</table>
+
+<p>一次路由的成本大约是 <span class="hl">"几次 DashMap 查询 + 一点字符串比较"</span>，在现代 CPU 上是 <strong>微秒级</strong>。基准测试（<span class="path">benches/tree_benchmark.rs</span>）在 100k 节点的 tree 上，prefix_match 单次 &lt; 10µs。</p>
+</div>
+
+<h3 id="howcache-tree"><span style="color:var(--brand2)">▸ "近似"前缀树长什么样</h3>
+<div class="card">
+<p>假设有 2 台 P（P1、P2）和一段请求历史：</p>
+<pre><span class="com">请求 1：</span>"You are a helpful assistant. Q: What is MLA?"   → 发给 P1
+<span class="com">请求 2：</span>"You are a helpful assistant. Q: Explain GQA"   → 上次 "You are a..." 命中 → 发给 P1
+<span class="com">请求 3：</span>"You are a coding expert. Task: fix this bug"   → "You are a " 部分命中，后面分叉 → 落到 "coding" 子树（之前没去过）→ load 最小策略 → P2
+<span class="com">请求 4：</span>"Translate to French: Hello"                     → 没命中 → load 最小 → P1（假设）</pre>
+
+<p>Router 内的 tree 大致长成：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 320" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="tar" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#fbbf24"/></marker></defs>
+
+<!-- Root -->
+<rect x="380" y="20" width="140" height="36" rx="6" fill="#11141b" stroke="#6ee7b7" stroke-width="2"/>
+<text x="450" y="44" text-anchor="middle" font-family="SF Mono,monospace" font-size="12" fill="#6ee7b7">root (tenant:ALL)</text>
+
+<!-- Level 1 splits -->
+<rect x="120" y="90" width="220" height="46" rx="6" fill="#11141b" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="230" y="108" text-anchor="middle" font-family="SF Mono,monospace" font-size="11.5" fill="#e6e8ee">"You are a "</text>
+<text x="230" y="126" text-anchor="middle" font-family="SF Mono,monospace" font-size="10.5" fill="#8b93a7">last_tenant: P1</text>
+
+<rect x="380" y="90" width="220" height="46" rx="6" fill="#11141b" stroke="#fbbf24" stroke-width="1.5"/>
+<text x="490" y="108" text-anchor="middle" font-family="SF Mono,monospace" font-size="11.5" fill="#e6e8ee">"Translate to French: "</text>
+<text x="490" y="126" text-anchor="middle" font-family="SF Mono,monospace" font-size="10.5" fill="#8b93a7">last_tenant: P1</text>
+
+<!-- Level 2 under "You are a " -->
+<rect x="30" y="180" width="170" height="46" rx="6" fill="#11141b" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="115" y="198" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" fill="#e6e8ee">"helpful assistant. "</text>
+<text x="115" y="216" text-anchor="middle" font-family="SF Mono,monospace" font-size="10.5" fill="#8b93a7">last_tenant: P1</text>
+
+<rect x="220" y="180" width="170" height="46" rx="6" fill="#11141b" stroke="#a78bfa" stroke-width="1.5"/>
+<text x="305" y="198" text-anchor="middle" font-family="SF Mono,monospace" font-size="11" fill="#e6e8ee">"coding expert. "</text>
+<text x="305" y="216" text-anchor="middle" font-family="SF Mono,monospace" font-size="10.5" fill="#8b93a7">last_tenant: P2</text>
+
+<!-- Level 3 under "helpful assistant. " -->
+<rect x="10" y="260" width="100" height="42" rx="6" fill="#11141b" stroke="#7dd3fc" stroke-width="1"/>
+<text x="60" y="278" text-anchor="middle" font-family="SF Mono,monospace" font-size="10.5" fill="#e6e8ee">"Q: What..."</text>
+<text x="60" y="293" text-anchor="middle" font-family="SF Mono,monospace" font-size="10" fill="#8b93a7">P1</text>
+
+<rect x="120" y="260" width="100" height="42" rx="6" fill="#11141b" stroke="#7dd3fc" stroke-width="1"/>
+<text x="170" y="278" text-anchor="middle" font-family="SF Mono,monospace" font-size="10.5" fill="#e6e8ee">"Q: Explain..."</text>
+<text x="170" y="293" text-anchor="middle" font-family="SF Mono,monospace" font-size="10" fill="#8b93a7">P1</text>
+
+<!-- Edges -->
+<line x1="430" y1="56" x2="240" y2="90" stroke="#3a4050" marker-end="url(#tar)"/>
+<line x1="470" y1="56" x2="480" y2="90" stroke="#3a4050" marker-end="url(#tar)"/>
+<line x1="205" y1="136" x2="130" y2="180" stroke="#3a4050" marker-end="url(#tar)"/>
+<line x1="260" y1="136" x2="295" y2="180" stroke="#3a4050" marker-end="url(#tar)"/>
+<line x1="95" y1="226" x2="60" y2="260" stroke="#3a4050" marker-end="url(#tar)"/>
+<line x1="135" y1="226" x2="170" y2="260" stroke="#3a4050" marker-end="url(#tar)"/>
+
+<text x="460" y="165" font-size="10" fill="#6ee7b7" font-family="SF Mono,monospace">（注意：不记 token，记原始字符）</text>
+</svg>
+</div>
+
+<p><strong>关键性质</strong>：</p>
+<ul class="tight">
+<li><strong>按字符存</strong>，不是按 token。这样 Router 不需要做 tokenization（否则要跑 tokenizer，每次 10-50ms）</li>
+<li>每个节点存的是<strong>该节点的子串</strong>（radix tree 压缩特性），不是单个字符</li>
+<li>每个节点记录 <code>last_tenant</code>：上次这条 prefix 命中时被发给了哪个 worker URL</li>
+<li>这棵树是 Router 进程内存里的一份本地 cache，<strong>和 P 上的真实 KV cache 无关</strong></li>
+</ul>
+</div>
+
+<h3 id="howcache-src"><span style="color:var(--brand2)">▸ 源码直击：select_worker + 树查询</h3>
+<div class="card">
+<pre><span class="path">// sgl-model-gateway/src/policies/cache_aware.rs:351-477（精简）</span>
+<span class="kw">async fn</span> <span class="fn">select_worker</span>(&amp;self, workers, info) -&gt; Option&lt;usize&gt; {
+    <span class="com">// ① O(N) 扫一遍 worker 拿 load 极值</span>
+    <span class="kw">let</span> (min_load, max_load) = workers.iter().fold(..., |(min, max), w| {
+        <span class="kw">let</span> load = w.<span class="fn">load</span>();
+        (min.min(load), max.max(load))
+    });
+
+    <span class="com">// ② 判断是否 imbalanced（两个阈值同时满足）</span>
+    <span class="kw">let</span> is_imbalanced = max_load.<span class="fn">saturating_sub</span>(min_load) &gt; self.config.balance_abs_threshold
+        &amp;&amp; (max_load <span class="kw">as</span> f32) &gt; (min_load <span class="kw">as</span> f32 * self.config.balance_rel_threshold);
+
+    <span class="kw">if</span> is_imbalanced {
+        <span class="com">// 紧急：放弃 cache 亲和，直接选 load 最小</span>
+        <span class="kw">return</span> self.<span class="fn">select_worker_min_load</span>(...);
+    }
+
+    <span class="com">// ③ 关键：查 tree，O(prefix 长度)，不涉及任何 worker RPC</span>
+    <span class="kw">let</span> tree = self.trees.<span class="fn">get</span>(model_id)?;
+    <span class="kw">let</span> result = tree.<span class="fn">prefix_match_with_counts</span>(text);
+    <span class="kw">let</span> match_rate = result.matched_char_count <span class="kw">as</span> f32 / result.input_char_count <span class="kw">as</span> f32;
+
+    <span class="com">// ④ 命中 vs 不命中两条路径</span>
+    <span class="kw">let</span> selected_idx = <span class="kw">if</span> match_rate &gt; self.config.cache_threshold {
+        <span class="com">// cache hit：跟着 tree 记录的 tenant 走</span>
+        <span class="kw">let</span> tenant_url: &amp;str = &amp;result.tenant;
+        workers.iter().<span class="fn">position</span>(|w| w.url() == tenant_url)
+    } <span class="kw">else</span> {
+        <span class="com">// cache miss：选 load 最小的（给新 prefix 一个新家）</span>
+        healthy_indices.iter().<span class="fn">min_by_key</span>(|&amp;&amp;idx| workers[idx].<span class="fn">load</span>()).<span class="fn">copied</span>()
+    };
+
+    <span class="com">// ⑤ 把这次请求也插进 tree，记录 tenant = 被选中的 worker</span>
+    <span class="kw">if let</span> Some(idx) = selected_idx {
+        tree.<span class="fn">insert</span>(text, workers[idx].<span class="fn">url</span>());
+        <span class="kw">return</span> Some(idx);
+    }
+}</pre>
+
+<pre><span class="path">// tree.rs:531-623 · 树查询本体（最核心那部分）</span>
+<span class="kw">pub fn</span> <span class="fn">prefix_match_with_counts</span>(&amp;self, text: &amp;str) -&gt; PrefixMatchResult {
+    <span class="kw">let mut</span> remaining = text;
+    <span class="kw">let mut</span> matched_chars = 0;
+    <span class="kw">let mut</span> prev = Arc::clone(&amp;self.root);
+
+    <span class="kw">while</span> !remaining.is_empty() {
+        <span class="kw">let</span> first_char = remaining.chars().next().unwrap();
+        <span class="com">// DashMap 按首字符分 shard → 只锁一个 shard，不锁整表</span>
+        <span class="kw">let</span> child = prev.children.<span class="fn">get</span>(&amp;first_char).<span class="fn">map</span>(|e| e.value().clone());
+
+        <span class="kw">match</span> child {
+            Some(node) =&gt; {
+                <span class="kw">let</span> node_text = node.text.<span class="fn">read</span>().unwrap();
+                <span class="kw">let</span> shared = <span class="fn">shared_prefix_count</span>(remaining, node_text.as_str());
+                <span class="kw">if</span> shared == node_text.char_count() {
+                    <span class="com">// 整个节点匹配，继续下钻</span>
+                    matched_chars += shared;
+                    remaining = <span class="fn">advance_by_chars</span>(remaining, shared);
+                    prev = node;
+                } <span class="kw">else</span> { matched_chars += shared; prev = node; <span class="kw">break</span>; }
+            }
+            <span class="kw">None</span> =&gt; <span class="kw">break</span>,   <span class="com">// 到底了</span>
+        }
+    }
+    <span class="com">// 从这个节点的 last_tenant 读出"上次谁接手的"</span>
+    <span class="kw">let</span> tenant = *prev.last_tenant.read();
+    PrefixMatchResult { tenant, matched_char_count: matched_chars, input_char_count: ... }
+}</pre>
+
+<div class="callout warn">
+<strong>并发优化</strong>：DashMap 按 shard 分段加锁（ROOT_SHARD_COUNT 个 shard，每个独立 RwLock），所以多个请求同时查 tree 不会互相阻塞。每个节点还有 <code>last_tenant</code> 的 RwLock 作为 O(1) fast path 避免遍历 tenant_last_access_time。
+</div>
+</div>
+
+<!-- Interactive tree explorer -->
+<div class="demo">
+<div class="demo-title">🌲 亲手操作 Router 的 prefix tree</div>
+<div class="demo-sub">模拟 2 台 P。每发一个请求，看 tree 怎么增长、怎么影响下次路由决策。整个过程 Router 不和 P 通信。</div>
+
+<div class="demo-controls">
+  <input type="text" id="tr-input" placeholder="输入一个 prompt（比如 'You are a helpful ...'）"
+         style="flex:1;min-width:260px;background:#0f1218;border:1px solid var(--line);color:var(--ink);padding:8px 12px;border-radius:6px;font-family:inherit;font-size:13px">
+  <button class="demo-btn primary" id="tr-send">发送 →</button>
+  <button class="demo-btn" id="tr-preset1">装填 5 个 chatbot prompt</button>
+  <button class="demo-btn" id="tr-preset2">装填 5 个 coding prompt</button>
+  <button class="demo-btn" id="tr-reset">↻ 清空</button>
+</div>
+
+<div style="background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px">
+  <div class="grid cols-2" style="gap:14px">
+    <div>
+      <div style="font-size:12.5px;color:var(--mute);margin-bottom:6px">Router 进程内的 radix tree</div>
+      <div id="tr-tree" style="background:#0f1218;border:1px solid var(--line);border-radius:8px;padding:10px;min-height:220px;font-family:'SF Mono',monospace;font-size:12px;overflow:auto">
+<span style="color:var(--mute)">（空 tree，点按钮装填或手动输入）</span>
+      </div>
+    </div>
+    <div>
+      <div style="font-size:12.5px;color:var(--mute);margin-bottom:6px">路由决策日志</div>
+      <div id="tr-log" style="background:#0f1218;border:1px solid var(--line);border-radius:8px;padding:10px;min-height:220px;max-height:260px;overflow:auto"></div>
+    </div>
+  </div>
+
+  <div class="kpi" style="margin-top:12px">
+    <span>P1 load: <b id="tr-p1-load">0</b></span>
+    <span>P1 命中数: <b id="tr-p1-hit">0</b></span>
+    <span>P2 load: <b id="tr-p2-load">0</b></span>
+    <span>P2 命中数: <b id="tr-p2-hit">0</b></span>
+    <span>cache 命中率: <b id="tr-hitrate">-</b></span>
+  </div>
+</div>
+<div class="demo-narration" id="tr-narr">输入任何 prompt 看路由决策。相同前缀会粘到同一台 P，不同前缀分叉到另一台。Router 全程不查 P 的 KV pool。</div>
+</div>
+
+<script>
+(function(){
+  // 极简 radix tree 实现
+  class Node {
+    constructor(text=''){ this.text=text; this.children={}; this.tenant=null; }
+  }
+  const root = new Node('');
+  const LOAD = {P1:0, P2:0};
+  const HIT = {P1:0, P2:0};
+  let totalReq = 0, cacheHits = 0;
+  const CACHE_THRESHOLD = 0.3;
+  const BAL_ABS = 5, BAL_REL = 1.5;
+
+  function sharedPrefix(a, b){
+    let i=0; while(i<a.length && i<b.length && a[i]===b[i]) i++; return i;
+  }
+
+  function prefixMatch(text){
+    let remaining = text, matched = 0, cur = root;
+    while(remaining.length > 0){
+      const c = remaining[0];
+      const child = cur.children[c];
+      if(!child) break;
+      const shared = sharedPrefix(remaining, child.text);
+      if(shared === child.text.length){
+        matched += shared; remaining = remaining.slice(shared); cur = child;
+      } else { matched += shared; cur = child; break; }
+    }
+    return {tenant: cur.tenant, matched, total: text.length};
+  }
+
+  function insert(text, tenant){
+    let remaining = text, cur = root;
+    cur.tenant = cur.tenant || tenant;
+    while(remaining.length > 0){
+      const c = remaining[0];
+      let child = cur.children[c];
+      if(!child){
+        child = new Node(remaining);
+        child.tenant = tenant;
+        cur.children[c] = child;
+        return;
+      }
+      const shared = sharedPrefix(remaining, child.text);
+      if(shared === child.text.length){
+        // 整节点匹配，继续向下
+        child.tenant = tenant;  // 更新 last_tenant
+        remaining = remaining.slice(shared);
+        cur = child;
+      } else {
+        // 分裂节点
+        const oldText = child.text;
+        const oldChildren = child.children;
+        const oldTenant = child.tenant;
+        child.text = oldText.slice(0, shared);
+        child.children = {};
+        child.tenant = tenant;
+        const oldBranch = new Node(oldText.slice(shared));
+        oldBranch.children = oldChildren;
+        oldBranch.tenant = oldTenant;
+        child.children[oldText[shared]] = oldBranch;
+        const newBranch = new Node(remaining.slice(shared));
+        newBranch.tenant = tenant;
+        child.children[remaining[shared]] = newBranch;
+        return;
+      }
+    }
+  }
+
+  function render(){
+    const el = document.getElementById('tr-tree');
+    if(Object.keys(root.children).length === 0){
+      el.innerHTML = '<span style="color:var(--mute)">（空 tree）</span>';
+    } else {
+      el.innerHTML = renderNode(root, 0);
+    }
+    document.getElementById('tr-p1-load').textContent = LOAD.P1;
+    document.getElementById('tr-p2-load').textContent = LOAD.P2;
+    document.getElementById('tr-p1-hit').textContent = HIT.P1;
+    document.getElementById('tr-p2-hit').textContent = HIT.P2;
+    document.getElementById('tr-hitrate').textContent = totalReq === 0 ? '-' : (cacheHits/totalReq*100).toFixed(0)+'%';
+  }
+  function renderNode(node, depth){
+    const indent = '  '.repeat(depth);
+    let out = '';
+    if(node.text){
+      const color = node.tenant === 'P1' ? 'var(--brand)' : node.tenant === 'P2' ? 'var(--brand2)' : 'var(--mute)';
+      const txt = node.text.length > 40 ? node.text.slice(0,37)+'...' : node.text;
+      out += `<div>${indent}<span style="color:${color}">├─ "${escapeHtml(txt)}"</span> <span style="color:var(--mute);font-size:10.5px">tenant=${node.tenant||'-'}</span></div>`;
+    }
+    for(const k of Object.keys(node.children)){
+      out += renderNode(node.children[k], node.text ? depth+1 : depth);
+    }
+    return out;
+  }
+  function escapeHtml(s){return s.replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));}
+
+  function log(msg){
+    const line = document.createElement('div');
+    line.className = 'msg-line active';
+    line.style.fontSize = '11.5px';
+    line.innerHTML = msg;
+    document.getElementById('tr-log').prepend(line);
+  }
+
+  function route(text){
+    totalReq++;
+    // ① imbalanced 检查
+    const minL = Math.min(LOAD.P1, LOAD.P2), maxL = Math.max(LOAD.P1, LOAD.P2);
+    const imbalanced = (maxL - minL) > BAL_ABS && maxL > minL * BAL_REL;
+
+    let choice, reason;
+    if(imbalanced){
+      choice = LOAD.P1 <= LOAD.P2 ? 'P1' : 'P2';
+      reason = `load 不均衡 (P1=${LOAD.P1}, P2=${LOAD.P2})，紧急走 min-load → ${choice}`;
+    } else {
+      // ② prefix_match
+      const result = prefixMatch(text);
+      const rate = result.total===0 ? 0 : result.matched/result.total;
+      if(rate > CACHE_THRESHOLD && result.tenant){
+        choice = result.tenant;
+        reason = `prefix 命中 "${escapeHtml(text.slice(0,result.matched))}" (match rate=${(rate*100).toFixed(0)}%)，tenant=${result.tenant} → ${choice}`;
+        cacheHits++; HIT[choice]++;
+      } else {
+        choice = LOAD.P1 <= LOAD.P2 ? 'P1' : 'P2';
+        reason = `match rate=${(rate*100).toFixed(0)}% &lt; ${CACHE_THRESHOLD*100}%，选 load 最小的 → ${choice}`;
+      }
+    }
+    LOAD[choice]++;
+    insert(text, choice);
+
+    const color = choice==='P1' ? 'var(--brand)' : 'var(--brand2)';
+    log(`<span class="ts">#${totalReq}</span><span class="tag" style="color:${color}">→ ${choice}</span>"${escapeHtml(text.slice(0,50))}${text.length>50?'...':''}"<br><span style="color:var(--mute);margin-left:24px;display:block">${reason}</span>`);
+    document.getElementById('tr-narr').innerHTML = `最近一次：<b>${choice}</b>。${reason}`;
+    render();
+  }
+
+  document.getElementById('tr-send').addEventListener('click', ()=>{
+    const v = document.getElementById('tr-input').value.trim();
+    if(v){ route(v); document.getElementById('tr-input').value=''; }
+  });
+  document.getElementById('tr-input').addEventListener('keydown', e=>{
+    if(e.key==='Enter') document.getElementById('tr-send').click();
+  });
+  document.getElementById('tr-preset1').addEventListener('click', ()=>{
+    ['You are a helpful assistant. Q: What is MLA?',
+     'You are a helpful assistant. Q: Explain GQA',
+     'You are a helpful assistant. Q: Describe KV cache',
+     'You are a helpful assistant. Q: What is Flash Attention?',
+     'You are a helpful assistant. Q: What is PagedAttention?'].forEach(route);
+  });
+  document.getElementById('tr-preset2').addEventListener('click', ()=>{
+    ['You are a coding expert. Task: write a fib function',
+     'You are a coding expert. Task: reverse a linked list',
+     'You are a coding expert. Task: debug this python',
+     'You are a coding expert. Task: optimize SQL query',
+     'You are a coding expert. Task: implement quicksort'].forEach(route);
+  });
+  document.getElementById('tr-reset').addEventListener('click', ()=>{
+    for(const k in root.children) delete root.children[k];
+    LOAD.P1=LOAD.P2=HIT.P1=HIT.P2=0; totalReq=0; cacheHits=0;
+    document.getElementById('tr-log').innerHTML='';
+    render();
+  });
+  render();
+})();
+</script>
+
+<!-- common questions -->
+<h3 id="howcache-faq"><span style="color:var(--brand2)">▸ 常见疑问一次说清</h3>
+<div class="card">
+<table>
+<tr><th>疑问</th><th>答案</th></tr>
+<tr><td>Router 怎么"知道" P1 真的有那段 prefix 的 KV？</td><td><strong>它不知道</strong>。这只是"最近把这段 prefix 送过 P1，P1 极可能还留着"的猜测。如果 P1 的 prefix cache 被挤出去了，P1 收到请求也要重新算，但那是另一个层面的问题，不影响路由正确性。</td></tr>
+<tr><td>会不会因为 tree 过时路由错？</td><td>会，但不是"错误"。最多是"本来能命中的结果没命中"，请求仍能正常完成，只是 P 侧会重新算一遍 prompt。</td></tr>
+<tr><td>这棵树会无限膨胀吗？</td><td>不会。有后台 <code>PeriodicTask</code> 按 <code>eviction_interval_secs</code> 周期做 LRU eviction，超过 <code>max_tree_size</code> 时按 <code>tenant_last_access_time</code> 淘汰 leaf。</td></tr>
+<tr><td>为什么按字符不按 token？</td><td>按 token 要在 Router 做 tokenization（加载 tokenizer 模型，每请求 10-50ms），得不偿失。按字符虽然比 token 粒度粗，但命中率差异很小，速度快 100x 以上。</td></tr>
+<tr><td>多副本 Router 怎么同步 tree？</td><td>看到源码里的 <code>mesh_sync</code>：开 smg-mesh 特性后，insert/remove 操作会广播到集群里其他 Router，保证一致视图。不开 mesh 则每个 Router 独立（tree 会冷启动几次后收敛）。</td></tr>
+<tr><td>和 load 不均衡怎么平衡？</td><td>imbalanced 检查是第一道门：max-min > 5 且 max > min*1.5 时<strong>忽略 tree</strong>，走 min-load 救火。所以不会出现"某台 P 因为 cache 命中被打爆，其他 P 闲着"的情况。</td></tr>
+</table>
+</div>
+
+<!-- ================ PART 6: bootstrap 注入细节 ================ -->
+<h2 id="inject"><span class="step">PART 6</span>bootstrap 注入的精细细节</h2>
+<div class="card">
+<pre><span class="path">// pd_router.rs:217-275（精简）</span>
+<span class="kw">const</span> BOOTSTRAP_HOST_KEY: &amp;str = <span class="str">"bootstrap_host"</span>;
+<span class="kw">const</span> BOOTSTRAP_PORT_KEY: &amp;str = <span class="str">"bootstrap_port"</span>;
+<span class="kw">const</span> BOOTSTRAP_ROOM_KEY: &amp;str = <span class="str">"bootstrap_room"</span>;
+
+<span class="kw">fn</span> <span class="fn">inject_bootstrap_into_value</span>(<span class="kw">mut</span> original: Value, p: &amp;<span class="kw">dyn</span> Worker, batch_size: Option&lt;usize&gt;)
+    -> Result&lt;Value, String&gt;
+{
+    <span class="kw">let</span> obj = original.as_object_mut()...;
+
+    <span class="kw">if let</span> Some(n) = batch_size {
+        <span class="com">// batch 请求（/generate 里 prompt 是数组）：每个元素一个 room_id</span>
+        <span class="kw">let mut</span> rooms = Vec::with_capacity(n);
+        <span class="kw">for</span> _ <span class="kw">in</span> 0..n {
+            rooms.push(<span class="fn">generate_room_id</span>());
+        }
+        obj.insert(BOOTSTRAP_ROOM_KEY.into(), Value::Array(rooms.into_iter().map(...).collect()));
+    } <span class="kw">else</span> {
+        obj.insert(BOOTSTRAP_HOST_KEY.into(), Value::from(p.bootstrap_host()));
+        obj.insert(BOOTSTRAP_PORT_KEY.into(), <span class="kw">match</span> p.bootstrap_port() {
+            Some(v) => Value::from(v), None => Value::Null,
+        });
+        obj.insert(BOOTSTRAP_ROOM_KEY.into(), Value::from(<span class="fn">generate_room_id</span>()));
+    }
+    Ok(original)
+}</pre>
+
+<pre><span class="path">// pd_types.rs:60</span>
+<span class="kw">pub fn</span> <span class="fn">generate_room_id</span>() -> u64 {
+    rand::random::&lt;u64&gt;() &amp; (i64::MAX <span class="kw">as</span> u64)
+}</pre>
+
+<div class="callout warn">
+<strong>为什么 mask 到 i64</strong>：Python 端某些路径（<code>io_struct.py</code> 的 <code>bootstrap_room: Optional[int]</code>）会把它当 64-bit 有符号整数，如果超过 <code>i64::MAX</code> 会 overflow。Router 生成时 mask 一次，保证两边对齐。
+</div>
+</div>
+
+<!-- ================ PART 7: 双发的返回处理 ================ -->
+<h2 id="dual"><span class="step">PART 7</span>双发之后：谁的响应回 client</h2>
+<div class="card">
+<pre><span class="path">// pd_router.rs:533-694（核心分支）</span>
+<span class="kw">let</span> (prefill_result, decode_result) = tokio::join!(p.send(), d.send());
+
+<span class="kw">match</span> decode_result {
+    Ok(res) => {
+        <span class="kw">if</span> !res.status().is_success() {
+            <span class="kw">return</span> self.<span class="fn">handle_decode_error_response</span>(res, ...).await;
+        }
+        <span class="com">// 可选：从 prefill_response 里拿 input_token_logprobs</span>
+        <span class="kw">let</span> prefill_body = self.<span class="fn">process_prefill_response</span>(prefill_result, ...).await?;
+
+        <span class="kw">if</span> context.is_stream {
+            <span class="com">// 流式：直接转发 decode 的 bytes_stream</span>
+            self.<span class="fn">create_streaming_response</span>(res.bytes_stream(), status, prefill_logprobs, ...)
+        } <span class="kw">else</span> {
+            <span class="com">// 非流式：等 decode 完整 body，再合并 prefill logprobs</span>
+            self.<span class="fn">process_non_streaming_response</span>(res, status, return_logprob, prefill_body).await
+        }
+    }
+    Err(e) => error::bad_gateway(...),
+}</pre>
+
+<table>
+<tr><th>响应内容</th><th>来自哪里</th></tr>
+<tr><td>生成的 token 流</td><td><strong>D</strong>（只有 D 做 decode）</td></tr>
+<tr><td>finish_reason, usage</td><td>D（D 侧调用 <code>stream_output</code>）</td></tr>
+<tr><td>input_token_logprobs</td><td>P（只有 P 算了 prompt forward）</td></tr>
+<tr><td>首个 output token</td><td>实际由 P 产出，但通过 Mooncake metadata buffer 传到 D，D 再 stream 出来</td></tr>
+</table>
+</div>
+
+<!-- ================ PART 8: 总结 ================ -->
+<h2 id="summary"><span class="step">PART 8</span>本章要点回顾</h2>
+<div class="card">
+<table>
+<tr><th>问题</th><th>答案</th></tr>
+<tr><td>Router 是用什么写的？</td><td>Rust (<code>sgl-model-gateway</code>)，基于 axum + tokio + reqwest</td></tr>
+<tr><td>P 和 D 怎么被配对？</td><td><strong>不配对</strong>。两次独立 policy 调用，在后端通过 bootstrap_room 认亲</td></tr>
+<tr><td>为什么 P/D 几乎同时收到请求？</td><td><code>tokio::join!</code> 并发双发，不是串行</td></tr>
+<tr><td>bootstrap_room 是什么？</td><td>64-bit 随机数，<code>rand::random() &amp; i64::MAX</code>，一请求一生成</td></tr>
+<tr><td>为什么注入到 JSON 而不是 header？</td><td>body 字段在 Python 侧由 <code>TokenizedGenerateReqInput</code> 解析，比 header 好处理；batch 请求时每个元素都能带一个 room</td></tr>
+<tr><td>最终 client 看到的 token 是谁生成的？</td><td>首 token 是 P 生成（prefill 的最后一步采样），但通过 metadata buffer 传到 D，D 再通过自己的 SSE 吐回去。后续 token 由 D 生成</td></tr>
+</table>
+
+<div class="callout" style="margin-top:18px">
+<strong>下一章预告</strong>：请求到达 P/D worker 后，先经过 TokenizerManager（tokenize + 转 protobuf），再送到 Scheduler 分流到 P 专属队列或 D 专属队列。这个环节是 Python 侧的第一站。
+</div>
+</div>
+<div class="nav"><a href="02-request-lifecycle.html">← 上一篇：全链路总览</a><a href="04-prefill-worker.html">下一篇：Prefill Worker →</a></div><div class="foot">SGLang PD Disaggregation · 原理 → 源码 → 流转 → 交互演示</div></div>  <script src="../course-nav.js"></script>
+</body></html>

@@ -1,0 +1,568 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>K8S 集群架构 · 控制平面 + 数据平面</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>K8S 集群架构 <span class="tag">第一层 · 01/15</span></h1>
+<div class="sub">控制平面 + 数据平面的四大核心组件——理解一次 <code>kubectl apply</code> 背后经过了谁、做了什么、存在哪。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么要理解架构</a>
+  <a href="#bigpic">§1 两个平面</a>
+  <a href="#apiserver">§2 API Server</a>
+  <a href="#etcd">§3 etcd</a>
+  <a href="#scheduler">§4 Scheduler</a>
+  <a href="#controller">§5 Controller Manager</a>
+  <a href="#kubelet">§6 Kubelet</a>
+  <a href="#flow">§7 一次 apply 的全链路</a>
+  <a href="#takeaway">§8 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么要先理解集群架构</h2>
+
+<div class="card">
+<p>K8S 的日常使用就是写 YAML + kubectl apply，看起来很简单。但你一定遇到过这些问题：</p>
+<ul class="tight">
+  <li>Pod 一直 <code>Pending</code>，kubectl describe 说 "no nodes available"——<b>是 scheduler 的锅还是 kubelet 的锅？</b></li>
+  <li>刚 apply 的 Deployment 没反应——<b>是 apiserver 没收到还是 controller-manager 没 reconcile？</b></li>
+  <li>集群突然不响应——<b>etcd 挂了还是 apiserver 过载？</b></li>
+  <li>想给推理服务配 GPU 资源，发现 <code>nvidia.com/gpu</code> 不识别——<b>是 device plugin 没注册到 kubelet 还是 scheduler 不知道？</b></li>
+</ul>
+<div class="callout warn">
+如果你不知道请求经过了哪些组件，排障就是盲人摸象。理解架构 = 拿到一张完整的地图。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="bigpic"><span class="step">§1</span>两个平面 · K8S 就是一个分布式状态机</h2>
+
+<div class="card">
+<p>整个 K8S 集群拆成两半：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 420" width="960">
+  <defs>
+    <linearGradient id="cpBg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#1a2332"/><stop offset="1" stop-color="#11141b"/></linearGradient>
+    <linearGradient id="dpBg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#1a1f14"/><stop offset="1" stop-color="#11141b"/></linearGradient>
+  </defs>
+
+  <!-- Control Plane -->
+  <rect x="20" y="20" width="440" height="380" rx="14" fill="url(#cpBg)" stroke="#7dd3fc" stroke-width="2"/>
+  <text x="40" y="52" fill="#7dd3fc" font-size="16" font-weight="700">Control Plane（控制平面）</text>
+  <text x="40" y="72" fill="#8b93a7" font-size="11.5">集群的"大脑" · 只做决策，不跑业务容器</text>
+
+  <!-- apiserver -->
+  <rect x="50" y="95" width="180" height="60" rx="10" fill="#1f2937" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="70" y="120" fill="#6ee7b7" font-weight="700" font-size="13">kube-apiserver</text>
+  <text x="70" y="138" fill="#8b93a7" font-size="11">唯一入口 · REST API</text>
+
+  <!-- etcd -->
+  <rect x="260" y="95" width="180" height="60" rx="10" fill="#1f2937" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="280" y="120" fill="#fbbf24" font-weight="700" font-size="13">etcd</text>
+  <text x="280" y="138" fill="#8b93a7" font-size="11">状态存储 · Raft 共识</text>
+
+  <!-- scheduler -->
+  <rect x="50" y="180" width="180" height="60" rx="10" fill="#1f2937" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="70" y="205" fill="#a78bfa" font-weight="700" font-size="13">kube-scheduler</text>
+  <text x="70" y="223" fill="#8b93a7" font-size="11">Pod → Node 匹配</text>
+
+  <!-- controller-manager -->
+  <rect x="260" y="180" width="180" height="60" rx="10" fill="#1f2937" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="280" y="205" fill="#fb7185" font-weight="700" font-size="13">controller-manager</text>
+  <text x="280" y="223" fill="#8b93a7" font-size="11">状态 reconcile 循环</text>
+
+  <!-- cloud-controller (optional) -->
+  <rect x="50" y="265" width="390" height="40" rx="8" fill="#1f2937" stroke="#8b93a7" stroke-dasharray="4 3"/>
+  <text x="70" y="290" fill="#8b93a7" font-size="12">cloud-controller-manager（可选 · 对接云厂商 LB/磁盘/节点）</text>
+
+  <!-- 连线 apiserver ↔ etcd -->
+  <line x1="230" y1="125" x2="260" y2="125" stroke="#6ee7b7" stroke-width="1.5" stroke-dasharray="3 2"/>
+
+  <!-- 连线 scheduler → apiserver -->
+  <path d="M140 180 L140 155" stroke="#a78bfa" stroke-width="1.2" fill="none" marker-end="url(#arrowPurple)"/>
+
+  <!-- 连线 controller → apiserver -->
+  <path d="M350 180 L230 140" stroke="#fb7185" stroke-width="1.2" fill="none"/>
+
+  <!-- Data Plane -->
+  <rect x="500" y="20" width="440" height="380" rx="14" fill="url(#dpBg)" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="520" y="52" fill="#6ee7b7" font-size="16" font-weight="700">Data Plane（数据平面）</text>
+  <text x="520" y="72" fill="#8b93a7" font-size="11.5">工作节点 · 真正跑容器的地方</text>
+
+  <!-- Node 1 -->
+  <rect x="520" y="90" width="400" height="140" rx="10" fill="#1f2937" stroke="#6ee7b7" stroke-dasharray="4 3"/>
+  <text x="540" y="112" fill="#6ee7b7" font-size="12" font-weight="600">Worker Node 1</text>
+
+  <!-- kubelet -->
+  <rect x="540" y="125" width="120" height="45" rx="8" fill="#162924" stroke="#6ee7b7"/>
+  <text x="555" y="148" fill="#6ee7b7" font-size="12" font-weight="600">kubelet</text>
+  <text x="555" y="162" fill="#8b93a7" font-size="10">节点代理</text>
+
+  <!-- kube-proxy -->
+  <rect x="680" y="125" width="120" height="45" rx="8" fill="#1a1a2e" stroke="#a78bfa"/>
+  <text x="695" y="148" fill="#a78bfa" font-size="12" font-weight="600">kube-proxy</text>
+  <text x="695" y="162" fill="#8b93a7" font-size="10">网络规则</text>
+
+  <!-- container runtime -->
+  <rect x="540" y="180" width="260" height="35" rx="8" fill="#1f2937" stroke="#8b93a7"/>
+  <text x="560" y="202" fill="#8b93a7" font-size="11">Container Runtime（containerd / CRI-O）</text>
+
+  <!-- Pods -->
+  <g transform="translate(820,125)">
+    <rect x="0" y="0" width="80" height="30" rx="6" fill="#fbbf24" opacity=".2" stroke="#fbbf24"/>
+    <text x="10" y="20" fill="#fbbf24" font-size="11" font-weight="600">Pod A</text>
+  </g>
+  <g transform="translate(820,165)">
+    <rect x="0" y="0" width="80" height="30" rx="6" fill="#fbbf24" opacity=".2" stroke="#fbbf24"/>
+    <text x="10" y="20" fill="#fbbf24" font-size="11" font-weight="600">Pod B</text>
+  </g>
+
+  <!-- Node 2 -->
+  <rect x="520" y="250" width="400" height="90" rx="10" fill="#1f2937" stroke="#6ee7b7" stroke-dasharray="4 3"/>
+  <text x="540" y="272" fill="#6ee7b7" font-size="12" font-weight="600">Worker Node 2 (GPU Node)</text>
+  <rect x="540" y="285" width="120" height="35" rx="8" fill="#162924" stroke="#6ee7b7"/>
+  <text x="555" y="307" fill="#6ee7b7" font-size="11">kubelet</text>
+  <rect x="680" y="285" width="140" height="35" rx="8" fill="#1a1520" stroke="#fb7185"/>
+  <text x="695" y="307" fill="#fb7185" font-size="11">device-plugin (GPU)</text>
+
+  <!-- 连线 control plane → data plane -->
+  <path d="M460 200 L500 200" stroke="#6ee7b7" stroke-width="2" stroke-dasharray="6 3"/>
+  <text x="462" y="190" fill="#8b93a7" font-size="10">watch/update</text>
+
+  <!-- 底部说明 -->
+  <text x="40" y="345" fill="#8b93a7" font-size="12">• 所有组件都只跟 API Server 通信——彼此不直连</text>
+  <text x="40" y="365" fill="#8b93a7" font-size="12">• 控制平面可以多副本部署（HA），数据平面水平扩展</text>
+  <text x="40" y="385" fill="#8b93a7" font-size="12">• 真正存状态的只有 etcd，其余组件全是无状态的</text>
+</svg>
+</div>
+
+<h3>一句话总结</h3>
+<div class="callout info">
+K8S = <b>一个分布式状态机</b>。你写 YAML 声明"期望状态"，控制平面持续对比"当前状态 vs 期望状态"，数据平面负责执行差异。所有通信的枢纽是 <b>API Server</b>，所有状态的持久化只在 <b>etcd</b>。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="apiserver"><span class="step">§2</span>API Server · 集群的唯一入口</h2>
+
+<div class="card">
+<p><code>kube-apiserver</code> 是整个集群中<b>唯一暴露 HTTP API 的组件</b>。无论是你的 kubectl、Dashboard、CI/CD 工具、kubelet、scheduler——全部通过它交互。</p>
+
+<h3>请求处理链路（六步）</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 140" width="900">
+  <!-- 6 步骤框 -->
+  <rect x="10" y="40" width="120" height="55" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="70" y="62" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">① 认证</text>
+  <text x="70" y="80" text-anchor="middle" fill="#8b93a7" font-size="10">你是谁？</text>
+
+  <text x="140" y="68" fill="#8b93a7" font-size="16">→</text>
+
+  <rect x="160" y="40" width="120" height="55" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="220" y="62" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="600">② 授权</text>
+  <text x="220" y="80" text-anchor="middle" fill="#8b93a7" font-size="10">你能做什么？</text>
+
+  <text x="290" y="68" fill="#8b93a7" font-size="16">→</text>
+
+  <rect x="310" y="40" width="120" height="55" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="370" y="62" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">③ 变异准入</text>
+  <text x="370" y="80" text-anchor="middle" fill="#8b93a7" font-size="10">自动注入/修改</text>
+
+  <text x="440" y="68" fill="#8b93a7" font-size="16">→</text>
+
+  <rect x="460" y="40" width="120" height="55" rx="8" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="520" y="62" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">④ Schema 校验</text>
+  <text x="520" y="80" text-anchor="middle" fill="#8b93a7" font-size="10">字段合法？</text>
+
+  <text x="590" y="68" fill="#8b93a7" font-size="16">→</text>
+
+  <rect x="610" y="40" width="120" height="55" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="670" y="62" text-anchor="middle" fill="#fb7185" font-size="11" font-weight="600">⑤ 验证准入</text>
+  <text x="670" y="80" text-anchor="middle" fill="#8b93a7" font-size="10">策略合规？</text>
+
+  <text x="740" y="68" fill="#8b93a7" font-size="16">→</text>
+
+  <rect x="760" y="40" width="120" height="55" rx="8" fill="#1f2937" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="820" y="62" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="700">⑥ 写入 etcd</text>
+  <text x="820" y="80" text-anchor="middle" fill="#8b93a7" font-size="10">持久化</text>
+
+  <!-- 注释 -->
+  <text x="10" y="120" fill="#8b93a7" font-size="11.5">任何一步失败都会返回错误，后续步骤不会执行。这就是为什么"镜像来源检查""资源配额"等策略能拦住非法请求。</text>
+</svg>
+</div>
+
+<h3>关键设计特点</h3>
+<ul class="tight">
+  <li><b>无状态</b>：API Server 本身不存数据，重启不影响集群状态（状态全在 etcd）</li>
+  <li><b>水平可扩展</b>：多副本部署 + 前面挂 LB，生产集群通常 3 个</li>
+  <li><b>Watch 机制</b>：其他组件通过 HTTP long poll（watch）实时获取变更事件，不需要轮询</li>
+  <li><b>乐观并发</b>：每个资源有 <code>resourceVersion</code>，更新时必须匹配——类似数据库乐观锁</li>
+</ul>
+
+<div class="callout info">
+<b>实战锚点：</b>当你的推理服务集群有 1000+ Pod 频繁调度时，API Server 最先成为瓶颈。理解它是"无状态 + watch"的设计，就知道扩容 apiserver 副本数 + 给 etcd 独立 SSD 是正确的优化方向。
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：认证机制有哪些？</button>
+<div class="expand-content">
+<table>
+<thead><tr><th>机制</th><th>适用场景</th><th>特点</th></tr></thead>
+<tbody>
+<tr><td>X.509 客户端证书</td><td>管理员 / 系统组件</td><td>kubeconfig 中配置证书路径，CA 验证</td></tr>
+<tr><td>ServiceAccount Token</td><td>集群内 Pod</td><td>自动挂载到 <code>/var/run/secrets/</code>，kubelet 自动管理</td></tr>
+<tr><td>OIDC</td><td>多用户环境</td><td>对接企业 SSO（如腾讯云 CAM）</td></tr>
+<tr><td>Webhook Token</td><td>自定义认证</td><td>转发到外部服务验证</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="etcd"><span class="step">§3</span>etcd · 集群的唯一真相来源</h2>
+
+<div class="card">
+<p><code>etcd</code> 是一个分布式键值数据库，它存了整个集群的全部状态：每个 Pod、每个 Service、每条 RBAC 规则、每个 ConfigMap——全在这里。</p>
+
+<h3>为什么用 etcd 而不是 MySQL / Redis</h3>
+<table>
+<thead><tr><th>需求</th><th>etcd 的回答</th></tr></thead>
+<tbody>
+<tr><td>强一致性</td><td>Raft 共识协议，写入必须过半节点确认</td></tr>
+<tr><td>Watch 支持</td><td>原生支持 watch key 变更，延迟 < 10ms</td></tr>
+<tr><td>高可用</td><td>3/5/7 节点奇数部署，任何少数派节点挂掉不影响</td></tr>
+<tr><td>数据量适中</td><td>K8S 状态通常 < 8GB，etcd 的 B+ tree 完全能搞定</td></tr>
+</tbody>
+</table>
+
+<h3>数据在 etcd 里长什么样</h3>
+<pre><span class="com"># 每个 K8S 资源在 etcd 中是一个 key</span>
+/registry/pods/default/my-sglang-pod-0
+/registry/deployments/inference/sglang-deploy
+/registry/services/inference/sglang-svc
+/registry/nodes/gpu-node-01
+
+<span class="com"># value 是 protobuf 编码的完整资源对象（含 spec + status）</span>
+</pre>
+
+<div class="callout bad">
+<b>etcd 是整个集群的单点真相</b>——它挂了，集群就"失忆"了。生产环境必须：① 3 节点起步 ② 独立 SSD（不跟 apiserver 混部） ③ 定期快照备份。
+</div>
+
+<h3>etcd 的瓶颈在哪</h3>
+<ul class="tight">
+  <li><b>写延迟</b>：每次写入需要 Raft 过半确认，跨 AZ 部署时延迟会从 2ms 涨到 10ms+</li>
+  <li><b>存储大小</b>：默认 2GB quota，超了就拒绝写入（你会看到 "NOSPACE" 告警）</li>
+  <li><b>Watch 数量</b>：几万个 watch 连接时 CPU 开销明显——这就是为什么大集群要做 watch 聚合</li>
+</ul>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+当你的 GPU 集群频繁扩缩（Karpenter 动态加减节点），etcd 的写 QPS 会突增。如果看到 <code>etcdserver: request timed out</code>，第一反应是查 etcd 磁盘 IOPS 和 Raft 延迟，而不是怀疑业务代码。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="scheduler"><span class="step">§4</span>Scheduler · Pod 放到哪台机器</h2>
+
+<div class="card">
+<p><code>kube-scheduler</code> 只做一件事：<b>给还没有 nodeName 的 Pod 选一台合适的 Node</b>。选完之后把 <code>spec.nodeName</code> 写回 apiserver，kubelet 就会认领它。</p>
+
+<h3>调度两阶段：过滤 → 打分</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 200" width="900">
+  <!-- 待调度 Pod -->
+  <rect x="20" y="70" width="100" height="50" rx="8" fill="#fbbf24" opacity=".3" stroke="#fbbf24"/>
+  <text x="70" y="100" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">Pod</text>
+
+  <text x="135" y="98" fill="#8b93a7" font-size="14">→</text>
+
+  <!-- Filter -->
+  <rect x="155" y="50" width="260" height="90" rx="10" fill="#1f2937" stroke="#fb7185"/>
+  <text x="180" y="75" fill="#fb7185" font-size="13" font-weight="700">Filter（过滤）</text>
+  <text x="180" y="95" fill="#8b93a7" font-size="11">• 资源够不够？(CPU/Mem/GPU)</text>
+  <text x="180" y="112" fill="#8b93a7" font-size="11">• Taint 是否容忍？</text>
+  <text x="180" y="129" fill="#8b93a7" font-size="11">• NodeAffinity 匹配？</text>
+
+  <text x="430" y="98" fill="#8b93a7" font-size="14">→</text>
+
+  <!-- Score -->
+  <rect x="450" y="50" width="260" height="90" rx="10" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="475" y="75" fill="#a78bfa" font-size="13" font-weight="700">Score（打分）</text>
+  <text x="475" y="95" fill="#8b93a7" font-size="11">• 资源利用率均衡（LeastAllocated）</text>
+  <text x="475" y="112" fill="#8b93a7" font-size="11">• Pod 亲和性加分</text>
+  <text x="475" y="129" fill="#8b93a7" font-size="11">• TopologySpread 分散度</text>
+
+  <text x="725" y="98" fill="#8b93a7" font-size="14">→</text>
+
+  <!-- 选中 -->
+  <rect x="745" y="70" width="130" height="50" rx="8" fill="#6ee7b7" opacity=".3" stroke="#6ee7b7"/>
+  <text x="810" y="95" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">最高分 Node</text>
+
+  <!-- 底部说明 -->
+  <text x="155" y="170" fill="#8b93a7" font-size="11.5">过滤阶段：不符合硬约束的 Node 直接淘汰</text>
+  <text x="450" y="170" fill="#8b93a7" font-size="11.5">打分阶段：对剩余 Node 打 0-100 分，选最高</text>
+  <text x="155" y="188" fill="#fbbf24" font-size="11.5">如果 Filter 后没有 Node 剩余 → Pod 保持 Pending（等有新 Node 加入或旧 Pod 释放资源）</text>
+</svg>
+</div>
+
+<h3>Scheduler 的关键行为</h3>
+<ul class="tight">
+  <li><b>Watch 机制</b>：scheduler watch apiserver 的 Pod 列表，一旦发现 <code>spec.nodeName == ""</code> 的 Pod，立刻开始调度</li>
+  <li><b>调度是全局最优的尝试</b>：但不保证是最优解（NP-hard 问题，只能启发式近似）</li>
+  <li><b>抢占（Preemption）</b>：如果高优先级 Pod 无法被调度，scheduler 会尝试驱逐低优先级 Pod 腾出空间</li>
+  <li><b>插件化架构</b>：从 K8S 1.19 开始用 scheduling-framework，每个调度步骤都是可插拔的 plugin</li>
+</ul>
+
+<div class="callout warn">
+<b>注意</b>：scheduler 只负责"决策"，不负责"执行"。它把 nodeName 写入 Pod spec 后，实际拉起容器的是目标节点的 kubelet。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="controller"><span class="step">§5</span>Controller Manager · 状态持续对齐的幕后推手</h2>
+
+<div class="card">
+<p><code>kube-controller-manager</code> 里跑了几十个独立的 controller，每个 controller 负责一类资源的 reconcile 循环：</p>
+
+<h3>Reconcile 循环（核心模式）</h3>
+<pre><span class="kw">while</span> true:
+    desired = 从 etcd 读取用户声明的期望状态
+    actual  = 从 etcd 读取当前实际状态
+    <span class="kw">if</span> actual != desired:
+        执行操作使 actual → desired
+    sleep / wait for next event
+</pre>
+
+<h3>常见的内置 Controller</h3>
+<table>
+<thead><tr><th>Controller</th><th>watch 什么</th><th>做什么</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>Deployment Controller</b></td><td>Deployment 对象</td><td>创建/更新 ReplicaSet，管理滚动升级</td></tr>
+<tr><td style="color:#6ee7b7"><b>ReplicaSet Controller</b></td><td>ReplicaSet 对象</td><td>确保 Pod 数量 = replicas 声明值</td></tr>
+<tr><td style="color:#6ee7b7"><b>Node Controller</b></td><td>Node 心跳</td><td>心跳超时 → 标记 NotReady → 驱逐 Pod</td></tr>
+<tr><td style="color:#6ee7b7"><b>Job Controller</b></td><td>Job 对象</td><td>创建 Pod 执行任务，跟踪完成/失败</td></tr>
+<tr><td style="color:#6ee7b7"><b>Endpoint Controller</b></td><td>Service + Pod</td><td>维护 Service 后端 Pod 列表（Endpoints）</td></tr>
+<tr><td style="color:#6ee7b7"><b>ServiceAccount Controller</b></td><td>Namespace</td><td>为新 namespace 自动创建 default SA</td></tr>
+</tbody>
+</table>
+
+<div class="callout info">
+<b>理解 Controller 的关键</b>：它不是一次性执行的脚本，而是<b>持续运行的循环</b>。哪怕你半夜手动删了一个 Pod，ReplicaSet Controller 几秒内就会发现"实际 2 个 < 期望 3 个"，然后创建一个新的补齐。这就是 K8S "自愈能力"的本质。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+当你用 LWS（LeaderWorkerSet）部署多机推理时，LWS 本质上就是一个自定义 Controller：它 watch 自己的 CRD 对象，reconcile 循环里创建/管理一组有序的 Pod。理解 controller-manager 里内置 Controller 的行为模式，后面读任何 Operator 代码都不慌。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="kubelet"><span class="step">§6</span>Kubelet · 每个节点上的"工头"</h2>
+
+<div class="card">
+<p><code>kubelet</code> 跑在每个 Worker Node 上，它是<b>节点侧唯一与控制平面通信的组件</b>。职责：</p>
+
+<h3>核心职责</h3>
+<ul class="tight">
+  <li><b>Watch Pod</b>：watch apiserver 上分配给本节点的 Pod（通过 <code>spec.nodeName</code> 过滤）</li>
+  <li><b>管理容器生命周期</b>：通过 CRI（Container Runtime Interface）调用 containerd 创建/启动/停止容器</li>
+  <li><b>上报节点状态</b>：定期（默认 10s）向 apiserver 上报节点 CPU/Mem/磁盘/GPU 等资源容量和已分配量</li>
+  <li><b>执行健康检查</b>：按 Pod spec 中定义的 liveness/readiness probe 执行检查，异常时重启或摘除</li>
+  <li><b>管理 Volume 挂载</b>：调用 CSI 驱动挂载 PVC 对应的存储卷到 Pod</li>
+  <li><b>注册 Device Plugin</b>：接收 GPU 等设备插件的注册，上报 extended resource 给 apiserver</li>
+</ul>
+
+<h3>kubelet 与其他组件的关系</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 700 220" width="700">
+  <!-- kubelet 中心 -->
+  <rect x="250" y="70" width="160" height="70" rx="12" fill="#162924" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="330" y="100" text-anchor="middle" fill="#6ee7b7" font-size="14" font-weight="700">kubelet</text>
+  <text x="330" y="118" text-anchor="middle" fill="#8b93a7" font-size="11">节点代理</text>
+
+  <!-- 上：apiserver -->
+  <rect x="270" y="5" width="120" height="40" rx="8" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="330" y="30" text-anchor="middle" fill="#7dd3fc" font-size="11">API Server</text>
+  <line x1="330" y1="45" x2="330" y2="70" stroke="#7dd3fc" stroke-width="1.2"/>
+
+  <!-- 左下：containerd -->
+  <rect x="50" y="150" width="140" height="40" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="120" y="175" text-anchor="middle" fill="#fbbf24" font-size="11">containerd (CRI)</text>
+  <line x1="250" y1="130" x2="190" y2="155" stroke="#fbbf24" stroke-width="1.2"/>
+
+  <!-- 右下：device plugin -->
+  <rect x="470" y="150" width="170" height="40" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="555" y="175" text-anchor="middle" fill="#fb7185" font-size="11">device-plugin (GPU)</text>
+  <line x1="410" y1="130" x2="480" y2="155" stroke="#fb7185" stroke-width="1.2"/>
+
+  <!-- 正下：CSI -->
+  <rect x="260" y="170" width="140" height="40" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="330" y="195" text-anchor="middle" fill="#a78bfa" font-size="11">CSI Driver (存储)</text>
+  <line x1="330" y1="140" x2="330" y2="170" stroke="#a78bfa" stroke-width="1.2"/>
+</svg>
+</div>
+
+<div class="callout warn">
+<b>kubelet 不是容器运行时</b>——它只是一个 Go 写的管理程序。真正创建 Linux namespace、cgroup、启动进程的是 containerd。kubelet 通过 gRPC 调用 CRI 接口指挥 containerd。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+GPU 推理节点上，kubelet 还负责接收 NVIDIA device-plugin 的注册。当 device-plugin 报告"本节点有 8 块 A100"时，kubelet 把这个信息上报给 apiserver，scheduler 才能看到 <code>nvidia.com/gpu: 8</code>。如果 device-plugin 进程挂了，节点上的 GPU 资源就"消失了"——新 Pod 不会调度过来。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="flow"><span class="step">§7</span>完整链路 · 一次 kubectl apply 背后发生了什么</h2>
+
+<div class="card">
+<p>把上面所有组件串起来——你执行 <code>kubectl apply -f deploy.yaml</code> 后发生的完整链路：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 480" width="960">
+  <!-- 步骤框 -->
+  <rect x="20" y="30" width="200" height="50" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="30" y="52" fill="#6ee7b7" font-size="11" font-weight="600">① kubectl 发送 HTTP POST</text>
+  <text x="30" y="68" fill="#8b93a7" font-size="10">YAML → JSON → 发给 apiserver</text>
+
+  <path d="M220 55 L250 55" stroke="#8b93a7" stroke-width="1"/>
+
+  <rect x="250" y="30" width="200" height="50" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="260" y="52" fill="#6ee7b7" font-size="11" font-weight="600">② apiserver 六步处理</text>
+  <text x="260" y="68" fill="#8b93a7" font-size="10">认证→授权→准入→校验→写 etcd</text>
+
+  <path d="M450 55 L480 55" stroke="#8b93a7" stroke-width="1"/>
+
+  <rect x="480" y="30" width="200" height="50" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="490" y="52" fill="#fbbf24" font-size="11" font-weight="600">③ etcd 持久化 Deployment</text>
+  <text x="490" y="68" fill="#8b93a7" font-size="10">Raft 写入 → 返回成功</text>
+
+  <path d="M580 80 L580 110" stroke="#8b93a7" stroke-width="1"/>
+
+  <rect x="480" y="110" width="200" height="50" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="490" y="132" fill="#fb7185" font-size="11" font-weight="600">④ Deployment Controller watch 到变更</text>
+  <text x="490" y="148" fill="#8b93a7" font-size="10">创建 ReplicaSet 对象</text>
+
+  <path d="M580 160 L580 190" stroke="#8b93a7" stroke-width="1"/>
+
+  <rect x="480" y="190" width="200" height="50" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="490" y="212" fill="#fb7185" font-size="11" font-weight="600">⑤ ReplicaSet Controller watch 到</text>
+  <text x="490" y="228" fill="#8b93a7" font-size="10">创建 N 个 Pod 对象（nodeName=空）</text>
+
+  <path d="M480 215 L290 215 L290 280" stroke="#8b93a7" stroke-width="1"/>
+
+  <rect x="190" y="280" width="200" height="50" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="200" y="302" fill="#a78bfa" font-size="11" font-weight="600">⑥ Scheduler watch 到未绑定的 Pod</text>
+  <text x="200" y="318" fill="#8b93a7" font-size="10">Filter → Score → 选中 Node</text>
+
+  <path d="M290 330 L290 360" stroke="#8b93a7" stroke-width="1"/>
+
+  <rect x="190" y="360" width="200" height="50" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="200" y="382" fill="#a78bfa" font-size="11" font-weight="600">⑦ Scheduler 写入 spec.nodeName</text>
+  <text x="200" y="398" fill="#8b93a7" font-size="10">通过 apiserver → etcd 持久化</text>
+
+  <path d="M390 385 L500 385" stroke="#8b93a7" stroke-width="1"/>
+
+  <rect x="500" y="360" width="220" height="50" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="510" y="382" fill="#6ee7b7" font-size="11" font-weight="600">⑧ 目标节点 kubelet watch 到</text>
+  <text x="510" y="398" fill="#8b93a7" font-size="10">CRI 调 containerd 拉镜像、启容器</text>
+
+  <path d="M610 410 L610 440" stroke="#8b93a7" stroke-width="1"/>
+
+  <rect x="500" y="440" width="220" height="30" rx="8" fill="#6ee7b7" opacity=".2" stroke="#6ee7b7"/>
+  <text x="510" y="460" fill="#6ee7b7" font-size="12" font-weight="600">⑨ Pod Running · 开始服务推理请求 🎉</text>
+</svg>
+</div>
+
+<h3>关键观察</h3>
+<ul class="tight">
+  <li>整个过程是<b>事件驱动 + 最终一致</b>的——没有任何一个"中心调度器"在一步完成所有事</li>
+  <li>每个组件只做自己的本职：controller 只管"对象应该长什么样"，scheduler 只管"放哪"，kubelet 只管"跑起来"</li>
+  <li><b>apiserver 是所有通信的中转站</b>——scheduler 不直接跟 kubelet 说话</li>
+  <li>如果步骤 ⑥ 找不到合适 Node，Pod 会一直 <code>Pending</code>，直到有 Node 释放资源或新 Node 加入</li>
+</ul>
+
+<div class="callout info">
+<b>延迟参考</b>：从 kubectl apply 到 Pod Running，理想情况（镜像已缓存）约 3-5 秒。主要耗时：① etcd 写入 ~2ms ② scheduler 决策 ~10ms ③ kubelet 拉镜像 0-30s ④ 容器启动 ~1s。所以<b>镜像预热</b>是最影响首次部署速度的因素。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§8</span>带走这些 · 后面章节一通百通</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① 两个平面</div><div>控制平面做决策（apiserver/etcd/scheduler/controller），数据平面跑容器（kubelet/runtime/proxy）</div>
+  <div class="k">② 唯一入口</div><div>API Server 是集群的唯一通信枢纽，所有组件只跟它交互，彼此不直连</div>
+  <div class="k">③ 唯一状态</div><div>etcd 是唯一真相来源，其余组件全是无状态的——这让控制平面可以随意水平扩展</div>
+  <div class="k">④ Watch + Reconcile</div><div>所有组件通过 watch 事件驱动 + 持续 reconcile 对齐状态——这是 K8S "自愈"的根</div>
+  <div class="k">⑤ 职责分离</div><div>Controller 管"应该有几个 Pod" · Scheduler 管"放哪台机器" · Kubelet 管"怎么跑起来"</div>
+  <div class="k">⑥ 扩展点</div><div>准入控制（webhook）扩展 apiserver · 调度插件扩展 scheduler · device-plugin 扩展 kubelet · CRD 扩展资源模型</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——理解了集群架构后，下一步深入最基本的调度单位：Pod。它的 5 个生命阶段、initContainer 执行顺序、三种健康检查、优雅下线的完整链路。→ <a href="02-pod-lifecycle.html" style="color:var(--brand)">02-pod-lifecycle.html</a>
+</div>
+</div>
+
+<div class="foot">
+第一层 · 01 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

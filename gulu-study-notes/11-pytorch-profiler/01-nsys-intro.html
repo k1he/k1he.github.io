@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Nsight Systems 基本介绍 · 为什么需要系统级 Profiling</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-left-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Nsight Systems 基本介绍 <span class="tag">Nsight Systems · 01/04</span></h1>
+<div class="sub">PyTorch Profiler 能告诉你"哪个 op 慢"，但抓不到运行中进程、看不到 CUDA stream 竞争。Nsight Systems 是系统级 Profiler——一条命令就能对任何 GPU 进程抓取完整时间线，CPU 线程、GPU kernel、通信、内存搬运一览无余。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么需要系统级 Profiling</a>
+  <a href="#what">§1 Nsight Systems 是什么</a>
+  <a href="#landscape">§2 Profiling 工具全景</a>
+  <a href="#concepts">§3 核心概念速览</a>
+  <a href="#takeaway">§4 本章小结</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么需要系统级 Profiling · 直觉不可靠</h2>
+
+<div class="card">
+<p>初学者通常凭<b>直觉</b>优化，结果往往踩坑：</p>
+
+<div class="grid cols-2">
+<div class="card" style="margin:0">
+  <div style="color:var(--bad);font-size:13px;font-weight:600">常见错误直觉</div>
+  <ul class="tight">
+    <li>"模型推理慢 → 一定是 GPU 算力不够"</li>
+    <li>"加了 GPU → 一定跑满了"</li>
+    <li>"推理服务卡 → 模型本身的问题"</li>
+    <li>"KV Cache 搬运很快 → 不可能是瓶颈"</li>
+  </ul>
+</div>
+<div class="card" style="margin:0">
+  <div style="color:var(--brand);font-size:13px;font-weight:600">nsys 真相</div>
+  <ul class="tight">
+    <li>70% 的慢来自 CPU→GPU 的数据搬运或调度延迟</li>
+    <li>GPU 利用率可能只有 30%（在等 CPU）</li>
+    <li>HiCache D2H/H2D 与 evict 的 CUDA stream 竞争导致性能退化</li>
+    <li>NCCL AllReduce 占了 40% 的 step 时间</li>
+  </ul>
+</div>
+</div>
+
+<div class="callout warn" style="font-size:15px;margin-top:16px">
+<b>性能优化的第一法则</b>：不要猜，要测。系统级 Profiler 告诉你真正的瓶颈在哪——可能和你想的完全不一样。
+</div>
+
+<h3>真实案例：P800 上 HiCache 长流量退化</h3>
+<pre><span class="com"># 现象: 50 client 运行 1h 后，P 节点吞吐从 100k→40k token/s</span>
+<span class="com"># PyTorch Profiler: 抓不到——需要改 SGLang 源码加 with profile(...)，而且无法对运行中进程采集</span>
+<span class="com"># nsys profile -p <PID> --duration=30: 一条命令，直接看到 HiCache D2H/H2D 与 evict 之间的</span>
+<span class="com">#   CUDA stream 竞争——host memory 碎片化导致搬运效率退化</span>
+<span class="com">#</span>
+<span class="com"># 修复后: 12h 压测无衰减</span></pre>
+
+<div class="callout">
+<b>关键区别</b>：PyTorch Profiler 需要<b>在源码中插入 <code>with profile(...)</code></b>，对 SGLang 这类已经部署的服务无法使用。Nsight Systems 可以<b>对任何运行中的进程</b>直接抓取，零代码修改。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="what"><span class="step">§1</span>Nsight Systems 是什么</h2>
+
+<div class="card">
+<p><code>nsys</code> 是 NVIDIA 官方的<b>系统级性能分析工具</b>，基于底层 CUPTI (CUDA Profiling Tools Interface) 采集数据。它能<b>同时</b>看到：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 420" width="900">
+  <defs>
+    <linearGradient id="cpuG" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#7dd3fc"/><stop offset="1" stop-color="#38bdf8"/></linearGradient>
+    <linearGradient id="gpuG" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#6ee7b7"/><stop offset="1" stop-color="#34d399"/></linearGradient>
+    <linearGradient id="memG" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/></linearGradient>
+    <linearGradient id="commG" x1="0" x2="1" y1="0" y2="0"><stop offset="0" stop-color="#fb7185"/><stop offset="1" stop-color="#f43f5e"/></linearGradient>
+  </defs>
+
+  <!-- 标题 -->
+  <text x="450" y="30" text-anchor="middle" fill="#e6e8ee" font-size="15" font-weight="600">Nsight Systems 五维度数据采集</text>
+
+  <!-- CPU 线程 -->
+  <rect x="60" y="50" width="780" height="55" rx="10" fill="url(#cpuG)" opacity=".15" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="80" y="73" fill="#7dd3fc" font-weight="700" font-size="14">CPU 线程</text>
+  <text x="80" y="92" fill="#8b93a7" font-size="12">Python 调用 · OS Runtime (malloc, pthread) · CUDA API 调用 · CPU 采样</text>
+  <rect x="400" y="62" width="80" height="18" rx="4" fill="#7dd3fc" opacity=".5"/><text x="408" y="75" fill="#0b0d12" font-size="9">python</text>
+  <rect x="490" y="62" width="60" height="18" rx="4" fill="#7dd3fc" opacity=".5"/><text x="496" y="75" fill="#0b0d12" font-size="9">cudaLaunch</text>
+
+  <!-- GPU Kernels -->
+  <rect x="60" y="120" width="780" height="55" rx="10" fill="url(#gpuG)" opacity=".15" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="80" y="143" fill="#6ee7b7" font-weight="700" font-size="14">GPU Kernels (per Stream)</text>
+  <text x="80" y="162" fill="#8b93a7" font-size="12">GEMM · Attention · Elementwise · Memory Copy (H2D/D2H) · 多 Stream 并行</text>
+  <rect x="400" y="132" width="100" height="18" rx="4" fill="#6ee7b7" opacity=".5"/><text x="406" y="145" fill="#0b0d12" font-size="9">flash_attn</text>
+  <rect x="510" y="132" width="60" height="18" rx="4" fill="#6ee7b7" opacity=".5"/><text x="516" y="145" fill="#0b0d12" font-size="9">gemm</text>
+
+  <!-- 内存搬运 -->
+  <rect x="60" y="190" width="780" height="55" rx="10" fill="url(#memG)" opacity=".15" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="80" y="213" fill="#fbbf24" font-weight="700" font-size="14">内存搬运</text>
+  <text x="80" y="232" fill="#8b93a7" font-size="12">H2D (Host→Device) · D2H (Device→Host) · D2D (Device→Device) · RDMA 传输</text>
+  <rect x="420" y="202" width="80" height="18" rx="4" fill="#fbbf24" opacity=".5"/><text x="428" y="215" fill="#0b0d12" font-size="9">Memcpy HtoD</text>
+  <rect x="510" y="202" width="80" height="18" rx="4" fill="#fbbf24" opacity=".5"/><text x="518" y="215" fill="#0b0d12" font-size="9">Memcpy DtoH</text>
+
+  <!-- 通信 -->
+  <rect x="60" y="260" width="780" height="55" rx="10" fill="url(#commG)" opacity=".15" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="80" y="283" fill="#fb7185" font-weight="700" font-size="14">通信 (NCCL / RDMA)</text>
+  <text x="80" y="302" fill="#8b93a7" font-size="12">AllReduce · AllGather · ReduceScatter · P2P · KV Cache 跨节点传输</text>
+  <rect x="420" y="272" width="100" height="18" rx="4" fill="#fb7185" opacity=".5"/><text x="428" y="285" fill="#0b0d12" font-size="9">NCCL AllReduce</text>
+
+  <!-- NVTX 标注 -->
+  <rect x="60" y="330" width="780" height="55" rx="10" fill="rgba(167,139,250,.1)" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="80" y="353" fill="#a78bfa" font-weight="700" font-size="14">NVTX 标注</text>
+  <text x="80" y="372" fill="#8b93a7" font-size="12">自定义区间标记 · 框架内部标注 (SGLang/PyTorch 内置) · 业务逻辑分段</text>
+
+  <!-- 关联箭头 -->
+  <line x1="440" y1="105" x2="440" y2="120" stroke="#8b93a7" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="440" y1="175" x2="440" y2="190" stroke="#8b93a7" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="440" y1="245" x2="440" y2="260" stroke="#8b93a7" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="440" y1="315" x2="440" y2="330" stroke="#8b93a7" stroke-width="1" stroke-dasharray="3 2"/>
+
+  <!-- 底部说明 -->
+  <text x="450" y="410" text-anchor="middle" fill="#c4b5fd" font-size="12">五条时间线对齐 → 一眼看出"CPU 在干什么时 GPU 在干什么、通信在干什么"</text>
+</svg>
+</div>
+
+<h3>核心能力一览</h3>
+<table>
+<thead><tr><th>维度</th><th>采集内容</th><th>分析目标</th></tr></thead>
+<tbody>
+<tr><td style="color:var(--brand2)">CPU 线程</td><td>线程调度、OS Runtime (malloc/pthread)、CUDA API 调用</td><td>CPU 是否在等、线程是否空闲</td></tr>
+<tr><td style="color:var(--brand)">GPU Kernels</td><td>kernel 名称、执行时间、所属 CUDA Stream</td><td>GPU 是否吃满、Stream 间是否竞争</td></tr>
+<tr><td style="color:var(--warn)">内存搬运</td><td>H2D / D2H / D2D memcpy、带宽</td><td>搬运开销、隐式同步</td></tr>
+<tr><td style="color:var(--pink)">通信</td><td>NCCL AllReduce / P2P / RDMA 传输</td><td>多卡通信瓶颈、跨节点延迟</td></tr>
+<tr><td style="color:var(--purple)">NVTX 标注</td><td>自定义区间标记、框架内部标注</td><td>将 kernel 关联回业务逻辑</td></tr>
+</tbody>
+</table>
+
+<div class="callout info">
+<b>和 PyTorch Profiler 的核心区别</b>：PyTorch Profiler 需要<b>在代码中插入 <code>with profile(...)</code></b>，采集的是 Python/ATen 层的 op 调用；Nsight Systems 是<b>进程外部工具</b>，不需要改任何代码，而且能看到 PyTorch Profiler 看不到的 CUDA stream 并发、OS Runtime 调用和 NCCL 通信细节。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="landscape"><span class="step">§2</span>Profiling 工具全景 · 各自适合什么场景</h2>
+
+<div class="card">
+<table>
+<thead><tr><th>工具</th><th>粒度</th><th>适用场景</th><th>需要改代码？</th><th>上手难度</th></tr></thead>
+<tbody>
+<tr><td style="color:var(--brand)"><b>Nsight Systems</b></td><td>系统级时间线</td><td>CPU-GPU 交互、kernel launch、多 Stream 并发、NCCL 通信、对运行中进程抓取</td><td><b>不需要</b></td><td>中</td></tr>
+<tr><td style="color:var(--brand2)">PyTorch Profiler</td><td>Op / Kernel 级</td><td>快速定位哪个 PyTorch op 慢、TensorBoard 可视化</td><td>需要加 <code>with profile()</code></td><td>低</td></tr>
+<tr><td style="color:var(--warn)">Nsight Compute</td><td>单 kernel 指标</td><td>SM 占用率、内存吞吐、warp stall 原因、指令级分析</td><td>不需要</td><td>高</td></tr>
+<tr><td style="color:var(--purple)">NVIDIA DCGM</td><td>设备级</td><td>多卡集群 GPU 利用率 / 温度 / 功耗监控</td><td>不需要</td><td>低</td></tr>
+<tr><td style="color:var(--pink)">perf / eBPF</td><td>系统调用级</td><td>CPU 火焰图、系统调用延迟、内核态瓶颈</td><td>不需要</td><td>中</td></tr>
+<tr><td style="color:var(--mute)">nvidia-smi dmon</td><td>设备级</td><td>GPU 利用率 / 显存 / 功耗实时监控</td><td>不需要</td><td>低</td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+<b>选择策略</b>：先用 <code>nsys</code> 看全局时间线，判断"是哪一类问题"（GPU 空闲？CPU 瓶颈？通信？Stream 竞争？）。如果某个 kernel 特别慢，再上 <code>ncu</code> (Nsight Compute) 深挖。对于 SGLang / vLLM 这类推理服务，<code>nsys</code> 是首选——因为你可以直接对运行中的进程抓取。
+</div>
+
+<h3>为什么推理服务场景优先用 Nsight Systems</h3>
+<ul class="tight">
+  <li><b>不需要改代码</b>——推理服务是独立部署的，你不太可能为了 profiling 去改 SGLang 源码</li>
+  <li><b>对运行中进程抓取</b>——<code>nsys profile -p &lt;PID&gt;</code> 一条命令就能采集</li>
+  <li><b>看到 CUDA Stream 并发</b>——HiCache D2H/H2D 与 evict 的 stream 竞争只有 nsys 能看到</li>
+  <li><b>看到 NCCL / RDMA 通信</b>——PD 分离场景下 KV Transfer 跨节点传输的时间占比</li>
+  <li><b>远程抓取 + 本地分析</b>——服务器上 <code>nsys profile</code>，生成 <code>.nsys-rep</code> 拖回本地 GUI 看</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="concepts"><span class="step">§3</span>核心概念速览</h2>
+
+<div class="card">
+
+<h3>1. CPU 线程 vs GPU Stream</h3>
+<p>CUDA 操作是<b>异步</b>的：CPU 线程调用 <code>cudaLaunchKernel</code> 后立即返回，GPU 在另一个 stream 上异步执行。这意味着：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 180" width="900">
+  <!-- CPU 行 -->
+  <text x="10" y="45" fill="#7dd3fc" font-size="11" font-weight="600">CPU 线程</text>
+  <rect x="80" y="30" width="40" height="22" rx="4" fill="#7dd3fc" opacity=".7"/>
+  <text x="84" y="45" fill="#0b0d12" font-size="9">launch</text>
+  <rect x="140" y="30" width="40" height="22" rx="4" fill="#7dd3fc" opacity=".7"/>
+  <text x="144" y="45" fill="#0b0d12" font-size="9">launch</text>
+  <rect x="200" y="30" width="40" height="22" rx="4" fill="#7dd3fc" opacity=".7"/>
+  <text x="204" y="45" fill="#0b0d12" font-size="9">launch</text>
+  <text x="280" y="45" fill="#8b93a7" font-size="10">← CPU 只做 launch，很快返回</text>
+
+  <!-- GPU Stream 行 -->
+  <text x="10" y="105" fill="#6ee7b7" font-size="11" font-weight="600">GPU Stream 7</text>
+  <rect x="80" y="90" width="200" height="22" rx="4" fill="#6ee7b7" opacity=".5"/>
+  <text x="90" y="105" fill="#0b0d12" font-size="9">kernel A (实际执行，远比 launch 长)</text>
+
+  <rect x="300" y="90" width="150" height="22" rx="4" fill="#6ee7b7" opacity=".5"/>
+  <text x="310" y="105" fill="#0b0d12" font-size="9">kernel B</text>
+
+  <rect x="470" y="90" width="120" height="22" rx="4" fill="#6ee7b7" opacity=".5"/>
+  <text x="480" y="105" fill="#0b0d12" font-size="9">kernel C</text>
+
+  <!-- 箭头 -->
+  <path d="M100 52 L100 90" stroke="#8b93a7" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arr1)"/>
+  <path d="M160 52 L310 90" stroke="#8b93a7" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arr1)"/>
+  <path d="M220 52 L480 90" stroke="#8b93a7" stroke-width="1" stroke-dasharray="3 2" marker-end="url(#arr1)"/>
+
+  <text x="450" y="155" text-anchor="middle" fill="#c4b5fd" font-size="12">CPU launch 是异步的 → GPU kernel 排队执行 → 两条时间线不对齐</text>
+
+  <defs><marker id="arr1" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#8b93a7"/></marker></defs>
+</svg>
+</div>
+
+<div class="callout info">
+<b>阅读 nsys 时间线的核心技能</b>：CPU 行和 GPU 行是<b>两条独立的时间线</b>，kernel launch 和 kernel 执行之间有时间差。GPU 行的空白 = GPU 在等（CPU 没来得及喂数据，或在等同步）。
+</div>
+
+<h3>2. Trace 的时间线结构</h3>
+<p>nsys 生成的 <code>.nsys-rep</code> 文件在 GUI 中呈现为多层时间线：</p>
+<table>
+<thead><tr><th>行 (Row)</th><th>内容</th><th>怎么看</th></tr></thead>
+<tbody>
+<tr><td>CPU 线程行</td><td>每个 OS 线程一条行，显示函数调用和 CUDA API</td><td>找<b>空白</b> = 线程空闲；找<b>密集</b> = CPU 瓶颈</td></tr>
+<tr><td>CUDA API 行</td><td>cudaLaunchKernel、cudaMemcpy、cudaStreamSynchronize 等</td><td>找<b>同步调用</b> = 性能杀手</td></tr>
+<tr><td>CUDA HW 行</td><td>GPU 上实际执行的 kernel</td><td>找<b>空白</b> = GPU 空闲；看<b>密集度</b> = 利用率</td></tr>
+<tr><td>Memcpy 行</td><td>H2D / D2H / D2D 数据搬运</td><td>看<b>带宽</b>和<b>时间占比</b></td></tr>
+<tr><td>NCCL 行</td><td>AllReduce / P2P 等通信操作</td><td>看<b>通信时间占比</b></td></tr>
+<tr><td>NVTX 行</td><td>自定义标注区间</td><td>定位<b>业务逻辑</b>（"这是 prefill 还是 decode"）</td></tr>
+</tbody>
+</table>
+
+<h3>3. NVTX 标注</h3>
+<p>NVTX (NVIDIA Tools Extension) 是 NVIDIA 提供的<b>代码标注 API</b>，让你在 trace 中插入命名区间：</p>
+<pre><span class="com"># Python (PyTorch 内置)</span>
+<span class="kw">import</span> torch.cuda.nvtx <span class="kw">as</span> nvtx
+
+nvtx.<span class="fn">range_push</span>(<span class="str">"prefill"</span>)       <span class="com"># 开始标注</span>
+output = model(inputs)
+nvtx.<span class="fn">range_pop</span>()                  <span class="com"># 结束标注</span>
+
+<span class="com"># C/C++</span>
+nvtxRangePushA(<span class="str">"prefill"</span>);
+run_prefill(...);
+nvtxRangePop();
+</pre>
+
+<div class="callout">
+<b>NVTX 的价值</b>：没有标注的 trace 里，你只能看到 <code>ampere_gemm_128x64</code> 这样的 kernel 名字，不知道它属于 prefill 还是 decode。加了 NVTX 后，trace 中会出现彩色标注区间，一眼就能定位"这段是 prefill，那段是 KV transfer"。<b>PyTorch 和 SGLang 内部已经大量使用了 NVTX</b>，所以即使你不手动添加，trace 里也会有有用的标注。
+</div>
+
+<h3>4. Wall Time vs Kernel Time</h3>
+<table>
+<thead><tr><th>指标</th><th>含义</th><th>用途</th></tr></thead>
+<tbody>
+<tr><td><code>Wall Time</code></td><td>从 CPU 视角看的经过时间（包含排队、同步等待）</td><td>端到端延迟分析</td></tr>
+<tr><td><code>Kernel Time</code></td><td>GPU 上实际执行 kernel 的时间</td><td>GPU 计算效率分析</td></tr>
+<tr><td><code>Gap</code></td><td>Wall Time - Kernel Time = 排队/等待时间</td><td>GPU 空闲时间分析</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>常见误区</b>：看到 kernel time 短就觉得没问题，但 wall time 很长 → 说明 GPU 大部分时间在等（等 CPU、等同步、等数据）。<b>性能瓶颈往往不在 kernel 执行本身，而在 kernel 之间的间隙</b>。
+</div>
+
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§4</span>本章小结</h2>
+
+<div class="card">
+<div class="kv">
+  <span class="k">为什么 Profile</span>
+  <span>直觉不可靠，nsys 对运行中进程零侵入抓取</span>
+  <span class="k">nsys 是什么</span>
+  <span>系统级 Profiler，同时看 CPU 线程 + GPU kernel + 通信 + 搬运 + NVTX 标注</span>
+  <span class="k">核心概念</span>
+  <span>CPU/GPU 异步、Stream 并发、NVTX 标注、Wall vs Kernel Time</span>
+  <span class="k">vs 其他工具</span>
+  <span>不需要改代码 + 能对运行中进程抓取 + 能看到 Stream 竞争和 NCCL → 推理服务首选</span>
+</div>
+</div>
+
+<div class="foot">Nsight Systems · 01 / 04 · <a href="02-nsys-profiling.html" style="color:var(--brand2)">下一篇：抓取实战 →</a></div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

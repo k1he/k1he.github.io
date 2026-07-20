@@ -1,0 +1,922 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Attention Metadata 为什么这么多 · 一步步演化</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+  --A:#fbbf24;--B:#7dd3fc;--C:#a78bfa;--D:#34d399;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.legend{display:flex;flex-wrap:wrap;gap:14px;margin:10px 0;font-size:12.5px;color:var(--mute);justify-content:center}
+.legend .lg{display:inline-flex;align-items:center;gap:6px}
+.legend .sw{width:14px;height:14px;border-radius:3px;display:inline-block}
+.controls{display:flex;flex-wrap:wrap;gap:8px;justify-content:center;margin-top:12px}
+.btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:8px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:all .12s}
+.btn:hover{border-color:var(--brand);color:var(--brand)}
+.btn.active{background:var(--brand);color:var(--bg);border-color:var(--brand)}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.tok-row{display:flex;flex-wrap:wrap;gap:4px;margin:6px 0;align-items:center;font-family:"SF Mono",monospace;font-size:12px}
+.tok{display:inline-flex;align-items:center;justify-content:center;width:36px;height:32px;border-radius:4px;color:#0b0d12;font-weight:600}
+.tok.pad{background:#374151;color:#9ca3af}
+.lbl{color:var(--mute);font-size:12px;font-family:"SF Mono",monospace;width:90px;display:inline-block}
+.summary-grid{display:grid;grid-template-columns:140px 1fr;gap:8px 14px;align-items:start;margin:8px 0}
+.summary-grid .k{color:var(--brand);font-family:"SF Mono",monospace;font-size:12.5px}
+.summary-grid .v{color:#cbd5e1;font-size:13px}
+.flash{animation:flash 1.6s ease-out infinite}
+@keyframes flash{0%,100%{opacity:.3}50%{opacity:1}}
+@keyframes pulse{0%,100%{transform:scale(1);opacity:1}50%{transform:scale(1.06);opacity:.8}}
+@keyframes flow{0%{stroke-dashoffset:0}100%{stroke-dashoffset:-40}}
+.dash-flow{stroke-dasharray:8 6;animation:flow 1.6s linear infinite}
+.pulse{animation:pulse 1.4s ease-in-out infinite}
+@keyframes slideIn{from{opacity:0;transform:translateX(-12px)}to{opacity:1;transform:translateX(0)}}
+.slide-in{animation:slideIn .6s ease-out forwards}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Attention Metadata 为什么这么多？<span class="tag">一步步演化</span></h1>
+<div class="sub">从"最朴素的 attention" 演化到"paged attention + continuous batching"，每一步只新加一个字段，看清楚它解决了什么问题。</div>
+
+<div class="toc">
+  <a href="#step0">Step 0 · 朴素 attention</a>
+  <a href="#step1">Step 1 · KV Cache</a>
+  <a href="#step2">Step 2 · Continuous Batching</a>
+  <a href="#step3">Step 3 · Causal Mask 变形</a>
+  <a href="#step4">Step 4 · Paged KV</a>
+  <a href="#step5">Step 5 · last_page_len</a>
+  <a href="#step6">Step 6 · GQA / TP</a>
+  <a href="#summary">完整的 FIMetadata</a>
+</div>
+
+<!-- ============ Step 0 ============ -->
+<h2 id="step0"><span class="step">STEP 0</span>单条序列 · 最朴素的 attention</h2>
+
+<div class="card">
+<p>如果你的"推理引擎"只能一次处理 1 条请求、每次重新算所有 KV，那 attention 长这样：</p>
+
+<pre><code><span class="com"># Q, K, V: [seq_len, num_heads, head_dim]</span>
+scores = Q @ K.<span class="fn">transpose</span>(-2, -1) / sqrt(head_dim)   <span class="com"># [seq_len, seq_len]</span>
+mask = <span class="fn">causal_mask</span>(seq_len)                          <span class="com"># 下三角</span>
+scores = scores.<span class="fn">masked_fill</span>(~mask, -inf)
+out = <span class="fn">softmax</span>(scores) @ V                            <span class="com"># [seq_len, num_heads, head_dim]</span></code></pre>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="g0" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#fbbf24"/><stop offset="1" stop-color="#f59e0b"/>
+    </linearGradient>
+  </defs>
+  <text x="340" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">单序列 attention：seq_len 同时是 Q 长、K 长、唯一元数据</text>
+  <g>
+    <rect x="80" y="50" width="180" height="120" fill="url(#g0)" rx="6"/>
+    <text x="170" y="115" text-anchor="middle" fill="#0b0d12" font-size="14" font-weight="600">Q · K · V</text>
+    <text x="170" y="135" text-anchor="middle" fill="#0b0d12" font-size="11">[seq_len, H, D]</text>
+  </g>
+  <g>
+    <rect x="320" y="50" width="120" height="120" fill="#1f2937" stroke="#7dd3fc" rx="6"/>
+    <text x="380" y="105" text-anchor="middle" fill="#7dd3fc" font-size="13">attention</text>
+    <text x="380" y="125" text-anchor="middle" fill="#8b93a7" font-size="11">causal mask</text>
+  </g>
+  <g>
+    <rect x="500" y="50" width="120" height="120" fill="#1f2937" stroke="#34d399" rx="6"/>
+    <text x="560" y="115" text-anchor="middle" fill="#34d399" font-size="13">out</text>
+  </g>
+  <line x1="260" y1="110" x2="320" y2="110" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arr0)"/>
+  <line x1="440" y1="110" x2="500" y2="110" stroke="#cbd5e1" stroke-width="2" marker-end="url(#arr0)"/>
+  <defs><marker id="arr0" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#cbd5e1"/></marker></defs>
+</svg>
+</div>
+
+<div class="callout">
+<strong>需要的元数据：只有 <code>seq_len</code></strong>。它就是 <code>Q.shape[0]</code>，一目了然。<br>
+但这种引擎吞吐很低：一次只服务 1 个请求 → GPU 利用率烂；每步 decode 都重算 KV → 浪费。
+</div>
+</div>
+
+<!-- ============ Step 1 ============ -->
+<h2 id="step1"><span class="step">STEP 1</span>引入 KV Cache · 出现"两个长度"</h2>
+
+<div class="card">
+<p>decode 阶段每步只生成 1 个 token。<strong>Q 只有 1 行</strong>，但 K/V 包含<u>之前所有 token 的历史</u>：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 680 230" xmlns="http://www.w3.org/2000/svg">
+  <text x="340" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">Decode 第 1 步：Q.shape ≠ K.shape</text>
+
+  <!-- Q -->
+  <text x="60" y="78" fill="#fbbf24" font-size="12" font-weight="600">Q</text>
+  <rect x="80" y="60" width="40" height="36" fill="#fbbf24" rx="4"/>
+  <text x="100" y="83" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">q</text>
+  <text x="80" y="115" fill="#8b93a7" font-size="11">[1, H, D]</text>
+  <text x="80" y="130" fill="#fbbf24" font-size="11" font-weight="600">seq_len_q = 1</text>
+
+  <!-- K -->
+  <text x="60" y="178" fill="#7dd3fc" font-size="12" font-weight="600">K</text>
+  <g>
+    <rect x="80" y="160" width="36" height="32" fill="#7dd3fc" opacity=".4" rx="3"/>
+    <rect x="118" y="160" width="36" height="32" fill="#7dd3fc" opacity=".4" rx="3"/>
+    <rect x="156" y="160" width="36" height="32" fill="#7dd3fc" opacity=".4" rx="3"/>
+    <rect x="194" y="160" width="36" height="32" fill="#7dd3fc" opacity=".4" rx="3"/>
+    <rect x="232" y="160" width="36" height="32" fill="#7dd3fc" opacity=".4" rx="3"/>
+    <rect x="270" y="160" width="36" height="32" fill="#7dd3fc" opacity=".4" rx="3"/>
+    <text x="193" y="180" text-anchor="middle" fill="#0b0d12" font-size="11">历史 5 个 token (从 KV cache 读)</text>
+    <rect x="308" y="160" width="36" height="32" fill="#fbbf24" rx="3" class="pulse"/>
+    <text x="326" y="180" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">new</text>
+  </g>
+  <text x="80" y="208" fill="#8b93a7" font-size="11">[T_kv=6, H_kv, D]</text>
+  <text x="80" y="222" fill="#7dd3fc" font-size="11" font-weight="600">seq_len_k = 6</text>
+
+  <!-- attention region -->
+  <g transform="translate(440,60)">
+    <rect x="0" y="0" width="200" height="160" fill="#1f2937" stroke="#a78bfa" rx="8"/>
+    <text x="100" y="22" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="600">attention scores</text>
+    <text x="100" y="40" text-anchor="middle" fill="#8b93a7" font-size="11">[1, 6] 矩形</text>
+    <g transform="translate(40,55)">
+      <rect x="0" y="0" width="20" height="20" fill="#34d399"/>
+      <rect x="22" y="0" width="20" height="20" fill="#34d399"/>
+      <rect x="44" y="0" width="20" height="20" fill="#34d399"/>
+      <rect x="66" y="0" width="20" height="20" fill="#34d399"/>
+      <rect x="88" y="0" width="20" height="20" fill="#34d399"/>
+      <rect x="110" y="0" width="20" height="20" fill="#34d399"/>
+    </g>
+    <text x="100" y="115" text-anchor="middle" fill="#cbd5e1" font-size="11">kernel 内部循环</text>
+    <text x="100" y="132" text-anchor="middle" fill="#cbd5e1" font-size="11">for i in range(seq_len_q):  # 1</text>
+    <text x="100" y="148" text-anchor="middle" fill="#cbd5e1" font-size="11">  for j in range(seq_len_k):  # 6</text>
+  </g>
+</svg>
+</div>
+
+<div class="callout warn">
+<strong>关键变化：seq_len_q ≠ seq_len_k</strong>。kernel 内部循环是 <code>for i in range(seq_len_q): for j in range(seq_len_k)</code>，所以两个长度都得告诉它。<br>
+<strong>这就是后来要分别有 <code>cu_seqlens_q</code> 和 <code>cu_seqlens_k</code> 的根本原因</strong>。
+</div>
+</div>
+
+<!-- ============ Step 2 ============ -->
+<h2 id="step2"><span class="step">STEP 2</span>Continuous Batching · 用 cu_seqlens 替代 padding</h2>
+
+<div class="card">
+<p>现在要 batch 多条请求一起算，但它们长度不一样。最朴素的想法是 <strong>padding</strong>：</p>
+
+<div id="step2-mode" class="controls">
+  <button class="btn active" data-mode="pad">① 朴素：padding</button>
+  <button class="btn" data-mode="ragged">② 优化：ragged + cu_seqlens</button>
+</div>
+
+<div id="pad-view" style="margin-top:14px">
+<div class="legend">
+  <div class="lg"><span class="sw" style="background:var(--A)"></span>Req A · 8 token</div>
+  <div class="lg"><span class="sw" style="background:var(--B)"></span>Req B · 12 token</div>
+  <div class="lg"><span class="sw" style="background:var(--C)"></span>Req C · 2 token</div>
+  <div class="lg"><span class="sw" style="background:#374151"></span>padding (浪费)</div>
+</div>
+
+<div class="tok-row"><span class="lbl">Req A:</span>
+  <span class="tok" style="background:var(--A)">a₀</span><span class="tok" style="background:var(--A)">a₁</span><span class="tok" style="background:var(--A)">a₂</span><span class="tok" style="background:var(--A)">a₃</span><span class="tok" style="background:var(--A)">a₄</span><span class="tok" style="background:var(--A)">a₅</span><span class="tok" style="background:var(--A)">a₆</span><span class="tok" style="background:var(--A)">a₇</span>
+  <span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span>
+</div>
+<div class="tok-row"><span class="lbl">Req B:</span>
+  <span class="tok" style="background:var(--B)">b₀</span><span class="tok" style="background:var(--B)">b₁</span><span class="tok" style="background:var(--B)">b₂</span><span class="tok" style="background:var(--B)">b₃</span><span class="tok" style="background:var(--B)">b₄</span><span class="tok" style="background:var(--B)">b₅</span><span class="tok" style="background:var(--B)">b₆</span><span class="tok" style="background:var(--B)">b₇</span><span class="tok" style="background:var(--B)">b₈</span><span class="tok" style="background:var(--B)">b₉</span><span class="tok" style="background:var(--B)">b₁₀</span><span class="tok" style="background:var(--B)">b₁₁</span>
+  <span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span>
+</div>
+<div class="tok-row"><span class="lbl">Req C:</span>
+  <span class="tok" style="background:var(--C)">c₀</span><span class="tok" style="background:var(--C)">c₁</span>
+  <span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span>
+</div>
+
+<p style="margin-top:14px;color:var(--mute);font-size:13px">
+batch shape = <code>[3, 16, H, D]</code> ·
+<strong>实际 22 个真实 token，却要算 48 个</strong> · 浪费率 54%
+</p>
+
+<div class="callout bad">
+LLM 推理里长度差异极大（有的 50 token，有的 5000 token）。padding 浪费会非常严重，长尾请求拖死整个 batch。
+</div>
+</div>
+
+<div id="ragged-view" style="display:none;margin-top:14px">
+<p>解法：把所有请求的 token <strong>首尾相连拼成一根一维的扁平流</strong>，用一个 cumulative sum 数组指示每个请求的边界。</p>
+
+<div class="legend">
+  <div class="lg"><span class="sw" style="background:var(--A)"></span>Req A</div>
+  <div class="lg"><span class="sw" style="background:var(--B)"></span>Req B</div>
+  <div class="lg"><span class="sw" style="background:var(--C)"></span>Req C</div>
+</div>
+
+<div class="tok-row"><span class="lbl">flatten:</span>
+  <span class="tok" style="background:var(--A)">a₀</span><span class="tok" style="background:var(--A)">a₁</span><span class="tok" style="background:var(--A)">a₂</span><span class="tok" style="background:var(--A)">a₃</span><span class="tok" style="background:var(--A)">a₄</span><span class="tok" style="background:var(--A)">a₅</span><span class="tok" style="background:var(--A)">a₆</span><span class="tok" style="background:var(--A)">a₇</span>
+  <span class="tok" style="background:var(--B)">b₀</span><span class="tok" style="background:var(--B)">b₁</span><span class="tok" style="background:var(--B)">b₂</span><span class="tok" style="background:var(--B)">b₃</span><span class="tok" style="background:var(--B)">b₄</span><span class="tok" style="background:var(--B)">b₅</span><span class="tok" style="background:var(--B)">b₆</span><span class="tok" style="background:var(--B)">b₇</span><span class="tok" style="background:var(--B)">b₈</span><span class="tok" style="background:var(--B)">b₉</span><span class="tok" style="background:var(--B)">b₁₀</span><span class="tok" style="background:var(--B)">b₁₁</span>
+  <span class="tok" style="background:var(--C)">c₀</span><span class="tok" style="background:var(--C)">c₁</span>
+</div>
+
+<div class="svg-wrap" style="margin-top:14px">
+<svg viewBox="0 0 680 220" xmlns="http://www.w3.org/2000/svg">
+  <text x="340" y="20" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">cu_seqlens_q = [0, 8, 20, 22] · 3 个边界把流分成 3 段</text>
+  <!-- ruler -->
+  <g font-family="SF Mono" font-size="10" fill="#8b93a7">
+    <line x1="40" y1="60" x2="640" y2="60" stroke="#374151"/>
+    <g>
+      <line x1="40" y1="55" x2="40" y2="68" stroke="#cbd5e1"/>
+      <text x="40" y="80" text-anchor="middle">0</text>
+    </g>
+    <g>
+      <line x1="258" y1="55" x2="258" y2="68" stroke="#cbd5e1"/>
+      <text x="258" y="80" text-anchor="middle">8</text>
+    </g>
+    <g>
+      <line x1="585" y1="55" x2="585" y2="68" stroke="#cbd5e1"/>
+      <text x="585" y="80" text-anchor="middle">20</text>
+    </g>
+    <g>
+      <line x1="640" y1="55" x2="640" y2="68" stroke="#cbd5e1"/>
+      <text x="640" y="80" text-anchor="middle">22</text>
+    </g>
+  </g>
+  <!-- bars -->
+  <g>
+    <rect x="40" y="100" width="218" height="36" fill="var(--A)" rx="4"/>
+    <text x="149" y="123" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">Req A · [0, 8)</text>
+    <rect x="258" y="100" width="327" height="36" fill="var(--B)" rx="4"/>
+    <text x="421" y="123" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">Req B · [8, 20)</text>
+    <rect x="585" y="100" width="55" height="36" fill="var(--C)" rx="4"/>
+    <text x="612" y="123" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">Req C</text>
+  </g>
+  <!-- cu_seqlens markers (animated dots) -->
+  <g>
+    <circle cx="40" cy="155" r="6" fill="#fbbf24" class="pulse"/>
+    <circle cx="258" cy="155" r="6" fill="#fbbf24" class="pulse" style="animation-delay:.3s"/>
+    <circle cx="585" cy="155" r="6" fill="#fbbf24" class="pulse" style="animation-delay:.6s"/>
+    <circle cx="640" cy="155" r="6" fill="#fbbf24" class="pulse" style="animation-delay:.9s"/>
+  </g>
+  <text x="340" y="195" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600" font-family="SF Mono">cu_seqlens_q[i+1] − cu_seqlens_q[i] = 第 i 个请求的 q 长度</text>
+</svg>
+</div>
+
+<div class="callout info">
+<strong>kernel 拿到 cu_seqlens_q 就知道：</strong>
+<ul class="tight">
+  <li>第 0 个请求在 <code>[0, 8)</code> &nbsp;= cu_seqlens_q[1] − cu_seqlens_q[0]</li>
+  <li>第 1 个请求在 <code>[8, 20)</code></li>
+  <li>第 2 个请求在 <code>[20, 22)</code></li>
+  <li>一共 <code>len(cu_seqlens_q) - 1 = 3</code> 个请求</li>
+</ul>
+零 padding，零浪费。FlashAttention 的 <code>flash_attn_varlen_func</code>、FlashInfer 的 <code>BatchPrefillWithPagedKVCacheWrapper</code> 都吃这个格式。
+</div>
+
+<h4>为什么需要两个 cu_seqlens？q 和 k 的 ragged 形状不同！</h4>
+<p>prefill 时 q 和 k 长度一样，但 <strong>decode 或 extend prefill 时它们截然不同</strong>：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 680 230" xmlns="http://www.w3.org/2000/svg">
+  <text x="340" y="20" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">3 个请求都在 decode（每步生成 1 个 token，但历史长度不同）</text>
+
+  <!-- q -->
+  <text x="20" y="65" fill="#fbbf24" font-size="12" font-weight="600">Q 流</text>
+  <text x="20" y="78" fill="#8b93a7" font-size="10">每 req 1 token</text>
+  <g>
+    <rect x="80" y="50" width="32" height="32" fill="var(--A)" rx="3"/>
+    <text x="96" y="71" text-anchor="middle" fill="#0b0d12" font-size="11">a</text>
+    <rect x="116" y="50" width="32" height="32" fill="var(--B)" rx="3"/>
+    <text x="132" y="71" text-anchor="middle" fill="#0b0d12" font-size="11">b</text>
+    <rect x="152" y="50" width="32" height="32" fill="var(--C)" rx="3"/>
+    <text x="168" y="71" text-anchor="middle" fill="#0b0d12" font-size="11">c</text>
+  </g>
+  <text x="80" y="105" fill="#fbbf24" font-size="11" font-family="SF Mono">cu_seqlens_q = [0, 1, 2, 3]</text>
+
+  <!-- k -->
+  <text x="20" y="155" fill="#7dd3fc" font-size="12" font-weight="600">K/V 流</text>
+  <text x="20" y="168" fill="#8b93a7" font-size="10">含完整历史</text>
+  <g>
+    <rect x="80" y="140" width="100" height="32" fill="var(--A)" opacity=".7" rx="3"/>
+    <text x="130" y="161" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">A · 200 token</text>
+    <rect x="184" y="140" width="180" height="32" fill="var(--B)" opacity=".7" rx="3"/>
+    <text x="274" y="161" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">B · 350 token</text>
+    <rect x="368" y="140" width="50" height="32" fill="var(--C)" opacity=".7" rx="3"/>
+    <text x="393" y="161" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">C · 80</text>
+  </g>
+  <text x="80" y="195" fill="#7dd3fc" font-size="11" font-family="SF Mono">cu_seqlens_k = [0, 200, 550, 630]</text>
+  <text x="80" y="215" fill="#8b93a7" font-size="11">⇒ q 和 k 的 ragged 边界完全不同 ⇒ 必须分两个数组</text>
+</svg>
+</div>
+
+<pre><code><span class="com"># attention/fi.py:203</span>
+<span class="kw">if</span> max_seqlen_q == 1:                           <span class="com"># 纯 decode</span>
+    cu_seqlens_q_cpu = torch.<span class="fn">arange</span>(0, padded_size + 1, ...)
+<span class="kw">elif</span> all(l == 0 <span class="kw">for</span> l <span class="kw">in</span> cached_lens):          <span class="com"># 全新 prefill：q_len = k_len</span>
+    cu_seqlens_q_cpu = cu_seqlens_k_cpu          <span class="com"># 复用即可</span>
+<span class="kw">else</span>:                                           <span class="com"># extend prefill</span>
+    cu_seqlens_q_cpu = torch.<span class="fn">tensor</span>([0] + seqlens_q, ...).<span class="fn">cumsum_</span>(dim=0)</code></pre>
+</div>
+</div>
+
+<!-- ============ Step 3 ============ -->
+<h2 id="step3"><span class="step">STEP 3</span>Causal Mask 也变形了 · 这就是为什么需要 extend_len</h2>
+
+<div class="card">
+<p>朴素 attention 的 causal mask 是个完美的下三角。但 <strong>extend prefill</strong> 来了——前缀命中 Radix Cache，只算后面那段：</p>
+
+<div id="step3-mode" class="controls">
+  <button class="btn active" data-mode3="vanilla">朴素 prefill (4 个 token)</button>
+  <button class="btn" data-mode3="extend">extend prefill (cached=6, extend=4)</button>
+</div>
+
+<div id="vanilla-view" style="margin-top:14px">
+<div class="svg-wrap">
+<svg viewBox="0 0 680 320" xmlns="http://www.w3.org/2000/svg">
+  <text x="340" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">朴素 prefill：scores 是 [4×4] 方形，mask 是完美下三角</text>
+  <g font-family="SF Mono" font-size="11" fill="#8b93a7">
+    <text x="160" y="60" text-anchor="middle">k=0</text>
+    <text x="240" y="60" text-anchor="middle">k=1</text>
+    <text x="320" y="60" text-anchor="middle">k=2</text>
+    <text x="400" y="60" text-anchor="middle">k=3</text>
+  </g>
+  <g font-family="SF Mono" font-size="11" fill="#8b93a7">
+    <text x="120" y="105" text-anchor="end">q=0</text>
+    <text x="120" y="155" text-anchor="end">q=1</text>
+    <text x="120" y="205" text-anchor="end">q=2</text>
+    <text x="120" y="255" text-anchor="end">q=3</text>
+  </g>
+  <!-- grid -->
+  <g>
+    <!-- row q=0: 1000 -->
+    <rect x="130" y="80" width="60" height="40" fill="#34d399"/>
+    <rect x="190" y="80" width="60" height="40" fill="#374151"/>
+    <rect x="250" y="80" width="60" height="40" fill="#374151"/>
+    <rect x="310" y="80" width="60" height="40" fill="#374151"/>
+    <!-- row q=1: 1100 -->
+    <rect x="130" y="130" width="60" height="40" fill="#34d399"/>
+    <rect x="190" y="130" width="60" height="40" fill="#34d399"/>
+    <rect x="250" y="130" width="60" height="40" fill="#374151"/>
+    <rect x="310" y="130" width="60" height="40" fill="#374151"/>
+    <!-- q=2 -->
+    <rect x="130" y="180" width="60" height="40" fill="#34d399"/>
+    <rect x="190" y="180" width="60" height="40" fill="#34d399"/>
+    <rect x="250" y="180" width="60" height="40" fill="#34d399"/>
+    <rect x="310" y="180" width="60" height="40" fill="#374151"/>
+    <!-- q=3 -->
+    <rect x="130" y="230" width="60" height="40" fill="#34d399"/>
+    <rect x="190" y="230" width="60" height="40" fill="#34d399"/>
+    <rect x="250" y="230" width="60" height="40" fill="#34d399"/>
+    <rect x="310" y="230" width="60" height="40" fill="#34d399"/>
+  </g>
+  <text x="500" y="160" fill="#cbd5e1" font-size="13">需要：</text>
+  <text x="500" y="180" fill="var(--brand)" font-size="13" font-family="SF Mono">seq_len = 4</text>
+  <text x="500" y="205" fill="#8b93a7" font-size="11">就一个数</text>
+</svg>
+</div>
+</div>
+
+<div id="extend-view" style="display:none;margin-top:14px">
+<p>Req A：总长 10 个 token，前 6 个在 Radix Cache 命中（cached_len=6），这次只算后 4 个（extend_len=4）。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 720 380" xmlns="http://www.w3.org/2000/svg">
+  <text x="360" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">extend prefill：scores 是 [4×10] 矩形，mask 不是下三角</text>
+
+  <!-- col labels -->
+  <g font-family="SF Mono" font-size="10" fill="#8b93a7">
+    <text x="160" y="60" text-anchor="middle">k=0</text><text x="200" y="60" text-anchor="middle">1</text><text x="240" y="60" text-anchor="middle">2</text><text x="280" y="60" text-anchor="middle">3</text><text x="320" y="60" text-anchor="middle">4</text><text x="360" y="60" text-anchor="middle">5</text><text x="400" y="60" text-anchor="middle">6</text><text x="440" y="60" text-anchor="middle">7</text><text x="480" y="60" text-anchor="middle">8</text><text x="520" y="60" text-anchor="middle">9</text>
+  </g>
+  <text x="280" y="40" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">从 Radix Cache 读 KV</text>
+  <text x="500" y="40" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">新算 KV</text>
+
+  <!-- row labels -->
+  <g font-family="SF Mono" font-size="10" fill="#8b93a7">
+    <text x="135" y="105" text-anchor="end">q=6</text>
+    <text x="135" y="145" text-anchor="end">q=7</text>
+    <text x="135" y="185" text-anchor="end">q=8</text>
+    <text x="135" y="225" text-anchor="end">q=9</text>
+  </g>
+
+  <!-- mask grid -->
+  <g>
+    <!-- q=6: cols 0-6 valid, 7-9 mask -->
+    <g>
+      <rect x="140" y="80" width="40" height="40" fill="#34d399"/><rect x="180" y="80" width="40" height="40" fill="#34d399"/><rect x="220" y="80" width="40" height="40" fill="#34d399"/><rect x="260" y="80" width="40" height="40" fill="#34d399"/><rect x="300" y="80" width="40" height="40" fill="#34d399"/><rect x="340" y="80" width="40" height="40" fill="#34d399"/><rect x="380" y="80" width="40" height="40" fill="#34d399"/>
+      <rect x="420" y="80" width="40" height="40" fill="#374151"/><rect x="460" y="80" width="40" height="40" fill="#374151"/><rect x="500" y="80" width="40" height="40" fill="#374151"/>
+    </g>
+    <!-- q=7 -->
+    <g>
+      <rect x="140" y="120" width="40" height="40" fill="#34d399"/><rect x="180" y="120" width="40" height="40" fill="#34d399"/><rect x="220" y="120" width="40" height="40" fill="#34d399"/><rect x="260" y="120" width="40" height="40" fill="#34d399"/><rect x="300" y="120" width="40" height="40" fill="#34d399"/><rect x="340" y="120" width="40" height="40" fill="#34d399"/><rect x="380" y="120" width="40" height="40" fill="#34d399"/><rect x="420" y="120" width="40" height="40" fill="#34d399"/>
+      <rect x="460" y="120" width="40" height="40" fill="#374151"/><rect x="500" y="120" width="40" height="40" fill="#374151"/>
+    </g>
+    <!-- q=8 -->
+    <g>
+      <rect x="140" y="160" width="40" height="40" fill="#34d399"/><rect x="180" y="160" width="40" height="40" fill="#34d399"/><rect x="220" y="160" width="40" height="40" fill="#34d399"/><rect x="260" y="160" width="40" height="40" fill="#34d399"/><rect x="300" y="160" width="40" height="40" fill="#34d399"/><rect x="340" y="160" width="40" height="40" fill="#34d399"/><rect x="380" y="160" width="40" height="40" fill="#34d399"/><rect x="420" y="160" width="40" height="40" fill="#34d399"/><rect x="460" y="160" width="40" height="40" fill="#34d399"/>
+      <rect x="500" y="160" width="40" height="40" fill="#374151"/>
+    </g>
+    <!-- q=9 -->
+    <g>
+      <rect x="140" y="200" width="40" height="40" fill="#34d399"/><rect x="180" y="200" width="40" height="40" fill="#34d399"/><rect x="220" y="200" width="40" height="40" fill="#34d399"/><rect x="260" y="200" width="40" height="40" fill="#34d399"/><rect x="300" y="200" width="40" height="40" fill="#34d399"/><rect x="340" y="200" width="40" height="40" fill="#34d399"/><rect x="380" y="200" width="40" height="40" fill="#34d399"/><rect x="420" y="200" width="40" height="40" fill="#34d399"/><rect x="460" y="200" width="40" height="40" fill="#34d399"/><rect x="500" y="200" width="40" height="40" fill="#34d399"/>
+    </g>
+  </g>
+
+  <!-- annotations -->
+  <line x1="140" y1="265" x2="380" y2="265" stroke="#7dd3fc" stroke-width="2"/>
+  <text x="260" y="285" text-anchor="middle" fill="#7dd3fc" font-size="11">cached_len = 6（前缀复用）</text>
+  <line x1="420" y1="265" x2="540" y2="265" stroke="#fbbf24" stroke-width="2"/>
+  <text x="480" y="285" text-anchor="middle" fill="#fbbf24" font-size="11">extend_len = 4</text>
+
+  <text x="360" y="320" text-anchor="middle" fill="var(--brand)" font-size="12" font-weight="600" font-family="SF Mono">第 j 个 query 能看到的 key 上限 = cached_len + j</text>
+  <text x="360" y="345" text-anchor="middle" fill="#cbd5e1" font-size="12">必须同时给 kernel：extend_len、device_len、(隐式)cached_len</text>
+</svg>
+</div>
+
+<div class="callout warn">
+<strong>这就是 <code>extend_len</code> 和 <code>device_len</code> 必须同时给 kernel 的根本原因。</strong> 没有 cached_len 这个偏移信息，mask 画不出来——左下角的 6 列也得是有效的，否则 query 看不到自己的历史。
+</div>
+</div>
+</div>
+
+<!-- ============ Step 4 ============ -->
+<h2 id="step4"><span class="step">STEP 4</span>Paged KV Cache · 出现 page indices</h2>
+
+<div class="card">
+<p>到这里 K、V 还是 contiguous 的 tensor。但有个致命问题：</p>
+
+<div class="callout bad">
+<strong>问题：</strong> 每个请求要预留 <code>max_seq_len</code> 大小的 K、V buffer。可是不知道每个请求最终多长，按最大预留就是巨大浪费——max_seq_len=32k，平均请求 2k，浪费 15 倍显存。
+</div>
+
+<p><strong>解法（vLLM 提出的 PagedAttention）：</strong> 把整个 KV 池切成固定大小的"页"，按需申请。物理不连续，逻辑通过"页表"映射。</p>
+
+<div class="controls" id="step4-ctrl">
+  <button class="btn active" data-step4="off">不分页（contiguous）</button>
+  <button class="btn" data-step4="on">分页（paged）→ 显存利用率↑↑</button>
+</div>
+
+<!-- contiguous view -->
+<div id="cont-view" style="margin-top:14px">
+<p style="color:var(--mute);font-size:13px">每个请求按 max_seq_len 预留 16 个槽位，实际只用了少数：</p>
+<div class="tok-row"><span class="lbl">Req A:</span>
+  <span class="tok" style="background:var(--A)">a₀</span><span class="tok" style="background:var(--A)">a₁</span><span class="tok" style="background:var(--A)">a₂</span><span class="tok" style="background:var(--A)">a₃</span>
+  <span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span>
+</div>
+<div class="tok-row"><span class="lbl">Req B:</span>
+  <span class="tok" style="background:var(--B)">b₀</span><span class="tok" style="background:var(--B)">b₁</span>
+  <span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span><span class="tok pad">·</span>
+</div>
+<p style="color:var(--bad);font-size:12.5px;margin-top:6px">⚠️ 浪费 ~80% 显存。kernel 只需要知道每个请求的 seq_len。</p>
+</div>
+
+<!-- paged view -->
+<div id="paged-view" style="display:none;margin-top:14px">
+
+<h4>① 物理：全局 KV Pool 被切成统一大小的"页"</h4>
+<div class="svg-wrap">
+<svg viewBox="0 0 680 130" xmlns="http://www.w3.org/2000/svg">
+  <text x="340" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">KV Pool（全局，所有请求共用 · 假设 page_size=4）</text>
+  <g font-family="SF Mono" font-size="11">
+    <rect x="40" y="40" width="70" height="55" fill="var(--A)" rx="4"/>
+    <text x="75" y="60" text-anchor="middle" fill="#0b0d12" font-size="10">page#0</text>
+    <text x="75" y="80" text-anchor="middle" fill="#0b0d12" font-size="9">a₀a₁a₂a₃</text>
+
+    <rect x="115" y="40" width="70" height="55" fill="var(--B)" rx="4"/>
+    <text x="150" y="60" text-anchor="middle" fill="#0b0d12" font-size="10">page#1</text>
+    <text x="150" y="80" text-anchor="middle" fill="#0b0d12" font-size="9">b₀b₁..</text>
+
+    <rect x="190" y="40" width="70" height="55" fill="#374151" stroke="#4b5563" stroke-dasharray="3 3" rx="4"/>
+    <text x="225" y="60" text-anchor="middle" fill="#9ca3af" font-size="10">page#2</text>
+    <text x="225" y="80" text-anchor="middle" fill="#9ca3af" font-size="9">free</text>
+
+    <rect x="265" y="40" width="70" height="55" fill="var(--A)" rx="4"/>
+    <text x="300" y="60" text-anchor="middle" fill="#0b0d12" font-size="10">page#3</text>
+    <text x="300" y="80" text-anchor="middle" fill="#0b0d12" font-size="9">a₄a₅a₆a₇</text>
+
+    <rect x="340" y="40" width="70" height="55" fill="#374151" stroke="#4b5563" stroke-dasharray="3 3" rx="4"/>
+    <text x="375" y="60" text-anchor="middle" fill="#9ca3af" font-size="10">page#4</text>
+    <text x="375" y="80" text-anchor="middle" fill="#9ca3af" font-size="9">free</text>
+
+    <rect x="415" y="40" width="70" height="55" fill="var(--A)" rx="4"/>
+    <text x="450" y="60" text-anchor="middle" fill="#0b0d12" font-size="10">page#5</text>
+    <text x="450" y="80" text-anchor="middle" fill="#0b0d12" font-size="9">a₁₂a₁₃..</text>
+
+    <rect x="490" y="40" width="70" height="55" fill="#374151" stroke="#4b5563" stroke-dasharray="3 3" rx="4"/>
+    <text x="525" y="60" text-anchor="middle" fill="#9ca3af" font-size="10">page#6</text>
+
+    <rect x="565" y="40" width="70" height="55" fill="var(--A)" rx="4"/>
+    <text x="600" y="60" text-anchor="middle" fill="#0b0d12" font-size="10">page#7</text>
+    <text x="600" y="80" text-anchor="middle" fill="#0b0d12" font-size="9">a₈a₉a₁₀a₁₁</text>
+  </g>
+  <text x="340" y="120" text-anchor="middle" fill="#8b93a7" font-size="11">A 的 KV 物理上分散在 page#0, #3, #7, #5（顺序乱）；B 在 page#1</text>
+</svg>
+</div>
+
+<h4>② 逻辑：每个请求一行 page_table，记录"我用了哪些物理页"</h4>
+<div class="svg-wrap">
+<svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg">
+  <text x="340" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">page_table[req.table_idx] = 该请求按逻辑顺序使用的物理页号</text>
+
+  <g font-family="SF Mono" font-size="12">
+    <text x="20" y="70" fill="#8b93a7">A:</text>
+    <rect x="60" y="50" width="60" height="36" fill="var(--A)" rx="4"/>
+    <text x="90" y="73" text-anchor="middle" fill="#0b0d12" font-weight="600">3</text>
+    <rect x="125" y="50" width="60" height="36" fill="var(--A)" rx="4"/>
+    <text x="155" y="73" text-anchor="middle" fill="#0b0d12" font-weight="600">7</text>
+    <rect x="190" y="50" width="60" height="36" fill="var(--A)" rx="4"/>
+    <text x="220" y="73" text-anchor="middle" fill="#0b0d12" font-weight="600">0</text>
+    <rect x="255" y="50" width="60" height="36" fill="var(--A)" rx="4"/>
+    <text x="285" y="73" text-anchor="middle" fill="#0b0d12" font-weight="600">5</text>
+    <text x="350" y="73" fill="#fbbf24">⇒ A 用了 4 页（每页 4 token，共 16 个 KV slot）</text>
+
+    <text x="20" y="135" fill="#8b93a7">B:</text>
+    <rect x="60" y="115" width="60" height="36" fill="var(--B)" rx="4"/>
+    <text x="90" y="138" text-anchor="middle" fill="#0b0d12" font-weight="600">1</text>
+    <text x="350" y="138" fill="#7dd3fc">⇒ B 只用了 1 页</text>
+  </g>
+</svg>
+</div>
+
+<h4>③ kernel 想读 A 的第 18 个 token 的 KV：通过页表"间接寻址"</h4>
+<pre><code>page_idx = 18 / page_size = 18 / 4 = <span class="num">4</span>      <span class="com"># 第 4 页</span>
+offset   = 18 % page_size = 18 % 4 = <span class="num">2</span>      <span class="com"># 在该页内偏移 2</span>
+物理位置 = page_table[A][<span class="num">4</span>] * page_size + offset
+        = ?                                <span class="com"># 但 A 只用了 4 页，访问 [4] 越界！</span>
+                                            <span class="com"># （这里只是演示：实际请求按 device_len 限制）</span></code></pre>
+
+<p>正确逻辑（mini-sglang FI backend, page_size=1）：</p>
+<pre><code><span class="com"># attention/fi.py:215</span>
+indices = torch.<span class="fn">cat</span>([page_table[req.table_idx, : req.device_len] <span class="kw">for</span> req <span class="kw">in</span> reqs])
+
+<span class="com"># 例如 batch 里有 A (4 个 KV) + B (2 个 KV)：</span>
+<span class="com"># indices = [3, 7, 1, 5,  6, 4]  ← 物理页号一根扁平数组</span>
+<span class="com"># cu_seqlens_k 把它切成 [A 段, B 段]</span></code></pre>
+
+<div class="callout info">
+<strong>这就是 FIMetadata 里的 <code>indices</code> 字段。</strong> 它把所有请求的 page indices 拼成一根扁平数组，与 <code>cu_seqlens_k</code> 一一对应。kernel 内部读 KV 时，先按 cu_seqlens_k 定位到这个 req 的 page 段，再用 page index 跳转到 KV pool 的实际物理位置。
+</div>
+
+</div>
+</div>
+
+<!-- ============ Step 5 ============ -->
+<h2 id="step5"><span class="step">STEP 5</span>last_page_len · 最后一页通常没填满</h2>
+
+<div class="card">
+<p>如果 page_size > 1，每个请求的最后一页通常没填满。比如 page_size=16，请求长度 50：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg">
+  <text x="340" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">page_size=16, seq_len=50 → 50 = 16 + 16 + 16 + 2</text>
+  <g font-family="SF Mono" font-size="11">
+    <!-- page 1: full -->
+    <rect x="50" y="60" width="120" height="60" fill="var(--A)" rx="6"/>
+    <text x="110" y="85" text-anchor="middle" fill="#0b0d12" font-weight="600">page 1</text>
+    <text x="110" y="105" text-anchor="middle" fill="#0b0d12" font-size="10">16/16 满</text>
+    <!-- page 2: full -->
+    <rect x="180" y="60" width="120" height="60" fill="var(--A)" rx="6"/>
+    <text x="240" y="85" text-anchor="middle" fill="#0b0d12" font-weight="600">page 2</text>
+    <text x="240" y="105" text-anchor="middle" fill="#0b0d12" font-size="10">16/16 满</text>
+    <!-- page 3: full -->
+    <rect x="310" y="60" width="120" height="60" fill="var(--A)" rx="6"/>
+    <text x="370" y="85" text-anchor="middle" fill="#0b0d12" font-weight="600">page 3</text>
+    <text x="370" y="105" text-anchor="middle" fill="#0b0d12" font-size="10">16/16 满</text>
+    <!-- page 4: partial -->
+    <g>
+      <rect x="440" y="60" width="120" height="60" fill="#374151" rx="6"/>
+      <rect x="440" y="60" width="15" height="60" fill="var(--A)" rx="0"/>
+      <rect x="440" y="60" width="120" height="60" fill="none" stroke="var(--A)" stroke-width="2" rx="6" class="pulse"/>
+      <text x="500" y="85" text-anchor="middle" fill="#fbbf24" font-weight="600">page 4</text>
+      <text x="500" y="105" text-anchor="middle" fill="#fbbf24" font-size="10">2/16 ← last_page_len=2</text>
+    </g>
+  </g>
+  <text x="340" y="160" text-anchor="middle" fill="#cbd5e1" font-size="12">paged attention kernel 必须知道：前 3 页全读，最后一页只读前 2 行</text>
+  <text x="340" y="180" text-anchor="middle" fill="#bad" font-size="12">否则会读到垃圾数据 → softmax 全乱掉</text>
+</svg>
+</div>
+
+<p>mini-sglang 默认 <code>page_size=1</code>，所以 <code>last_page_len</code> 永远 = 1：</p>
+
+<pre><code><span class="com"># attention/fi.py:216</span>
+last_page_len_cpu=self.<span class="fn">_get_ones_cpu</span>(padded_size),   <span class="com"># 全 1</span></code></pre>
+
+<div class="callout">
+但接口必须留——为了支持 page_size 16/32/64（trtllm 后端要求）。一旦 page_size > 1，<code>last_page_len</code> 就成了不可或缺的字段。
+</div>
+</div>
+
+<!-- ============ Step 6 ============ -->
+<h2 id="step6"><span class="step">STEP 6</span>num_qo_heads / num_kv_heads / head_dim · 支持 GQA + TP</h2>
+
+<div class="card">
+
+<h4>① 现代模型用 GQA（Grouped Query Attention）：Q 头多，KV 头少</h4>
+<div class="svg-wrap">
+<svg viewBox="0 0 680 230" xmlns="http://www.w3.org/2000/svg">
+  <text x="340" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">Llama-3-70B / Qwen3-32B：32 个 Q 头共享 8 组 KV（每 4 个 Q 共享 1 组）</text>
+  <!-- Q heads 32 -->
+  <g>
+    <text x="20" y="70" fill="#fbbf24" font-size="12" font-weight="600">Q</text>
+    <text x="20" y="84" fill="#8b93a7" font-size="10">32 heads</text>
+    <g font-family="SF Mono" font-size="9" fill="#0b0d12">
+      <g>
+        <!-- 32 small rects -->
+        <g id="q-row"></g>
+      </g>
+    </g>
+  </g>
+  <!-- KV heads 8 -->
+  <g transform="translate(0,140)">
+    <text x="20" y="20" fill="#7dd3fc" font-size="12" font-weight="600">KV</text>
+    <text x="20" y="34" fill="#8b93a7" font-size="10">8 heads</text>
+    <g id="kv-row"></g>
+  </g>
+  <script type="application/x-script">/* dynamic placed below */</script>
+</svg>
+</div>
+
+<script>
+// dynamically generate q/kv heads grid
+window.addEventListener('DOMContentLoaded',()=>{
+  const qRow = document.querySelector('#q-row');
+  if(qRow){
+    const ns='http://www.w3.org/2000/svg';
+    for(let i=0;i<32;i++){
+      const r=document.createElementNS(ns,'rect');
+      r.setAttribute('x',60+i*18);r.setAttribute('y',60);r.setAttribute('width',16);r.setAttribute('height',32);
+      r.setAttribute('fill','#fbbf24');r.setAttribute('rx',2);
+      qRow.appendChild(r);
+      const t=document.createElementNS(ns,'text');
+      t.setAttribute('x',68+i*18);t.setAttribute('y',82);t.setAttribute('text-anchor','middle');t.setAttribute('font-size',8);t.setAttribute('fill','#0b0d12');
+      t.textContent=i; qRow.appendChild(t);
+    }
+  }
+  const kvRow = document.querySelector('#kv-row');
+  if(kvRow){
+    const ns='http://www.w3.org/2000/svg';
+    for(let i=0;i<8;i++){
+      const r=document.createElementNS(ns,'rect');
+      r.setAttribute('x',60+i*72);r.setAttribute('y',45);r.setAttribute('width',64);r.setAttribute('height',32);
+      r.setAttribute('fill','#7dd3fc');r.setAttribute('rx',3);
+      kvRow.appendChild(r);
+      const t=document.createElementNS(ns,'text');
+      t.setAttribute('x',92+i*72);t.setAttribute('y',66);t.setAttribute('text-anchor','middle');t.setAttribute('font-size',10);t.setAttribute('fill','#0b0d12');t.setAttribute('font-weight','600');
+      t.textContent='kv'+i; kvRow.appendChild(t);
+    }
+  }
+});
+</script>
+
+<p><strong>kernel 必须知道这个 ratio</strong>，才能内部正确做"4 个 Q 头查同一组 KV"。否则它默认 num_q == num_kv，结果就错了。</p>
+
+<h4>② 加上 TP（Tensor Parallel）后，每个 rank 上的 head 数还要再除一次</h4>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 680 200" xmlns="http://www.w3.org/2000/svg">
+  <text x="340" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">TP=4：32 个 Q 头切 4 份 → 每 rank 8 个 Q 头；8 个 KV 头切 4 份 → 每 rank 2 个</text>
+  <g font-family="SF Mono" font-size="11">
+    <text x="40" y="60" fill="#fbbf24" font-weight="600">Rank 0</text>
+    <rect x="40" y="70" width="130" height="40" fill="#fbbf24" rx="4"/>
+    <text x="105" y="95" text-anchor="middle" fill="#0b0d12">Q[0..7]</text>
+    <rect x="40" y="115" width="50" height="30" fill="#7dd3fc" rx="4"/>
+    <text x="65" y="135" text-anchor="middle" fill="#0b0d12">KV[0..1]</text>
+
+    <text x="200" y="60" fill="#fbbf24" font-weight="600">Rank 1</text>
+    <rect x="200" y="70" width="130" height="40" fill="#fbbf24" rx="4"/>
+    <text x="265" y="95" text-anchor="middle" fill="#0b0d12">Q[8..15]</text>
+    <rect x="200" y="115" width="50" height="30" fill="#7dd3fc" rx="4"/>
+    <text x="225" y="135" text-anchor="middle" fill="#0b0d12">KV[2..3]</text>
+
+    <text x="360" y="60" fill="#fbbf24" font-weight="600">Rank 2</text>
+    <rect x="360" y="70" width="130" height="40" fill="#fbbf24" rx="4"/>
+    <text x="425" y="95" text-anchor="middle" fill="#0b0d12">Q[16..23]</text>
+    <rect x="360" y="115" width="50" height="30" fill="#7dd3fc" rx="4"/>
+    <text x="385" y="135" text-anchor="middle" fill="#0b0d12">KV[4..5]</text>
+
+    <text x="520" y="60" fill="#fbbf24" font-weight="600">Rank 3</text>
+    <rect x="520" y="70" width="130" height="40" fill="#fbbf24" rx="4"/>
+    <text x="585" y="95" text-anchor="middle" fill="#0b0d12">Q[24..31]</text>
+    <rect x="520" y="115" width="50" height="30" fill="#7dd3fc" rx="4"/>
+    <text x="545" y="135" text-anchor="middle" fill="#0b0d12">KV[6..7]</text>
+  </g>
+  <text x="340" y="180" text-anchor="middle" fill="#cbd5e1" font-size="11">每个 rank 上的 attention kernel 只看到自己那部分 → metadata 存 local 数</text>
+</svg>
+</div>
+
+<pre><code><span class="com"># attention/fi.py:111</span>
+self.qo_head_local = <span class="fn">div_even</span>(self.config.num_qo_heads, tp_size)
+                                                 <span class="com"># 32 / 4 = 8</span>
+self.kv_head_local = <span class="fn">div_even</span>(self.config.num_kv_heads, tp_size, allow_replicate=<span class="kw">True</span>)
+                                                 <span class="com"># 8 / 4 = 2</span></code></pre>
+
+<div class="callout warn">
+所以 metadata 里存的是 <strong>本 rank 上的 head 数</strong>，不是模型原始的 head 数。这就是为什么 <code>num_qo_heads / num_kv_heads / head_dim</code> 必须显式传——kernel 不"知道"模型架构和 TP 配置。
+</div>
+</div>
+
+<!-- ============ Summary ============ -->
+<h2 id="summary"><span class="step">SUM</span>把所有元数据拼回 FIMetadata</h2>
+
+<div class="card">
+<p>理解完每一项的来源，再回头看这个 dataclass 就一目了然——<strong>每个字段都对应演化路径上的一步</strong>：</p>
+
+<table style="margin-top:14px">
+<thead>
+<tr>
+  <th style="width:32%">字段</th>
+  <th style="width:14%">来源 step</th>
+  <th>解决的问题</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+  <td><code>cu_seqlens_q_cpu</code><br><code>cu_seqlens_q_gpu</code></td>
+  <td><span class="lbl" style="color:var(--brand)">Step 2</span></td>
+  <td>query 端的 ragged 边界。把不等长 batch 拼成一根扁平流，告诉 kernel 每个请求 q 的起止位置。</td>
+</tr>
+<tr>
+  <td><code>cu_seqlens_k_cpu</code></td>
+  <td><span class="lbl" style="color:var(--brand)">Step 2</span></td>
+  <td>key 端的 ragged 边界。decode/extend 时与 q 不同（q 短 k 长），必须独立。</td>
+</tr>
+<tr>
+  <td><code>indices</code></td>
+  <td><span class="lbl" style="color:var(--pink)">Step 4</span></td>
+  <td>所有请求的 page indices 拼接成一根扁平数组。kernel 通过它做 paged 间接寻址。</td>
+</tr>
+<tr>
+  <td><code>last_page_len_cpu</code></td>
+  <td><span class="lbl" style="color:var(--purple)">Step 5</span></td>
+  <td>每个请求最后一页的有效行数。page_size>1 时必需，否则会读到垃圾数据。</td>
+</tr>
+<tr>
+  <td><code>num_qo_heads</code><br><code>num_kv_heads</code></td>
+  <td><span class="lbl" style="color:var(--warn)">Step 6</span></td>
+  <td>本 rank 上的 Q/KV 头数。支持 GQA（不等）+ TP（local 切分）。</td>
+</tr>
+<tr>
+  <td><code>head_dim</code></td>
+  <td><span class="lbl" style="color:var(--warn)">Step 6</span></td>
+  <td>每个头的维度。kernel 内部 softmax 缩放因子用。</td>
+</tr>
+<tr>
+  <td><code>page_size</code></td>
+  <td><span class="lbl" style="color:var(--pink)">Step 4</span></td>
+  <td>每页 token 数。决定 indices 解析方式 + last_page_len 含义。</td>
+</tr>
+<tr>
+  <td><code>seq_lens_cpu</code></td>
+  <td><span class="lbl" style="color:var(--brand2)">Step 1/3</span></td>
+  <td>每个请求的 device_len（k 总长度）。kernel decode 路径常用，FlashInfer plan 也要。</td>
+</tr>
+<tr>
+  <td><code>pos_encoding_mode</code></td>
+  <td><span class="lbl" style="color:var(--mute)">额外</span></td>
+  <td>是否让 kernel 顺手做 RoPE。mini-sglang 设 "NONE"（RoPE 单独算）。</td>
+</tr>
+<tr>
+  <td><code>dtype</code></td>
+  <td><span class="lbl" style="color:var(--mute)">额外</span></td>
+  <td>KV cache 精度（fp16/bf16/fp8）。</td>
+</tr>
+<tr>
+  <td><code>wrapper</code></td>
+  <td><span class="lbl" style="color:var(--mute)">额外</span></td>
+  <td>FlashInfer 特有：选 prefill 还是 decode wrapper。</td>
+</tr>
+</tbody>
+</table>
+</div>
+
+<h2>三段式总结</h2>
+<div class="grid cols-3">
+  <div class="card">
+    <h3>调度层视角</h3>
+    <p style="font-size:13px;color:var(--mute)">关心"谁、要算什么、KV 在哪个 table_idx"</p>
+    <pre style="font-size:11.5px"><code>List[Req]
+  Req.input_ids
+  Req.cached_len
+  Req.device_len
+  Req.extend_len
+  Req.table_idx
+
+page_table[GPU tensor]
+  [max_req+1, max_seq_len]</code></pre>
+  </div>
+  <div class="card" style="border-color:var(--brand)">
+    <h3>↓ prepare_metadata ↓</h3>
+    <p style="font-size:13px;color:var(--mute)"><strong>翻译器</strong>：把"按请求组织的状态"翻译成"按 ragged 流组织的扁平张量"</p>
+    <ul class="tight" style="font-size:12.5px">
+      <li>遍历每个 req 取长度 → 生成 cu_seqlens</li>
+      <li>遍历每个 req 取 page_table 行 → cat 成 indices</li>
+      <li>从全局配置取 head 数、page size 等</li>
+      <li>异步发起 H2D 拷贝</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>kernel 视角</h3>
+    <p style="font-size:13px;color:var(--mute)">关心"扁平 ragged 流 + 边界 + KV 物理地址"</p>
+    <pre style="font-size:11.5px"><code>cu_seqlens_q  = [...]
+cu_seqlens_k  = [...]
+indices       = [...]
+last_page_len = [...]
+num_q_heads, num_kv_heads
+head_dim
+wrapper / dtype</code></pre>
+  </div>
+</div>
+
+<h2>为什么必须放在 prepare_metadata 而不是 model.forward 里临时算？</h2>
+<div class="grid cols-3">
+  <div class="card">
+    <h3>① 复用</h3>
+    <p>同一份元数据要被所有 transformer layer 复用。模型 28~80 层 attention，如果在 layer 里算就重复 28~80 次。一次性在 prepare_metadata 算好，所有 layer 共享 <code>batch.attn_metadata</code>。</p>
+  </div>
+  <div class="card">
+    <h3>② 异步预热</h3>
+    <p>FIMetadata 里既有 cpu tensor 也有 gpu tensor。<code>cu_seqlens_q_gpu = cu_seqlens_q_cpu.to(device, non_blocking=True)</code>——这是异步 H2D。<u>提前发起</u>让 GPU forward 启动时拷贝早就完成了，避免 stall。</p>
+  </div>
+  <div class="card">
+    <h3>③ FlashInfer plan</h3>
+    <p>FlashInfer 不是无状态 kernel，它有"planning"阶段，预先分析 batch 形状、分配 workspace。这个 plan 一旦做了，整次 forward 的所有层都用同一个 plan（<code>fi.py:123</code>）。所以必须在 forward 之前完成。</p>
+  </div>
+</div>
+
+<div class="callout">
+<strong>一句话总结：</strong>
+<code>prepare_metadata</code> 是<u>调度层视角</u>和 <u>attention kernel 视角</u>之间的<strong>翻译器</strong>。它把"按请求组织的状态" 翻译成"按 ragged 流组织的扁平张量+边界数组"，让通用 kernel 也能高效服务于 continuous batching + paged KV。
+</div>
+
+<!-- interactivity -->
+<script>
+// Step 2: pad ↔ ragged
+document.querySelectorAll('#step2-mode .btn').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('#step2-mode .btn').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    const mode=b.dataset.mode;
+    document.getElementById('pad-view').style.display    = mode==='pad'    ? 'block':'none';
+    document.getElementById('ragged-view').style.display = mode==='ragged'? 'block':'none';
+  });
+});
+
+// Step 3: vanilla ↔ extend
+document.querySelectorAll('#step3-mode .btn').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('#step3-mode .btn').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    const mode=b.dataset.mode3;
+    document.getElementById('vanilla-view').style.display = mode==='vanilla'? 'block':'none';
+    document.getElementById('extend-view').style.display  = mode==='extend' ? 'block':'none';
+  });
+});
+
+// Step 4: contiguous ↔ paged
+document.querySelectorAll('#step4-ctrl .btn').forEach(b=>{
+  b.addEventListener('click',()=>{
+    document.querySelectorAll('#step4-ctrl .btn').forEach(x=>x.classList.remove('active'));
+    b.classList.add('active');
+    const mode=b.dataset.step4;
+    document.getElementById('cont-view').style.display  = mode==='off'? 'block':'none';
+    document.getElementById('paged-view').style.display = mode==='on' ? 'block':'none';
+  });
+});
+</script>
+
+<div class="foot">
+<a href="index.html" style="color:var(--brand2)">← 回到学习手册首页</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

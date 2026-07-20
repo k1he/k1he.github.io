@@ -1,0 +1,393 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Tokenizer 全链路 · 从字符串到 Token Stream</title>
+<style>
+:root{
+  --bg:#090b0f;--paper:#10141b;--paper2:#151b24;--ink:#eef1f4;--mute:#8d98a8;
+  --line:#27313d;--green:#72e6b1;--cyan:#72d8ff;--amber:#ffc857;--red:#ff7070;
+  --violet:#b9a3ff;--blue:#579dff;--shadow:0 24px 70px rgba(0,0,0,.34);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;background:var(--bg)}
+body{margin:0;color:var(--ink);font:15px/1.75 "Iowan Old Style","Songti SC","Noto Serif CJK SC",serif;background:
+radial-gradient(circle at 18% -5%,rgba(114,216,255,.09),transparent 29rem),
+radial-gradient(circle at 100% 12%,rgba(114,230,177,.07),transparent 34rem),var(--bg)}
+body:before{content:"";position:fixed;inset:0;pointer-events:none;opacity:.23;background-image:linear-gradient(rgba(255,255,255,.018) 1px,transparent 1px),linear-gradient(90deg,rgba(255,255,255,.018) 1px,transparent 1px);background-size:28px 28px;mask-image:linear-gradient(to bottom,#000,transparent 75%)}
+.wrap{width:min(1240px,calc(100% - 40px));margin:auto;padding:34px 0 90px;position:relative}
+.mono,code,pre,.eyebrow,.metric,.chip,.btn,.path,.stage-no,.formula{font-family:"SF Mono","JetBrains Mono",Menlo,monospace}
+.hero{min-height:470px;border:1px solid var(--line);border-radius:24px;padding:50px 52px;position:relative;overflow:hidden;background:linear-gradient(135deg,rgba(21,27,36,.96),rgba(9,11,15,.95));box-shadow:var(--shadow)}
+.hero:after{content:"TOKEN\A IZER";white-space:pre;position:absolute;right:32px;top:-28px;font:900 126px/.76 "Arial Narrow",Impact,sans-serif;letter-spacing:-8px;color:transparent;-webkit-text-stroke:1px rgba(114,230,177,.13);transform:skewY(-5deg);pointer-events:none}
+.eyebrow{color:var(--green);letter-spacing:.18em;font-size:11px;text-transform:uppercase}
+h1{font-size:clamp(38px,6vw,76px);line-height:.98;letter-spacing:-.045em;margin:22px 0 20px;max-width:900px;font-weight:650}
+h1 em{font-style:normal;color:var(--green)}
+.lead{font-size:18px;color:#b8c1ce;max-width:790px;margin:0 0 28px}
+.hero-kpis{display:flex;gap:10px;flex-wrap:wrap;position:absolute;left:52px;bottom:42px}
+.metric{font-size:11px;color:var(--mute);border:1px solid var(--line);background:rgba(9,11,15,.7);padding:8px 11px;border-radius:8px}.metric b{color:var(--amber)}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:22px 0 0}.toc a{color:var(--cyan);text-decoration:none;border:1px solid var(--line);background:#10151c;padding:7px 12px;border-radius:99px;font-size:12px}.toc a:hover{border-color:var(--cyan);transform:translateY(-1px)}
+h2{font-size:31px;line-height:1.2;margin:72px 0 18px;letter-spacing:-.025em;display:flex;align-items:center;gap:12px}
+.stage-no{font-size:11px;letter-spacing:.1em;color:var(--bg);background:var(--green);padding:4px 8px;border-radius:5px;white-space:nowrap}
+h3{font-size:18px;margin:25px 0 9px;color:var(--cyan)}
+h4{font-size:14px;color:var(--amber);margin:18px 0 7px}
+p{margin:9px 0}.muted{color:var(--mute)}.green{color:var(--green)}.amber{color:var(--amber)}.red{color:var(--red)}.cyan{color:var(--cyan)}
+.card,.lab{background:linear-gradient(145deg,rgba(18,23,31,.97),rgba(13,17,23,.97));border:1px solid var(--line);border-radius:17px;padding:23px;margin:14px 0;box-shadow:0 10px 30px rgba(0,0,0,.15)}
+.lab{border-color:#334252;padding:26px;position:relative;overflow:hidden}.lab:before{content:"LIVE MODEL";position:absolute;right:15px;top:12px;font:9px "SF Mono",monospace;letter-spacing:.16em;color:#506071}
+.grid{display:grid;gap:14px}.cols2{grid-template-columns:repeat(2,minmax(0,1fr))}.cols3{grid-template-columns:repeat(3,minmax(0,1fr))}.cols4{grid-template-columns:repeat(4,minmax(0,1fr))}
+.callout{border-left:3px solid var(--green);background:rgba(114,230,177,.055);padding:13px 16px;border-radius:0 10px 10px 0;margin:15px 0}.callout.warn{border-color:var(--amber);background:rgba(255,200,87,.055)}.callout.bad{border-color:var(--red);background:rgba(255,112,112,.055)}.callout.info{border-color:var(--cyan);background:rgba(114,216,255,.055)}
+table{width:100%;border-collapse:collapse;margin:12px 0;font-size:13px}th,td{padding:11px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mute);font-weight:500}.yes{color:var(--green)}.no{color:var(--red)}
+code{background:#1a222d;color:#d7e2ee;border-radius:4px;padding:1px 5px;font-size:12px}pre{background:#080b0f;border:1px solid var(--line);border-radius:12px;padding:16px;overflow:auto;font-size:12px;line-height:1.65}.kw{color:var(--violet)}.fn{color:var(--cyan)}.str{color:var(--green)}.num{color:var(--amber)}.com{color:#677487;font-style:italic}
+.path{font-size:11px;color:var(--cyan);word-break:break-all}.source-link{color:inherit;text-decoration:none;border-bottom:1px dotted #506071}.source-link:hover{color:var(--green)}
+.controls{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin:13px 0}.btn{border:1px solid var(--line);background:#17202a;color:var(--ink);font-size:11px;border-radius:7px;padding:8px 12px;cursor:pointer}.btn:hover,.btn.active{border-color:var(--green);color:var(--green)}.btn.primary{background:var(--green);color:#07100c;border-color:var(--green);font-weight:700}.btn.primary:hover{color:#07100c;background:#8df0c4}
+input[type=range]{accent-color:var(--green);width:170px}.range-label{font:11px "SF Mono",monospace;color:var(--mute)}.range-label b{color:var(--amber)}
+.pipeline{display:grid;grid-template-columns:repeat(7,minmax(104px,1fr));gap:23px;align-items:stretch;margin:22px 0;overflow:auto;padding:10px 4px 18px}.pipe-node{min-width:104px;background:#0c1016;border:1px solid var(--line);border-radius:12px;padding:13px 10px;position:relative;transition:.35s;min-height:108px}.pipe-node:not(:last-child):after{content:"→";position:absolute;right:-18px;top:37px;color:#526072;font:18px "SF Mono",monospace}.pipe-node.active{border-color:var(--green);box-shadow:0 0 0 3px rgba(114,230,177,.08),0 0 26px rgba(114,230,177,.15);transform:translateY(-5px)}.pipe-node.done{border-color:#3e6f5b;background:rgba(114,230,177,.04)}.pipe-node .n{font:9px "SF Mono",monospace;color:#667487}.pipe-node strong{font-size:13px;display:block;margin:7px 0 4px}.pipe-node small{color:var(--mute);font-size:10.5px;line-height:1.45;display:block}
+.narration{min-height:54px;border-left:2px solid var(--green);padding:9px 13px;background:rgba(114,230,177,.045);font-size:13px;color:#c8d1dc}
+.token-stage{min-height:130px;border:1px solid var(--line);background:#080b0f;border-radius:12px;padding:19px;display:flex;gap:8px;align-content:flex-start;flex-wrap:wrap}.piece{border:1px solid #344153;border-radius:6px;padding:6px 9px;background:#151d27;font:12px "SF Mono",monospace;transition:.35s}.piece.hot{color:#07100c;background:var(--amber);border-color:var(--amber);transform:scale(1.06)}.piece.merged{color:#07100c;background:var(--green);border-color:var(--green);animation:pop .35s ease}.piece.byte{border-color:#4e436f;color:#d4c8ff}.piece.id{border-color:#32637a;color:var(--cyan)}
+@keyframes pop{50%{transform:scale(1.15)}}
+.compare{display:grid;grid-template-columns:1fr 70px 1fr;gap:14px;align-items:stretch}.arch{border:1px solid var(--line);border-radius:14px;background:#0b0f14;padding:16px;min-height:300px}.arch h4{margin:0 0 15px}.arch-lane{display:flex;align-items:center;gap:6px;margin:11px 0}.arch-box{border:1px solid #344052;border-radius:7px;background:#151c25;padding:7px 9px;font:10px "SF Mono",monospace;flex:1;text-align:center;transition:.3s}.arch-box.work{border-color:var(--amber);color:var(--amber);box-shadow:0 0 17px rgba(255,200,87,.14)}.arch-box.dup{border-color:var(--red);color:var(--red)}.arch-arrow{color:#526072}.versus{display:flex;align-items:center;justify-content:center;color:#526072;font:11px "SF Mono",monospace;writing-mode:vertical-rl;letter-spacing:.15em}
+.budget{display:grid;grid-template-columns:1.1fr .9fr;gap:18px}.gauge{height:14px;background:#080b0f;border:1px solid var(--line);border-radius:99px;overflow:hidden;margin:8px 0}.gauge>i{height:100%;display:block;width:10%;background:linear-gradient(90deg,var(--green),var(--amber),var(--red));border-radius:99px;transition:.4s}.big-number{font:700 42px/1 "SF Mono",monospace;color:var(--green);letter-spacing:-.07em}.kpi-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}.kpi-box{border:1px solid var(--line);background:#0b0f14;border-radius:10px;padding:13px}.kpi-box .v{font:700 21px "SF Mono",monospace;color:var(--amber)}.kpi-box .l{font:10px "SF Mono",monospace;color:var(--mute);margin-top:5px}
+.timeline{position:relative;padding:10px 0}.time-row{display:grid;grid-template-columns:130px 1fr 70px;gap:10px;align-items:center;margin:7px 0}.time-name{font:10px "SF Mono",monospace;color:var(--mute)}.time-track{height:24px;background:#080b0f;border:1px solid var(--line);border-radius:5px;position:relative;overflow:hidden}.time-bar{position:absolute;inset:2px auto 2px 2px;width:20%;border-radius:3px;background:var(--cyan);transition:.4s}.time-val{font:10px "SF Mono",monospace;color:var(--cyan)}
+.offset-viz{display:grid;grid-template-columns:140px 1fr;gap:11px;align-items:start}.offset-label{font:11px "SF Mono",monospace;color:var(--mute);padding-top:7px}.offset-line{display:flex;gap:5px;flex-wrap:wrap;min-height:35px}.offset-token{font:11px "SF Mono",monospace;border:1px solid var(--line);background:#0b0f14;border-radius:5px;padding:5px 7px}.offset-token.surr{border-color:var(--violet);color:var(--violet)}.offset-token.read{border-color:var(--amber);color:var(--amber)}.offset-token.emit{border-color:var(--green);color:var(--green)}
+.quiz-option{display:block;width:100%;text-align:left;border:1px solid var(--line);background:#0c1117;color:var(--ink);padding:11px 13px;margin:7px 0;border-radius:8px;cursor:pointer}.quiz-option:hover{border-color:var(--cyan)}.quiz-option.correct{border-color:var(--green);background:rgba(114,230,177,.07)}.quiz-option.wrong{border-color:var(--red);background:rgba(255,112,112,.06)}
+.formula{font-size:13px;background:#080b0f;border:1px solid var(--line);padding:14px;border-radius:9px;color:#cbd5df}.formula b{color:var(--amber)}
+.checklist li{margin:7px 0}.nav{display:flex;justify-content:space-between;border-top:1px solid var(--line);margin-top:60px;padding-top:24px}.nav a{color:var(--cyan);text-decoration:none}.foot{text-align:center;color:var(--mute);font:10px "SF Mono",monospace;margin-top:44px}
+@media(max-width:900px){.cols2,.cols3,.cols4,.budget{grid-template-columns:1fr}.compare{grid-template-columns:1fr}.versus{writing-mode:horizontal-tb}.hero{padding:34px 25px;min-height:520px}.hero-kpis{left:25px;right:25px;bottom:25px}.hero:after{font-size:78px;right:10px}.wrap{width:min(100% - 24px,1240px)}.pipeline{grid-template-columns:repeat(7,125px)}.kpi-grid{grid-template-columns:1fr}.offset-viz{grid-template-columns:1fr}.time-row{grid-template-columns:90px 1fr 55px}}
+@media(prefers-reduced-motion:reduce){*{scroll-behavior:auto!important;animation:none!important;transition:none!important}}
+</style>
+</head>
+<body><main class="wrap">
+<section class="hero">
+  <div class="eyebrow">SGLang internals / PD chapter 08</div>
+  <h1>Tokenizer 全链路<br><em>CPU 热路径</em>解剖</h1>
+  <p class="lead">从聊天消息如何变成 token IDs，到输出 token 如何安全地流式拼回文字；再用源码和性能模型回答：它为什么会成为瓶颈、怎样量化，以及 PD 分离为什么可能把同一段 prompt 做两遍。</p>
+  <div class="toc"><a href="#mental">五层心智模型</a><a href="#bpe">BPE 动画</a><a href="#sglang">SGLang 源码</a><a href="#decode">增量解码</a><a href="#perf">性能实验室</a><a href="#pd">PD 对比</a><a href="#playbook">评估手册</a></div>
+  <div class="hero-kpis"><span class="metric">INPUT <b>string → int[]</b></span><span class="metric">OUTPUT <b>int[] → delta</b></span><span class="metric">RESOURCE <b>CPU + memory</b></span><span class="metric">REV <b>sglang@495ae9a</b></span></div>
+</section>
+
+<h2 id="mental"><span class="stage-no">01 / MODEL</span>先分清：你说的 tokenize，其实有五层</h2>
+<div class="card">
+  <p>一次 OpenAI Chat 请求并不是直接把字符串交给 BPE。真正的 CPU 路径通常是：</p>
+  <div class="pipeline" id="main-pipeline">
+    <div class="pipe-node active"><span class="n">01</span><strong>JSON 解析</strong><small>messages / tools / sampling params</small></div>
+    <div class="pipe-node"><span class="n">02</span><strong>Chat Template</strong><small>Jinja 渲染角色与特殊标记</small></div>
+    <div class="pipe-node"><span class="n">03</span><strong>Normalize</strong><small>Unicode / lowercase / whitespace</small></div>
+    <div class="pipe-node"><span class="n">04</span><strong>Pre-tokenize</strong><small>按空格、标点或 byte 切初始片段</small></div>
+    <div class="pipe-node"><span class="n">05</span><strong>Model</strong><small>BPE / WordPiece / Unigram 合并</small></div>
+    <div class="pipe-node"><span class="n">06</span><strong>Post-process</strong><small>BOS / EOS / special tokens</small></div>
+    <div class="pipe-node"><span class="n">07</span><strong>Dispatch</strong><small>input_ids 经 ZMQ / gRPC 进入 Scheduler</small></div>
+  </div>
+  <div class="controls"><button class="btn primary" id="pipe-play">▶ 播放全链路</button><button class="btn" id="pipe-next">单步 →</button><span class="metric">当前阶段 <b id="pipe-step">1 / 7</b></span></div>
+  <div class="narration" id="pipe-note">请求首先被解析为结构化对象。别把 JSON、模板渲染和真正 tokenizer 的成本混成一个数字。</div>
+</div>
+<div class="grid cols3">
+  <div class="card"><h3>Encode</h3><p>prompt → <code>input_ids</code>。它位于首 token 之前，直接进入 TTFT 临界路径。</p></div>
+  <div class="card"><h3>Detokenize</h3><p>每轮生成的 ID → 可打印增量文本。它位于 streaming 热路径，可能影响 ITL 和流式刷新。</p></div>
+  <div class="card"><h3>Template ≠ Tokenize</h3><p>长 system prompt、tools JSON 的序列化和 Jinja 模板也吃 CPU；测量时必须拆开。</p></div>
+</div>
+<div class="callout warn"><b>第一条结论：</b>“tokenizer 很慢”至少可能指四件事：模板渲染慢、Rust tokenizer 编码慢、Python slow tokenizer 慢，或者高并发下单进程排队慢。优化前先分层。</div>
+
+<h2 id="bpe"><span class="stage-no">02 / ALGORITHM</span>BPE 到底在做什么：不是查一次字典</h2>
+<div class="grid cols2">
+  <div class="card">
+    <h3>以 Byte-level BPE 为例</h3>
+    <ol>
+      <li>文本先按 UTF-8 变成 byte，保证任何字符串都可表示。</li>
+      <li>预切分器按空格/标点产生片段，减少跨边界合并。</li>
+      <li>每个片段从最细粒度符号开始，反复选择词表中优先级最高的相邻 pair 合并。</li>
+      <li>最终 piece 映射成整数 ID，并添加特殊 token。</li>
+    </ol>
+    <div class="callout info">Llama/Qwen 等模型具体 tokenizer 配置不同。BPE、WordPiece、Unigram 的搜索策略不同，但性能分析方法相同：输入扫描 + 候选维护 + 词表查找 + 输出分配。</div>
+  </div>
+  <div class="card">
+    <h3>复杂度直觉</h3>
+    <p>高质量实现不会每一步都全量扫描。Rust <code>tokenizers</code> 会用紧凑数据结构、优先队列/缓存和并行 batch 路径降低常数。</p>
+    <div class="formula">T_encode ≈ <b>α · input_bytes</b> + β · pieces + γ · allocations</div>
+    <p class="muted">所以成本通常更接近“输入字节数”而非“最终 token 数”；中文、代码、emoji、异常 Unicode 的 bytes/token 不同，不能只按 token 数外推。</p>
+  </div>
+</div>
+
+<div class="lab">
+  <h3>BPE 合并显微镜</h3>
+  <p class="muted">下面用教学词表演示 <code>tokenizer</code>。真实模型的 merge 表要大得多，但控制流一致。</p>
+  <div class="token-stage" id="bpe-stage"></div>
+  <div class="controls"><button class="btn primary" id="bpe-next">合并下一对</button><button class="btn" id="bpe-auto">▶ 自动</button><button class="btn" id="bpe-reset">重置</button><span class="metric">heap / pair lookup <b id="bpe-op">0</b></span></div>
+  <div class="narration" id="bpe-note">初始状态：按字符展示。点击后观察相邻 pair 如何按 rank 被合并。</div>
+</div>
+
+<div class="grid cols3">
+  <div class="card"><h4>Fast tokenizer</h4><p>Hugging Face fast tokenizer 的核心通常在 Rust，Python 只是绑定层；批量 encode 往往能显著摊薄跨语言与分配开销。</p></div>
+  <div class="card"><h4>Slow tokenizer</h4><p>纯 Python 实现更容易受解释器、GIL 和对象分配影响。SGLang <code>tokenizer_mode=auto</code> 会优先选择可用的 fast 实现。</p></div>
+  <div class="card"><h4>词表与正则</h4><p>复杂 pre-tokenizer 正则、超长无空格字符串、特殊 token 扫描、chat template 都可能改变常数项。</p></div>
+</div>
+
+<h2 id="sglang"><span class="stage-no">03 / SOURCE</span>SGLang 把 tokenizer 放在哪个进程</h2>
+<div class="card">
+  <div class="pipeline" id="sg-pipeline">
+    <div class="pipe-node"><span class="n">HTTP</span><strong>FastAPI / Granian</strong><small>OpenAI 协议转 GenerateReqInput</small></div>
+    <div class="pipe-node"><span class="n">CPU</span><strong>TokenizerManager</strong><small>模板、校验、encode、状态跟踪</small></div>
+    <div class="pipe-node"><span class="n">IPC</span><strong>ZMQ PUSH</strong><small>TokenizedGenerateReqInput</small></div>
+    <div class="pipe-node"><span class="n">GPU</span><strong>Scheduler</strong><small>prefill / decode batching</small></div>
+    <div class="pipe-node"><span class="n">IPC</span><strong>Detokenizer</strong><small>BatchTokenIDOutput → text delta</small></div>
+    <div class="pipe-node"><span class="n">CPU</span><strong>TokenizerManager</strong><small>关联 rid、metrics、SSE</small></div>
+    <div class="pipe-node"><span class="n">NET</span><strong>Client</strong><small>增量 chunk / final response</small></div>
+  </div>
+  <p class="muted">关键隔离：模型 forward 在 Scheduler/GPU；encode 在 TokenizerManager；decode 文本在独立 DetokenizerManager。GPU 再快，也不会自动解决 CPU tokenizer 排队。</p>
+</div>
+
+<div class="grid cols2">
+<div class="card">
+  <h3>入口：<code>_tokenize_one_request</code></h3>
+  <div class="path"><a class="source-link" href="https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/managers/tokenizer_manager.py">python/sglang/srt/managers/tokenizer_manager.py</a></div>
+<pre><span class="kw">if</span> obj.input_ids <span class="kw">is not None</span>:
+    input_ids = obj.input_ids          <span class="com"># 已预分词：跳过 encode</span>
+<span class="kw">else</span>:
+    input_ids, token_type_ids = <span class="kw">await</span> self.<span class="fn">_tokenize_texts</span>(
+        input_text, is_cross_encoder_request
+    )
+
+tokenized_obj = <span class="fn">TokenizedGenerateReqInput</span>(
+    input_text=input_text,
+    input_ids=input_ids, ...
+)</pre>
+  <p>这里同时承担输入校验、多模态分支、context length 检查和对象构造。直接传 <code>input_ids</code> 能跳过 encode，但要求客户端与服务端 tokenizer 版本、chat template、special token 配置完全一致。</p>
+</div>
+<div class="card">
+  <h3>策略：<code>_tokenize_texts</code></h3>
+<pre><span class="kw">if</span> use_async_tokenizer:
+    result = <span class="kw">await</span> async_dynamic_batch_tokenizer.<span class="fn">encode</span>(text)
+<span class="kw">elif</span> tokenizer.is_fast:
+    encoded = tokenizer(tokenizer_input) <span class="com"># batch path</span>
+<span class="kw">else</span>:
+    input_ids = [tokenizer.<span class="fn">encode</span>(t) <span class="kw">for</span> t <span class="kw">in</span> inputs]</pre>
+  <table><tr><th>开关</th><th>作用</th></tr>
+  <tr><td><code>--tokenizer-mode auto</code></td><td>优先 fast tokenizer</td></tr>
+  <tr><td><code>--enable-tokenizer-batch-encode</code></td><td>请求内部/批请求走批量 tokenization</td></tr>
+  <tr><td><code>--enable-dynamic-batch-tokenizer</code></td><td>把并发单文本请求合成 batch</td></tr>
+  <tr><td><code>--tokenizer-worker-num N</code></td><td>多 HTTP/tokenizer worker 横向扩 CPU</td></tr>
+  <tr><td><code>--skip-tokenizer-init</code></td><td>服务只接受预先生成的 <code>input_ids</code></td></tr></table>
+</div>
+</div>
+
+<div class="lab">
+  <h3>动态 batch tokenizer：吞吐与排队的交换</h3>
+  <p>SGLang 的 <code>AsyncDynamicbatchTokenizer</code> 使用 asyncio queue 收集并发请求，用单线程 executor 执行阻塞 tokenizer 调用；只有 kwargs 一致时才真正合成一次 batch。</p>
+  <div class="grid cols2">
+    <div><div class="range-label">到达间隔 <b id="arrive-v">0.6 ms</b></div><input id="arrive" type="range" min="1" max="40" value="6"><div class="range-label">batch wait timeout <b id="wait-v">2.0 ms</b></div><input id="wait" type="range" min="0" max="50" value="20"><div class="range-label">最大 batch <b id="batch-v">32</b></div><input id="batch" type="range" min="1" max="64" value="32"></div>
+    <div class="kpi-grid"><div class="kpi-box"><div class="v" id="formed-batch">4</div><div class="l">EXPECTED BATCH SIZE</div></div><div class="kpi-box"><div class="v" id="queue-tax">1.8ms</div><div class="l">P95 WAIT TAX</div></div><div class="kpi-box"><div class="v" id="batch-speedup">2.3×</div><div class="l">MODELLED THROUGHPUT</div></div><div class="kpi-box"><div class="v" id="batch-verdict">值得</div><div class="l">VERDICT</div></div></div>
+  </div>
+  <div class="callout" id="batch-note">高并发下，2ms 窗口能快速凑出 batch，跨语言调用与分配成本被摊薄。</div>
+</div>
+
+<div class="callout bad"><b>注意源码细节：</b>当前动态 batch loop 在取到第一个请求后如果队列当时为空，会立即处理，并不会主动等待 timeout；因此极低 QPS 下不会平白增加 2ms，但突发请求能否凑批高度依赖事件循环调度与到达形态。不要只根据配置值推断效果。</div>
+
+<h2 id="decode"><span class="stage-no">04 / STREAM</span>Detokenize 为什么不能每次只 decode 新 token</h2>
+<div class="grid cols2">
+  <div class="card">
+    <h3>UTF-8 与 tokenizer 边界不一致</h3>
+    <p>一个 token 可能只覆盖某个 Unicode 字符的部分 byte；直接 decode 单个 token 可能得到 <code>�</code>。另外某些 tokenizer 的空格、合并规则需要前文上下文。</p>
+    <p>SGLang 为每个请求保存 <code>DecodeStatus</code>：</p>
+    <ul><li><code>decode_ids</code>：累计 token IDs</li><li><code>surr_offset</code>：保留一段左侧上下文</li><li><code>read_offset</code>：当前可安全读取边界</li><li><code>sent_offset</code>：已经发给客户端的字符位置</li></ul>
+  </div>
+  <div class="card">
+    <h3>核心公式</h3>
+    <div class="formula">new_text = decode(ids[surr_offset:])<br>　　　　　− decode(ids[surr_offset:read_offset])</div>
+    <p>用“带上下文的完整 decode”减掉“左侧上下文 decode”，获得稳定的新文本。遇到末尾 <code>�</code> 时只发送可打印前缀，下一轮带更多 token 重试。</p>
+    <div class="path"><a class="source-link" href="https://github.com/sgl-project/sglang/blob/main/python/sglang/srt/managers/detokenizer_manager.py">python/sglang/srt/managers/detokenizer_manager.py</a></div>
+  </div>
+</div>
+
+<div class="lab">
+  <h3>增量解码窗口动画</h3>
+  <div class="offset-viz"><div class="offset-label">累计 decode_ids</div><div class="offset-line" id="offset-all"></div><div class="offset-label">surr context</div><div class="offset-line" id="offset-surr"></div><div class="offset-label">本轮 read span</div><div class="offset-line" id="offset-read"></div><div class="offset-label">安全输出 delta</div><div class="offset-line" id="offset-emit"></div></div>
+  <div class="controls"><button class="btn primary" id="decode-next">生成下一个 token</button><button class="btn" id="decode-auto">▶ 自动生成</button><button class="btn" id="decode-reset">重置</button><span class="metric">sent_offset <b id="sent-offset">0</b></span></div>
+  <div class="narration" id="decode-note">逐 token 观察“你 / 好 / ， / 世 / 界”的 byte piece 如何只有在形成完整字符后才能安全发出。</div>
+</div>
+
+<div class="card">
+  <h3>高并发 detokenize 的两个优化点</h3>
+  <table><tr><th>源码行为</th><th>解决什么</th><th>风险</th></tr>
+  <tr><td><code>_grouped_batch_decode</code></td><td>按 <code>(skip_special_tokens, spaces_between_special_tokens)</code> 分组后 <code>batch_decode</code></td><td>参数多样性会打散 batch</td></tr>
+  <tr><td>过滤空 token span</td><td>避免流式高并发中对空行支付 per-row 成本</td><td>无语义风险，纯 fast path</td></tr>
+  <tr><td><code>--disable-tokenizer-batch-decode</code></td><td>规避少数模型/特殊 token 的 batch 边界问题</td><td>吞吐下降，CPU 使用上升</td></tr>
+  <tr><td><code>SGLANG_DETOKENIZER_MAX_STATES</code></td><td>控制并发请求状态容量，默认 65536</td><td>太小会驱逐活跃状态，太大占内存</td></tr></table>
+</div>
+
+<h2 id="perf"><span class="stage-no">05 / MEASURE</span>性能实验室：什么时候 tokenizer 真会卡住</h2>
+<div class="callout info"><b>不要用“单次 encode 几毫秒”直接下结论。</b>服务性能取决于 arrival rate、输入长度分布、batch 效率、worker 数和 CPU 配额。关键是利用率：当到达速率逼近服务能力，排队延迟会非线性爆炸。</div>
+<div class="lab budget">
+  <div>
+    <h3>输入你的工作负载</h3>
+    <div class="range-label">平均 prompt tokens <b id="p-tokens-v">4096</b></div><input id="p-tokens" type="range" min="128" max="32768" step="128" value="4096">
+    <div class="range-label">请求速率 <b id="qps-v">80 QPS</b></div><input id="qps" type="range" min="1" max="500" value="80">
+    <div class="range-label">单核 encode 吞吐（实测后填） <b id="tokps-v">400k tok/s</b></div><input id="tokps" type="range" min="20" max="1500" step="10" value="400">
+    <div class="range-label">tokenizer workers <b id="workers-v">2</b></div><input id="workers" type="range" min="1" max="16" value="2">
+    <div class="controls"><button class="btn active" data-dup="1">非 PD / 中心化</button><button class="btn" data-dup="2">HTTP PD 双 tokenize</button></div>
+  </div>
+  <div>
+    <div class="big-number" id="cpu-util">41%</div><div class="muted">估算 tokenizer CPU 利用率</div>
+    <div class="gauge"><i id="cpu-gauge"></i></div>
+    <div class="kpi-grid"><div class="kpi-box"><div class="v" id="service-ms">10.2ms</div><div class="l">ENCODE SERVICE TIME / REQ</div></div><div class="kpi-box"><div class="v" id="capacity-qps">195</div><div class="l">THEORETICAL CAPACITY QPS</div></div><div class="kpi-box"><div class="v" id="queue-ms">7.1ms</div><div class="l">MODELLED QUEUE P95</div></div><div class="kpi-box"><div class="v" id="cpu-cores">0.82</div><div class="l">CPU CORES CONSUMED</div></div></div>
+  </div>
+</div>
+<div class="formula">cores_needed ≈ QPS × avg_prompt_tokens ÷ measured_tokens_per_second_per_core × <b>duplication_factor</b></div>
+<p class="muted">这个计算器是容量规划模型，不是 benchmark。真实数据必须分别测 P50/P95 长度、fast/slow tokenizer、template、batch size、NUMA、CPU throttling 和混合字符集。</p>
+
+<div class="grid cols2">
+<div class="card"><h3>必须观测的延迟切片</h3><div class="timeline"><div class="time-row"><span class="time-name">HTTP + JSON</span><div class="time-track"><i class="time-bar" style="width:8%;background:var(--violet)"></i></div><span class="time-val">t_parse</span></div><div class="time-row"><span class="time-name">chat template</span><div class="time-track"><i class="time-bar" style="width:13%;background:var(--cyan)"></i></div><span class="time-val">t_tpl</span></div><div class="time-row"><span class="time-name">encode</span><div class="time-track"><i class="time-bar" style="width:42%;background:var(--amber)"></i></div><span class="time-val">t_enc</span></div><div class="time-row"><span class="time-name">queue</span><div class="time-track"><i class="time-bar" style="width:30%;background:var(--red)"></i></div><span class="time-val">t_queue</span></div><div class="time-row"><span class="time-name">IPC dispatch</span><div class="time-track"><i class="time-bar" style="width:7%;background:var(--green)"></i></div><span class="time-val">t_ipc</span></div></div><p>只看 TTFT 无法分辨 CPU 前处理和 GPU prefill。建议增加 span 或在入口、模板结束、tokenize 前后、scheduler dispatch 前后打点。</p></div>
+<div class="card"><h3>四组最小实验</h3><ol><li><b>纯 tokenizer microbench</b>：固定文本，单线程/多线程，encode 与 batch_encode。</li><li><b>API pre-tokenized A/B</b>：同样 input_ids，一组发 text，一组发 ids；差值近似输入前处理成本。</li><li><b>输出长度扫描</b>：固定 prompt，改变 max_new_tokens，观察 detokenize CPU 与 ITL。</li><li><b>open-loop serving</b>：Poisson 到达，扫描 QPS，找到排队拐点而不是只测闭环并发。</li></ol></div>
+</div>
+
+<h2 id="pd"><span class="stage-no">06 / PD</span>PD 与非 PD：tokenizer 的差别不在算法，在放置</h2>
+<div class="compare">
+  <div class="arch"><h4 class="green">非 PD · 单 SRT 实例</h4><div class="arch-lane"><span class="arch-box">Client text</span><span class="arch-arrow">→</span><span class="arch-box work">TokenizerManager<br>encode ×1</span></div><div class="arch-lane"><span class="arch-box">Scheduler</span><span class="arch-arrow">→</span><span class="arch-box">Prefill + Decode</span></div><div class="arch-lane"><span class="arch-box">Detokenizer</span><span class="arch-arrow">→</span><span class="arch-box">SSE text</span></div><p class="muted">输入 tokenize 一次；输出 detokenize 一处。CPU 资源跟随统一 worker 扩缩。</p></div>
+  <div class="versus">PLACEMENT</div>
+  <div class="arch"><h4 class="amber">经典 HTTP PD · Router 双发</h4><div class="arch-lane"><span class="arch-box">Router JSON</span><span class="arch-arrow">↗</span><span class="arch-box dup">P Tokenizer<br>encode ×1</span></div><div class="arch-lane"><span class="arch-box">same raw text</span><span class="arch-arrow">↘</span><span class="arch-box dup">D Tokenizer<br>encode ×1</span></div><div class="arch-lane"><span class="arch-box">KV transfer</span><span class="arch-arrow">→</span><span class="arch-box">D Detokenizer</span></div><p class="muted">HTTP PDRouter 把带 bootstrap 字段的同一请求并发发给 P 与 D；若 payload 仍是 text，两侧各自进入 SRT TokenizerManager，输入 encode 可能发生两次。</p></div>
+</div>
+
+<div class="lab">
+  <h3>切换部署形态，看 token 在哪里产生</h3>
+  <div class="controls"><button class="btn active pd-mode" data-mode="unified">非 PD</button><button class="btn pd-mode" data-mode="http">HTTP PD</button><button class="btn pd-mode" data-mode="grpc">gRPC Gateway PD</button><button class="btn pd-mode" data-mode="ids">客户端预分词 PD</button></div>
+  <div class="pipeline" id="pd-pipeline"></div>
+  <div class="narration" id="pd-note"></div>
+</div>
+
+<div class="grid cols2">
+<div class="card">
+  <h3>HTTP PD：为什么可能重复</h3>
+  <p>当前 Model Gateway 的 HTTP <code>PDRouter::execute_dual_dispatch_internal</code> 构造 prefill 和 decode 两个 POST，并同时 <code>send()</code>。它注入 bootstrap 元数据，但不会替你把 text 改成 input IDs。</p>
+  <pre><span class="kw">let</span> prefill_fut = prefill_request.<span class="fn">send</span>();
+<span class="kw">let</span> decode_fut  = decode_request.<span class="fn">send</span>();
+tokio::<span class="fn">select!</span> { ... }</pre>
+  <p>因此两边是否重复 encode，取决于发送的请求体：raw text 会走各自 TokenizerManager；预先填好的 <code>input_ids</code> 则跳过。</p>
+</div>
+<div class="card">
+  <h3>gRPC Gateway PD：中心化一次</h3>
+  <p>gRPC pipeline 的 <code>ChatPreparationStage</code> 在 Gateway 内应用 chat template 并 <code>tokenizer.encode(...)</code>，把 <code>token_ids</code> 放入 <code>PreparationOutput</code>。随后请求构建阶段复用这些 IDs，并对 P/D dual dispatch。</p>
+  <pre><span class="kw">let</span> encoding = tokenizer.<span class="fn">encode</span>(&processed_text, <span class="kw">false</span>)?;
+ctx.state.preparation = <span class="fn">Some</span>(PreparationOutput {
+    token_ids: encoding.<span class="fn">token_ids</span>().to_vec(), ...
+});</pre>
+  <p>这能避免 P/D 各做一次输入 tokenization，并让路由层也能复用 token IDs 做 stop decoder / streaming response。</p>
+</div>
+</div>
+
+<table><tr><th>形态</th><th>输入 encode</th><th>输出 decode</th><th>主要权衡</th></tr>
+<tr><td>非 PD SRT</td><td>worker 内 ×1</td><td>同实例 Detokenizer</td><td>简单，但 CPU 随 GPU worker 重复部署</td></tr>
+<tr><td>HTTP PD + raw text</td><td class="red">P ×1 + D ×1</td><td>通常以 D 输出为准</td><td>兼容性好，CPU/内存可能翻倍</td></tr>
+<tr><td>gRPC Gateway PD</td><td class="yes">Gateway ×1</td><td>Gateway streaming processor</td><td>中心化、可缓存；Gateway CPU 需独立扩容</td></tr>
+<tr><td>客户端传 input_ids</td><td class="yes">Client ×1</td><td>服务端仍需输出 decode 或客户端 decode</td><td>最快，但版本一致性和信任边界最难</td></tr></table>
+
+<div class="callout warn"><b>PD 特有的放大效应：</b>即使重复 encode 只占单请求 3ms，在 1000 QPS 下也是约 3 个额外 CPU core；P/D 分别多副本部署时还会重复加载 tokenizer 词表与 chat template。性能和内存都要按“tokenizer 实例数”核算。</div>
+
+<h2 id="playbook"><span class="stage-no">07 / PLAYBOOK</span>一套可落地的评估与优化顺序</h2>
+<div class="grid cols2">
+<div class="card"><h3>Step 1 · 先证明瓶颈</h3><ul class="checklist"><li>记录 <code>template_ms</code>、<code>tokenize_ms</code>、<code>dispatch_ms</code>，不要只看 TTFT。</li><li>看 tokenizer 进程 CPU、run queue、cgroup throttling、RSS、context switches。</li><li>按输入 token bucket（0–1K / 1–4K / 4–16K / 16K+）画 P50/P95。</li><li>检查 <code>tokenizer.is_fast</code>，确认没有因为 custom tokenizer / trust_remote_code 落到 slow path。</li><li>在 PD 两侧分别采样，判断同一 rid 是否 encode 两次。</li></ul></div>
+<div class="card"><h3>Step 2 · 再按风险排序优化</h3><ol><li>确保 fast tokenizer；避免无必要的 slow/custom Python 路径。</li><li>统一 kwargs，尝试 batch encode / dynamic batch。</li><li>增加 <code>tokenizer_worker_num</code>，同时检查内存与 NUMA。</li><li>缓存稳定 system prompt/tools 的模板或 token 前缀，但必须把 tokenizer revision 与模板 hash 纳入 key。</li><li>HTTP PD 改为 Gateway 中心化 tokenize，或可信链路传 input_ids。</li><li>最后才考虑自研 Rust tokenizer service；否则运维复杂度可能大于收益。</li></ol></div>
+</div>
+
+<div class="card">
+  <h3>推荐 benchmark 代码骨架</h3>
+<pre><span class="kw">from</span> time <span class="kw">import</span> perf_counter
+<span class="kw">from</span> transformers <span class="kw">import</span> AutoTokenizer
+
+tok = AutoTokenizer.<span class="fn">from_pretrained</span>(MODEL, use_fast=<span class="kw">True</span>)
+samples = load_real_prompts()              <span class="com"># 保留真实长度与字符分布</span>
+
+<span class="com"># warmup：排除文件 IO、lazy regex、cache cold start</span>
+<span class="kw">for</span> text <span class="kw">in</span> samples[:<span class="num">100</span>]: tok(text, add_special_tokens=<span class="kw">False</span>)
+
+t0 = <span class="fn">perf_counter</span>()
+encoded = tok(samples, add_special_tokens=<span class="kw">False</span>)
+elapsed = <span class="fn">perf_counter</span>() - t0
+tokens = <span class="fn">sum</span>(<span class="fn">map</span>(len, encoded[<span class="str">"input_ids"</span>]))
+
+<span class="fn">print</span>({
+  <span class="str">"requests/s"</span>: len(samples) / elapsed,
+  <span class="str">"tokens/s"</span>: tokens / elapsed,
+  <span class="str">"us/token"</span>: elapsed * <span class="num">1e6</span> / tokens,
+})</pre>
+  <p>至少跑：单条 encode、batch encode（1/4/16/32/64）、1/2/4/8 线程、中文/英文/代码/emoji 四类语料、P50/P95/P99 长度。服务级测试再加入 open-loop QPS 扫描。</p>
+</div>
+
+<div class="grid cols3">
+  <div class="card"><h4>安全边界</h4><p>不要接受不可信客户端随意传 <code>input_ids</code> 后假设其与 text 一致；审计、内容过滤、缓存路由可能因此失真。</p></div>
+  <div class="card"><h4>一致性边界</h4><p>tokenizer 文件、revision、added tokens、chat template、BOS/EOS 配置任一变化，都可能让相同文本产生不同 IDs。</p></div>
+  <div class="card"><h4>缓存边界</h4><p>tokenize cache 的 key 必须覆盖模型/模板/工具定义/规范化参数；前缀缓存要处理 token 边界重新合并问题。</p></div>
+</div>
+
+<h2><span class="stage-no">08 / CHECK</span>最后测一下：你是否真正抓住瓶颈</h2>
+<div class="card" id="quiz">
+  <p><b>场景：</b>HTTP PD 部署，P 和 D 都收到 raw chat messages。GPU 利用率不高，但 300 QPS 时 TTFT P99 突然上升，两个 TokenizerManager CPU 都接近 100%。第一步最合理的动作是什么？</p>
+  <button class="quiz-option" data-ok="0">A. 增加 Decode GPU 数量</button>
+  <button class="quiz-option" data-ok="1">B. 分别打点 template/encode/queue，并用 input_ids A/B 验证重复 tokenize 的成本</button>
+  <button class="quiz-option" data-ok="0">C. 关闭 KV Cache</button>
+  <button class="quiz-option" data-ok="0">D. 把 dynamic batch timeout 直接调到 100ms</button>
+  <div class="narration" id="quiz-note">选择一个答案。</div>
+</div>
+
+<div class="card"><h3>本章带走这六句话</h3><ol><li>Chat template、encode、detokenize、排队是四段不同成本。</li><li>Fast tokenizer 仍然是 CPU 程序；高 QPS 下单进程照样会饱和。</li><li>SGLang 输入由 TokenizerManager 负责，输出由独立 DetokenizerManager 增量解码。</li><li>动态 batching 的收益取决于到达形态和 kwargs 一致性，不是打开开关就必然加速。</li><li>经典 HTTP PD + raw text 可能在 P/D 两侧重复 encode；gRPC Gateway 可中心化一次。</li><li>用真实语料、open-loop QPS 和分阶段打点评估，不要只看单次 microbench。</li></ol></div>
+
+<div class="nav"><a href="07-router-and-production.html">← 07 · 生产治理</a><a href="index.html">返回 PD 路线图 →</a></div>
+<div class="foot">SGLang Tokenizer Deep Dive · source snapshot 495ae9a · interactive learning page</div>
+</main>
+
+<script>
+const $=id=>document.getElementById(id);
+
+// Main pipeline animation
+const pipeNotes=[
+  '请求首先被解析为结构化对象。别把 JSON、模板渲染和真正 tokenizer 的成本混成一个数字。',
+  'Chat template 把 roles、tools、system prompt 渲染成模型训练时使用的控制 token 格式；长 tools JSON 本身就可能很贵。',
+  'Normalizer 处理 Unicode、大小写或空白。并非所有模型都会执行同样规则。',
+  'Pre-tokenizer 按规则切出初始片段。复杂正则与特殊 token 扫描会贡献可见成本。',
+  'BPE / WordPiece / Unigram 把片段变成词表 piece；这是通常所说的 tokenizer 核心。',
+  'Post-processor 插入 BOS/EOS 等特殊 ID，并生成 attention mask / token type IDs（按模型需要）。',
+  '最终 input_ids 被封装为 TokenizedGenerateReqInput，经 IPC 送到 Scheduler；从这里 GPU 才开始接管。'
+];
+let pipeI=0,pipeTimer=null;
+function paintPipe(){document.querySelectorAll('#main-pipeline .pipe-node').forEach((n,i)=>{n.classList.toggle('active',i===pipeI);n.classList.toggle('done',i<pipeI)});$('pipe-step').textContent=`${pipeI+1} / 7`;$('pipe-note').textContent=pipeNotes[pipeI]}
+function nextPipe(){pipeI=(pipeI+1)%7;paintPipe()}
+$('pipe-next').onclick=nextPipe;
+$('pipe-play').onclick=()=>{if(pipeTimer){clearInterval(pipeTimer);pipeTimer=null;$('pipe-play').textContent='▶ 播放全链路'}else{$('pipe-play').textContent='Ⅱ 暂停';pipeTimer=setInterval(nextPipe,1050)}};
+
+// BPE teaching demo
+const merges=[['t','o','to',1],['k','e','ke',2],['ke','n','ken',3],['to','ken','token',4],['i','z','iz',5],['iz','e','ize',6],['ize','r','izer',7],['token','izer','tokenizer',8]];
+let pieces=[],mergeI=0,bpeTimer=null;
+function resetBpe(){pieces=['t','o','k','e','n','i','z','e','r'];mergeI=0;renderBpe();$('bpe-note').textContent='初始状态：按字符展示。点击后观察相邻 pair 如何按 rank 被合并。'}
+function renderBpe(hot=[]){$('bpe-stage').innerHTML=pieces.map((p,i)=>`<span class="piece ${hot.includes(i)?'hot':''}">${p}</span>`).join('');$('bpe-op').textContent=mergeI}
+function stepBpe(){if(mergeI>=merges.length){$('bpe-note').textContent='完成：最终 piece “tokenizer” 映射到一个教学 token ID。真实词表不一定包含这个完整词。';return}const [a,b,c,rank]=merges[mergeI];const idx=pieces.findIndex((p,i)=>p===a&&pieces[i+1]===b);if(idx<0){mergeI++;stepBpe();return}renderBpe([idx,idx+1]);$('bpe-note').textContent=`rank ${rank}: 候选 pair “${a} + ${b}” 优先级最高，合并为 “${c}”。`;setTimeout(()=>{pieces.splice(idx,2,c);mergeI++;renderBpe();const nodes=$('bpe-stage').children;if(nodes[idx])nodes[idx].classList.add('merged')},260)}
+$('bpe-next').onclick=stepBpe;$('bpe-reset').onclick=resetBpe;$('bpe-auto').onclick=()=>{if(bpeTimer){clearInterval(bpeTimer);bpeTimer=null;$('bpe-auto').textContent='▶ 自动'}else{$('bpe-auto').textContent='Ⅱ 暂停';bpeTimer=setInterval(stepBpe,680)}};resetBpe();
+
+// Dynamic batch model
+function batchModel(){const arrival=+$('arrive').value/10,wait=+$('wait').value/10,max=+$('batch').value;const formed=Math.max(1,Math.min(max,Math.floor(wait/Math.max(.1,arrival))+1));const tax=formed===1?0:Math.min(wait,(formed-1)*arrival);const speed=1+(formed-1)*.43/(1+formed*.055);$('arrive-v').textContent=arrival.toFixed(1)+' ms';$('wait-v').textContent=wait.toFixed(1)+' ms';$('batch-v').textContent=max;$('formed-batch').textContent=formed;$('queue-tax').textContent=tax.toFixed(1)+'ms';$('batch-speedup').textContent=speed.toFixed(1)+'×';let verdict=formed===1?'无收益':tax>6?'延迟偏高':formed<4?'收益有限':'值得';$('batch-verdict').textContent=verdict;$('batch-note').textContent=formed===1?'请求过稀或 timeout 太短，几乎凑不出 batch；此时应优先扩 worker 或使用中心化缓存。':`模型预计每批 ${formed} 条，排队税约 ${tax.toFixed(1)}ms。线上要同时观察吞吐提升与 TTFT P99，不能只追求大 batch。`}
+['arrive','wait','batch'].forEach(id=>$(id).oninput=batchModel);batchModel();
+
+// Incremental detokenization demo — intentionally split UTF-8-ish teaching pieces
+const dPieces=[{id:101,p:'你',safe:''},{id:102,p:'好',safe:'你好'},{id:103,p:'，',safe:'，'},{id:104,p:'世·a',safe:''},{id:105,p:'世·b',safe:'世'},{id:106,p:'界',safe:'界'}];
+let dI=0,dTimer=null,emitted='';
+function renderDecode(){const seen=dPieces.slice(0,dI);$('offset-all').innerHTML=seen.map(x=>`<span class="offset-token">${x.id}</span>`).join('');const surr=seen.slice(Math.max(0,seen.length-3),Math.max(0,seen.length-1));$('offset-surr').innerHTML=surr.map(x=>`<span class="offset-token surr">${x.id}</span>`).join('')||'<span class="muted">等待上下文</span>';$('offset-read').innerHTML=seen.slice(Math.max(0,seen.length-2)).map(x=>`<span class="offset-token read">${x.p}</span>`).join('')||'<span class="muted">等待 token</span>';$('offset-emit').innerHTML=emitted?`<span class="offset-token emit">${emitted}</span>`:'<span class="muted">尚无安全文本</span>';$('sent-offset').textContent=emitted.length}
+function stepDecode(){if(dI>=dPieces.length){$('decode-note').textContent='完成。Detokenizer 删除请求状态并发送最终 tail，避免重复输出。';return}const x=dPieces[dI++];if(x.safe){emitted+=x.safe;$('decode-note').textContent=`token ${x.id} 到达后形成可打印文本 “${x.safe}”，推进 read_offset / sent_offset。`}else{$('decode-note').textContent=`token ${x.id} 仍处于不完整边界，decode 可能以 � 结尾；保留 offsets，等待下一 token 后重试。`}renderDecode()}
+function resetDecode(){dI=0;emitted='';renderDecode();$('decode-note').textContent='逐 token 观察“你 / 好 / ， / 世 / 界”的 byte piece 如何只有在形成完整字符后才能安全发出。'}
+$('decode-next').onclick=stepDecode;$('decode-reset').onclick=resetDecode;$('decode-auto').onclick=()=>{if(dTimer){clearInterval(dTimer);dTimer=null;$('decode-auto').textContent='▶ 自动生成'}else{$('decode-auto').textContent='Ⅱ 暂停';dTimer=setInterval(stepDecode,850)}};resetDecode();
+
+// Capacity calculator
+let duplication=1;
+function calc(){const p=+$('p-tokens').value,q=+$('qps').value,tp=+$('tokps').value*1000,w=+$('workers').value;const service=p/tp*1000;const cores=q*p/tp*duplication;const util=cores/w*100;const cap=w*tp/p/duplication;const rho=Math.min(.985,util/100);const queue=service*(rho/(1-rho))*.72;$('p-tokens-v').textContent=p;$('qps-v').textContent=q+' QPS';$('tokps-v').textContent=(tp/1000).toFixed(0)+'k tok/s';$('workers-v').textContent=w;$('service-ms').textContent=service.toFixed(1)+'ms';$('capacity-qps').textContent=Math.floor(cap);$('cpu-cores').textContent=cores.toFixed(2);$('cpu-util').textContent=Math.round(util)+'%';$('queue-ms').textContent=(util>=100?'∞':queue.toFixed(1)+'ms');$('cpu-gauge').style.width=Math.min(100,util)+'%';$('cpu-util').style.color=util>90?'var(--red)':util>65?'var(--amber)':'var(--green)'}
+['p-tokens','qps','tokps','workers'].forEach(id=>$(id).oninput=calc);document.querySelectorAll('[data-dup]').forEach(b=>b.onclick=()=>{document.querySelectorAll('[data-dup]').forEach(x=>x.classList.remove('active'));b.classList.add('active');duplication=+b.dataset.dup;calc()});calc();
+
+// PD placement explorer
+const modes={
+unified:{nodes:[['Client','text'],['SRT Tokenizer','encode ×1'],['Scheduler','P + D'],['Detokenizer','IDs → delta'],['Client','text']],note:'非 PD：同一个 SRT 实例完成一次输入 encode，P/D 在统一 Scheduler 中执行，输出由独立 Detokenizer 还原。'},
+http:{nodes:[['HTTP Router','raw JSON'],['P Tokenizer','encode ×1'],['P Scheduler','KV'],['D Tokenizer','encode ×1'],['D Scheduler','decode'],['D Detokenizer','delta']],note:'HTTP PD：Router 双发同一 raw 请求。P/D 各有 TokenizerManager，因此 text 输入可能被 encode 两次；这正是需要重点测量的额外 CPU。'},
+grpc:{nodes:[['gRPC Gateway','template'],['Rust Tokenizer','encode ×1'],['token_ids','clone'],['P gRPC','prefill'],['D gRPC','decode'],['Gateway','stream decode']],note:'gRPC Gateway PD：PreparationStage 先中心化生成 token_ids，再 dual dispatch 给 P/D；输入 encode 一次，Gateway CPU 可独立扩缩。'},
+ids:{nodes:[['Trusted Client','encode ×1'],['input_ids','validated'],['HTTP Router','dual dispatch'],['P','prefill'],['D','decode'],['Detokenizer','delta']],note:'客户端预分词：服务端跳过输入 encode。代价是 tokenizer/template 版本一致性、内容审核与缓存键可信度都转移到边界协议。'}
+};
+function setMode(m){const v=modes[m];$('pd-pipeline').innerHTML=v.nodes.map((x,i)=>`<div class="pipe-node ${i===1?'active':''}"><span class="n">${String(i+1).padStart(2,'0')}</span><strong>${x[0]}</strong><small>${x[1]}</small></div>`).join('');$('pd-note').textContent=v.note;document.querySelectorAll('.pd-mode').forEach(b=>b.classList.toggle('active',b.dataset.mode===m))}
+document.querySelectorAll('.pd-mode').forEach(b=>b.onclick=()=>setMode(b.dataset.mode));setMode('unified');
+
+// Quiz
+document.querySelectorAll('.quiz-option').forEach(b=>b.onclick=()=>{document.querySelectorAll('.quiz-option').forEach(x=>x.classList.remove('correct','wrong'));const ok=b.dataset.ok==='1';b.classList.add(ok?'correct':'wrong');$('quiz-note').textContent=ok?'正确。先把重复 encode 与排队成本量出来，再决定中心化 tokenizer、传 input_ids、动态 batch 还是扩 worker。':'还不够。这里首先是 CPU 前处理饱和；增加 GPU 或盲目拉长 batch timeout 都没有建立因果。'});
+</script>
+  <script src="../course-nav.js"></script>
+</body></html>

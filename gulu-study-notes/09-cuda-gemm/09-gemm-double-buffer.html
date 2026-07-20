@@ -1,0 +1,398 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C8 · GEMM Double Buffering · 重叠加载与计算</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.type{color:#fb7185}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+svg text{font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.svg-wrap{margin:20px 0;text-align:center}
+.svg-wrap svg{max-width:100%}
+.formula{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 20px;margin:12px 0;font-family:"SF Mono","JetBrains Mono",monospace;font-size:13px;line-height:1.8}
+.highlight{color:var(--brand);font-weight:600}
+.highlight2{color:var(--brand2);font-weight:600}
+.highlight-warn{color:var(--warn);font-weight:600}
+.timeline{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:12px 0;font-family:"SF Mono","JetBrains Mono",monospace;font-size:12px;line-height:1.9;overflow-x:auto}
+.timeline .label{color:var(--mute)}
+.timeline .mem{color:var(--brand)}
+.timeline .comp{color:var(--brand2)}
+.timeline .idle{color:var(--bad);opacity:0.6}
+.timeline .em{color:var(--warn)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>C8 · GEMM Double Buffering · 重叠加载与计算 <span class="tag">CUDA GEMM 系列 · 9/15</span></h1>
+<p class="sub">在计算当前 tile 的同时，预取下一个 tile——让 memory latency 被计算完全覆盖。这对应 Triton 的 <code>num_stages</code> 参数。</p>
+
+<!-- §1 -->
+<h2><span class="step">§1</span>问题：Load 和 Compute 的串行化</h2>
+
+<p>没有 double buffering 时，load 和 compute 必须严格交替进行：</p>
+
+<div class="timeline">
+<span class="label">Timeline (没有 double buffering):</span><br>
+<span class="mem">  Load tile 0  → ███████</span><br>
+<span class="label">  __sync</span><br>
+<span class="comp">  Compute 0    →          ███████</span><br>
+<span class="label">  __sync</span><br>
+<span class="mem">  Load tile 1  →                  ███████</span><br>
+<span class="label">  __sync</span><br>
+<span class="comp">  Compute 1    →                           ███████</span><br>
+<br>
+<span class="mem">  Memory unit:  ███</span><span class="idle">  idle </span><span class="mem"> ███</span><span class="idle">  idle</span><br>
+<span class="comp">  Compute unit:</span><span class="idle"> idle </span><span class="comp"> ███</span><span class="idle">  idle </span><span class="comp"> ███</span>
+</div>
+
+<div class="callout bad">
+一半的时间 compute unit 在等数据，另一半时间 memory unit 在等计算完成。硬件利用率只有 ~50%。
+</div>
+
+<!-- §2 -->
+<h2><span class="step">§2</span>解决：Double Buffering (Prefetch)</h2>
+
+<p>核心思想：<span class="highlight">用两组 shared memory buffer</span>——一组在被计算使用，另一组在被加载。轮流切换。</p>
+
+<div class="timeline">
+<span class="label">Timeline (有 double buffering):</span><br>
+<span class="mem">  Prefetch tile 1:          ███████████████</span><br>
+<span class="label">  __sync</span><br>
+<span class="comp">  Compute 0</span> + <span class="mem">Prefetch 2:  ████████████████</span><br>
+<span class="label">  __sync</span><br>
+<span class="comp">  Compute 1</span> + <span class="mem">Prefetch 3:  ████████████████</span><br>
+<span class="label">  ...</span><br>
+<br>
+<span class="mem">  Memory:  ████████████████████████████████</span><br>
+<span class="comp">  Compute: ████████████████████████████████</span><br>
+<span class="em">  → Fully overlapped!</span>
+</div>
+
+<div class="callout info">
+对应 Triton 的 <code>num_stages</code> 参数：<code>num_stages=2</code> 就是 double buffering，<code>num_stages=3</code> 就是 triple buffering。
+</div>
+
+<div class="card">
+<h3>Triton 对应代码</h3>
+<pre><span class="com"># Triton 的 num_stages=2 就是 double buffering</span>
+<span class="com"># num_stages=3 就是 triple buffering</span>
+triton.Config({<span class="str">'BLOCK_M'</span>: <span class="num">128</span>, ...}, <span class="fn">num_stages</span>=<span class="num">2</span>, ...)
+</pre>
+</div>
+
+<!-- §3 -->
+<h2><span class="step">§3</span>实现方式 1：两组 Shared Memory</h2>
+
+<div class="card">
+<pre><span class="kw">__shared__</span> <span class="type">float</span> A_shared[<span class="num">2</span>][BM][BK];  <span class="com">// 两个 buffer</span>
+<span class="kw">__shared__</span> <span class="type">float</span> B_shared[<span class="num">2</span>][BK][BN];
+
+<span class="type">int</span> buf_read = <span class="num">0</span>;   <span class="com">// 当前正在读(计算用)的 buffer</span>
+<span class="type">int</span> buf_write = <span class="num">1</span>;  <span class="com">// 当前正在写(加载用)的 buffer</span>
+
+<span class="com">// Prefetch first tile</span>
+<span class="fn">load_tile</span>(A_shared[buf_write], B_shared[buf_write], k=<span class="num">0</span>);
+<span class="kw">__syncthreads</span>();
+<span class="fn">swap</span>(buf_read, buf_write);
+
+<span class="kw">for</span> (<span class="type">int</span> k_tile = <span class="num">1</span>; k_tile &lt; num_k_tiles; k_tile++) {
+    <span class="com">// 同时做两件事:</span>
+    <span class="com">// 1. 加载下一个 tile 到 buf_write</span>
+    <span class="fn">load_tile</span>(A_shared[buf_write], B_shared[buf_write], k_tile);
+
+    <span class="com">// 2. 用 buf_read 中的当前 tile 做计算</span>
+    <span class="fn">compute_tile</span>(A_shared[buf_read], B_shared[buf_read], acc);
+
+    <span class="kw">__syncthreads</span>();
+    <span class="fn">swap</span>(buf_read, buf_write);
+}
+<span class="com">// 计算最后一个 tile</span>
+<span class="fn">compute_tile</span>(A_shared[buf_read], B_shared[buf_read], acc);
+</pre>
+</div>
+
+<div class="callout">
+关键点：<code>load_tile</code> 和 <code>compute_tile</code> 操作的是<span class="highlight">不同的 buffer</span>，所以它们不冲突。<code>__syncthreads()</code> 确保加载完成后再 swap。
+</div>
+
+<!-- §4 -->
+<h2><span class="step">§4</span>实现方式 2：cp.async (Ampere+)</h2>
+
+<div class="card">
+<pre><span class="com">#include &lt;cuda/pipeline&gt;</span>
+
+<span class="com">// cp.async: 异步拷贝 global → shared，不占用计算资源</span>
+<span class="fn">__pipeline_memcpy_async</span>(&amp;A_shared[buf][ty][tx], &amp;A[global_idx], <span class="kw">sizeof</span>(<span class="type">float</span>));
+<span class="fn">__pipeline_commit</span>();
+
+<span class="com">// ... do computation on other buffer ...</span>
+
+<span class="fn">__pipeline_wait_prior</span>(<span class="num">0</span>);  <span class="com">// 等待异步拷贝完成</span>
+<span class="kw">__syncthreads</span>();
+</pre>
+</div>
+
+<p><code>cp.async</code> 是 Ampere (sm_80+) 的硬件特性：<span class="highlight2">DMA engine 独立于 compute pipeline 搬运数据</span>。</p>
+
+<div class="card">
+<h3>cp.async 的优势</h3>
+<table>
+<tr><th>特性</th><th>说明</th></tr>
+<tr><td><span class="highlight">不占计算线程</span></td><td>DMA engine 独立搬运，compute pipeline 完全空闲给计算</td></tr>
+<tr><td><span class="highlight2">真正硬件级 overlap</span></td><td>不是软件模拟，而是硬件同时执行 load 和 compute</td></tr>
+<tr><td><span class="highlight-warn">Triton 自动使用</span></td><td>当 <code>num_stages &ge; 2</code> 且目标 GPU &ge; sm_80 时，Triton 自动生成 cp.async</td></tr>
+<tr><td>绕过 L1 cache</td><td>直接 global → shared，避免污染 L1</td></tr>
+</table>
+</div>
+
+<!-- §5 -->
+<h2><span class="step">§5</span>完整 Double Buffer Kernel</h2>
+
+<p>综合 double buffering + register tiling 的完整 kernel：</p>
+
+<div class="card">
+<pre><span class="kw">#define</span> <span class="fn">BM</span> <span class="num">64</span>
+<span class="kw">#define</span> <span class="fn">BN</span> <span class="num">64</span>
+<span class="kw">#define</span> <span class="fn">BK</span> <span class="num">16</span>
+<span class="kw">#define</span> <span class="fn">TM</span> <span class="num">8</span>
+<span class="kw">#define</span> <span class="fn">TN</span> <span class="num">8</span>
+
+<span class="kw">__global__</span> <span class="type">void</span> <span class="fn">gemm_double_buffer</span>(
+    <span class="kw">const</span> <span class="type">float</span>* <span class="kw">__restrict__</span> A,
+    <span class="kw">const</span> <span class="type">float</span>* <span class="kw">__restrict__</span> B,
+    <span class="type">float</span>* <span class="kw">__restrict__</span> C,
+    <span class="type">int</span> M, <span class="type">int</span> N, <span class="type">int</span> K
+) {
+    <span class="kw">__shared__</span> <span class="type">float</span> A_shared[<span class="num">2</span>][BM][BK];
+    <span class="kw">__shared__</span> <span class="type">float</span> B_shared[<span class="num">2</span>][BK][BN];
+
+    <span class="com">// Thread tile (每个 thread 算 TM&times;TN 个输出)</span>
+    <span class="type">float</span> acc[TM][TN] = {<span class="num">0.0f</span>};
+    <span class="type">float</span> a_frag[TM], b_frag[TN];
+
+    <span class="type">int</span> tx = threadIdx.x;
+    <span class="type">int</span> ty = threadIdx.y;
+    <span class="type">int</span> bx = blockIdx.x;
+    <span class="type">int</span> by = blockIdx.y;
+
+    <span class="com">// 每个 thread 在 tile 加载中负责的元素</span>
+    <span class="type">int</span> tid = ty * blockDim.x + tx;
+    <span class="type">int</span> num_threads = blockDim.x * blockDim.y;
+
+    <span class="type">int</span> buf = <span class="num">0</span>;
+
+    <span class="com">// ═══════════════════════════════════════════════</span>
+    <span class="com">// Prefetch first tile into buf=0</span>
+    <span class="com">// ═══════════════════════════════════════════════</span>
+    <span class="kw">for</span> (<span class="type">int</span> i = tid; i &lt; BM * BK; i += num_threads) {
+        <span class="type">int</span> row = i / BK;
+        <span class="type">int</span> col = i % BK;
+        <span class="type">int</span> global_row = by * BM + row;
+        <span class="type">int</span> global_col = col;  <span class="com">// k_tile=0, offset=0</span>
+        <span class="kw">if</span> (global_row &lt; M &amp;&amp; global_col &lt; K)
+            A_shared[<span class="num">0</span>][row][col] = A[global_row * K + global_col];
+        <span class="kw">else</span>
+            A_shared[<span class="num">0</span>][row][col] = <span class="num">0.0f</span>;
+    }
+    <span class="kw">for</span> (<span class="type">int</span> i = tid; i &lt; BK * BN; i += num_threads) {
+        <span class="type">int</span> row = i / BN;
+        <span class="type">int</span> col = i % BN;
+        <span class="type">int</span> global_row = row;  <span class="com">// k_tile=0, offset=0</span>
+        <span class="type">int</span> global_col = bx * BN + col;
+        <span class="kw">if</span> (global_row &lt; K &amp;&amp; global_col &lt; N)
+            B_shared[<span class="num">0</span>][row][col] = B[global_row * N + global_col];
+        <span class="kw">else</span>
+            B_shared[<span class="num">0</span>][row][col] = <span class="num">0.0f</span>;
+    }
+    <span class="kw">__syncthreads</span>();
+
+    <span class="com">// ═══════════════════════════════════════════════</span>
+    <span class="com">// Main loop: compute buf, prefetch buf^1</span>
+    <span class="com">// ═══════════════════════════════════════════════</span>
+    <span class="type">int</span> num_k_tiles = (K + BK - <span class="num">1</span>) / BK;
+
+    <span class="kw">for</span> (<span class="type">int</span> k_tile = <span class="num">1</span>; k_tile &lt; num_k_tiles; k_tile++) {
+        <span class="com">// ─── Prefetch next tile to buf^1 ───</span>
+        <span class="kw">for</span> (<span class="type">int</span> i = tid; i &lt; BM * BK; i += num_threads) {
+            <span class="type">int</span> row = i / BK;
+            <span class="type">int</span> col = i % BK;
+            <span class="type">int</span> global_row = by * BM + row;
+            <span class="type">int</span> global_col = k_tile * BK + col;
+            <span class="kw">if</span> (global_row &lt; M &amp;&amp; global_col &lt; K)
+                A_shared[buf^<span class="num">1</span>][row][col] = A[global_row * K + global_col];
+            <span class="kw">else</span>
+                A_shared[buf^<span class="num">1</span>][row][col] = <span class="num">0.0f</span>;
+        }
+        <span class="kw">for</span> (<span class="type">int</span> i = tid; i &lt; BK * BN; i += num_threads) {
+            <span class="type">int</span> row = i / BN;
+            <span class="type">int</span> col = i % BN;
+            <span class="type">int</span> global_row = k_tile * BK + row;
+            <span class="type">int</span> global_col = bx * BN + col;
+            <span class="kw">if</span> (global_row &lt; K &amp;&amp; global_col &lt; N)
+                B_shared[buf^<span class="num">1</span>][row][col] = B[global_row * N + global_col];
+            <span class="kw">else</span>
+                B_shared[buf^<span class="num">1</span>][row][col] = <span class="num">0.0f</span>;
+        }
+
+        <span class="com">// ─── Compute current tile from buf ───</span>
+        <span class="kw">for</span> (<span class="type">int</span> kk = <span class="num">0</span>; kk &lt; BK; kk++) {
+            <span class="com">// Load fragments from shared memory</span>
+            <span class="kw">for</span> (<span class="type">int</span> tm = <span class="num">0</span>; tm &lt; TM; tm++)
+                a_frag[tm] = A_shared[buf][ty * TM + tm][kk];
+            <span class="kw">for</span> (<span class="type">int</span> tn = <span class="num">0</span>; tn &lt; TN; tn++)
+                b_frag[tn] = B_shared[buf][kk][tx * TN + tn];
+
+            <span class="com">// Outer product</span>
+            <span class="kw">for</span> (<span class="type">int</span> tm = <span class="num">0</span>; tm &lt; TM; tm++)
+                <span class="kw">for</span> (<span class="type">int</span> tn = <span class="num">0</span>; tn &lt; TN; tn++)
+                    acc[tm][tn] += a_frag[tm] * b_frag[tn];
+        }
+
+        <span class="kw">__syncthreads</span>();
+        buf ^= <span class="num">1</span>;  <span class="com">// swap buffers</span>
+    }
+
+    <span class="com">// ═══════════════════════════════════════════════</span>
+    <span class="com">// Compute last tile (already in buf)</span>
+    <span class="com">// ═══════════════════════════════════════════════</span>
+    <span class="kw">for</span> (<span class="type">int</span> kk = <span class="num">0</span>; kk &lt; BK; kk++) {
+        <span class="kw">for</span> (<span class="type">int</span> tm = <span class="num">0</span>; tm &lt; TM; tm++)
+            a_frag[tm] = A_shared[buf][ty * TM + tm][kk];
+        <span class="kw">for</span> (<span class="type">int</span> tn = <span class="num">0</span>; tn &lt; TN; tn++)
+            b_frag[tn] = B_shared[buf][kk][tx * TN + tn];
+
+        <span class="kw">for</span> (<span class="type">int</span> tm = <span class="num">0</span>; tm &lt; TM; tm++)
+            <span class="kw">for</span> (<span class="type">int</span> tn = <span class="num">0</span>; tn &lt; TN; tn++)
+                acc[tm][tn] += a_frag[tm] * b_frag[tn];
+    }
+
+    <span class="com">// ═══════════════════════════════════════════════</span>
+    <span class="com">// Write back to global memory</span>
+    <span class="com">// ═══════════════════════════════════════════════</span>
+    <span class="kw">for</span> (<span class="type">int</span> tm = <span class="num">0</span>; tm &lt; TM; tm++)
+        <span class="kw">for</span> (<span class="type">int</span> tn = <span class="num">0</span>; tn &lt; TN; tn++) {
+            <span class="type">int</span> row = by * BM + ty * TM + tm;
+            <span class="type">int</span> col = bx * BN + tx * TN + tn;
+            <span class="kw">if</span> (row &lt; M &amp;&amp; col &lt; N)
+                C[row * N + col] = acc[tm][tn];
+        }
+}
+</pre>
+</div>
+
+<div class="callout">
+启动参数：<code>dim3 block(BN/TN, BM/TM) = (8, 8) = 64 threads</code>，<code>dim3 grid(N/BN, M/BM)</code>。每个 thread 计算 8&times;8 = 64 个 C 元素。
+</div>
+
+<!-- §6 -->
+<h2><span class="step">§6</span>Register Tiling (Thread Tile) 解释</h2>
+
+<p>注意这里每个 thread 不再只算 1 个 C 元素，而是 <span class="highlight">TM&times;TN = 8&times;8 = 64 个</span>！</p>
+
+<div class="card">
+<h3>为什么要 Register Tiling？</h3>
+<table>
+<tr><th>方案</th><th>每 thread 算多少</th><th>Block 线程数</th><th>Register 使用</th></tr>
+<tr><td>1 element/thread</td><td>1</td><td>64&times;64 = 4096 (超限!)</td><td>几乎没有复用</td></tr>
+<tr><td><span class="highlight">64 elements/thread</span></td><td>8&times;8 = 64</td><td>8&times;8 = 64 threads</td><td>数据在 register 中被充分复用</td></tr>
+</table>
+</div>
+
+<div class="formula">
+Block threads: (BM/TM) &times; (BN/TN) = <span class="highlight">8 &times; 8 = 64 threads</span><br><br>
+每个 thread 持有:<br>
+&nbsp;&nbsp;acc[8][8] = <span class="highlight2">64 registers</span> (累加器)<br>
+&nbsp;&nbsp;a_frag[8] + b_frag[8] = <span class="highlight-warn">16 registers</span> (数据片段)<br>
+&nbsp;&nbsp;合计: ~80 registers/thread → OK (硬件上限 255)
+</div>
+
+<div class="callout info">
+<strong>核心优势：</strong>一次从 shared memory 加载 <code>a_frag[8]</code>，它被用于与 <code>b_frag</code> 的 8 个元素逐一相乘。即 1 次 shared memory 读 → 8 次乘加。这就是 <span class="highlight">register 复用</span>。
+</div>
+
+<!-- §7 -->
+<h2><span class="step">§7</span>性能对比</h2>
+
+<div class="card">
+<table>
+<tr><th>实现</th><th>TFLOPS (4096&times;4096)</th><th>vs cuBLAS</th></tr>
+<tr><td>Naive (每 thread 1 元素)</td><td>~3</td><td>2%</td></tr>
+<tr><td>Shared Memory (BM=BN=32)</td><td>~35</td><td>20%</td></tr>
+<tr><td>+ Register Tiling (TM=TN=8)</td><td>~70</td><td>42%</td></tr>
+<tr><td><span class="highlight">+ Double Buffering</span></td><td><span class="highlight">~90</span></td><td><span class="highlight">55%</span></td></tr>
+<tr><td>cuBLAS</td><td>~165</td><td>100%</td></tr>
+</table>
+</div>
+
+<div class="callout warn">
+从 20% 到 55%！但还差 Tensor Core。下一节开始 Tensor Core（<code>wmma</code> API）。
+</div>
+
+<!-- §8 -->
+<h2><span class="step">§8</span>Triple Buffering (num_stages=3)</h2>
+
+<p>Double buffering 的自然扩展——用 3 组 buffer 进一步覆盖长延迟：</p>
+
+<div class="card">
+<table>
+<tr><th>角色</th><th>Buffer 0</th><th>Buffer 1</th><th>Buffer 2</th></tr>
+<tr><td>当前迭代</td><td><span class="comp" style="color:var(--brand2)">Computing</span></td><td><span class="mem" style="color:var(--brand)">Loading</span></td><td>Loaded &amp; waiting</td></tr>
+<tr><td>下一迭代</td><td>Loaded &amp; waiting</td><td><span class="comp" style="color:var(--brand2)">Computing</span></td><td><span class="mem" style="color:var(--brand)">Loading</span></td></tr>
+</table>
+</div>
+
+<ul class="tight">
+<li>更好地覆盖高延迟（HBM 延迟 ~400 cycles）</li>
+<li>代价：需要 3&times; shared memory（BM&times;BK&times;3 + BK&times;BN&times;3）</li>
+<li>Triton: <code>num_stages=3</code> 自动生成三重缓冲 + cp.async pipeline</li>
+<li>实际中 <code>num_stages=2~4</code> 最常用，再多 shared memory 不够</li>
+</ul>
+
+<!-- §9 -->
+<h2><span class="step">§9</span>带走</h2>
+
+<div class="card">
+<table>
+<tr><th>#</th><th>要点</th></tr>
+<tr><td>1</td><td><span class="highlight">Double buffering</span>: 2 组 shared memory buffer，一组计算一组加载，轮流切换</td></tr>
+<tr><td>2</td><td><span class="highlight2">效果</span>: memory latency 被计算完全覆盖 → compute/memory 并行</td></tr>
+<tr><td>3</td><td><span class="highlight-warn">Register tiling</span> (TM&times;TN): 每个 thread 算多个输出 → register 复用，减少 shared memory 读取</td></tr>
+<tr><td>4</td><td><span class="highlight">cp.async</span> (Ampere+): 硬件 DMA 搬运，不占计算线程，真正硬件级 overlap</td></tr>
+<tr><td>5</td><td>对应 Triton: <code>num_stages=2</code> (double) / <code>3</code> (triple)，编译器自动处理</td></tr>
+</table>
+</div>
+
+<p class="foot">C8 · GEMM Double Buffering — CUDA GEMM 系列 9/15</p>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

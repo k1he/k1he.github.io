@@ -1,0 +1,381 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Router 治理与生产实践</title>
+<style>
+
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+  --R0:#fbbf24;--R1:#7dd3fc;--R2:#a78bfa;--R3:#34d399;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+.cols-4{grid-template-columns:repeat(4,1fr)}
+@media (max-width:900px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+
+/* Demo */
+.demo{background:#0f1218;border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}
+.demo-title{font-size:16px;font-weight:600;color:var(--brand);margin:0 0 4px}
+.demo-sub{color:var(--mute);font-size:12.5px;margin-bottom:14px}
+.demo-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
+.demo-btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:7px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:all .12s}
+.demo-btn:hover{border-color:var(--brand);color:var(--brand)}
+.demo-btn.primary{background:var(--brand);color:var(--bg);border-color:var(--brand);font-weight:600}
+.demo-btn.primary:hover{background:#5cd6a4}
+.demo-step{font-family:"SF Mono",monospace;font-size:12px;color:var(--mute);margin-left:auto;background:#1a1f2b;padding:4px 10px;border-radius:6px;border:1px solid var(--line)}
+.demo-narration{background:rgba(110,231,183,.08);border-left:3px solid var(--brand);padding:10px 14px;border-radius:0 8px 8px 0;margin-top:12px;color:#cbd5e1;font-size:13px;min-height:42px;transition:all .3s}
+
+.rank-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}
+.rank-card{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px;text-align:center;transition:all .3s}
+.rank-card.active{border-color:var(--brand);box-shadow:0 0 12px rgba(110,231,183,.3)}
+.rank-card .rid{font-family:"SF Mono",monospace;font-weight:700;font-size:14px;margin-bottom:6px}
+.rank-card .body{color:var(--mute);font-family:"SF Mono",monospace;font-size:11px;line-height:1.5}
+.bar-h{display:flex;flex-direction:column;gap:3px;margin:8px 0}
+.bar-row{display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center;font-size:11px}
+.bar-row .lbl{color:var(--mute);font-family:"SF Mono",monospace}
+.bar-track{height:24px;background:#0a0d12;border:1px solid var(--line);border-radius:4px;position:relative;overflow:hidden}
+.bar-seg{position:absolute;top:2px;bottom:2px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0b0d12;transition:all .35s}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.pulse{animation:pulse 1s ease-in-out infinite}
+.kpi{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace}
+.kpi span{background:#1a1f2b;padding:3px 8px;border-radius:5px;border:1px solid var(--line)}
+.kpi span b{color:var(--brand)}
+
+
+.queue-box{background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:12px;min-height:110px;position:relative}
+.queue-title{font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace;margin-bottom:8px;display:flex;justify-content:space-between}
+.queue-title .cnt{color:var(--brand)}
+.req-chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:11px;font-family:"SF Mono",monospace;margin:3px;transition:all .35s;cursor:pointer}
+.req-chip.bootstrapping{border-color:var(--warn);color:var(--warn)}
+.req-chip.waiting{border-color:var(--brand2);color:var(--brand2)}
+.req-chip.transferring{border-color:var(--purple);color:var(--purple);animation:pulse 1s ease-in-out infinite}
+.req-chip.success{border-color:var(--brand);color:var(--brand);background:rgba(110,231,183,0.15)}
+.req-chip.failed{border-color:var(--bad);color:var(--bad)}
+.req-chip.active{box-shadow:0 0 10px currentColor}
+.msg-line{font-family:"SF Mono",monospace;font-size:11.5px;padding:4px 10px;margin:2px 0;border-radius:4px;background:#0f1218;border-left:2px solid var(--line);color:var(--mute)}
+.msg-line.active{border-color:var(--brand);color:var(--ink);background:rgba(110,231,183,0.05)}
+.msg-line .ts{color:var(--purple);margin-right:8px}
+.msg-line .tag{color:var(--warn);margin-right:8px}
+.path{color:var(--mute);font-size:11px;font-family:"SF Mono",monospace}
+.hl{background:rgba(251,191,36,.15);color:var(--warn);padding:0 3px;border-radius:3px}
+.step-badge{display:inline-block;background:var(--brand);color:var(--bg);border-radius:50%;width:22px;height:22px;line-height:22px;text-align:center;font-size:12px;font-weight:700;margin-right:8px}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--brand)}
+.flow-node{fill:#11141b;stroke:#262b38;stroke-width:1.5}
+.flow-node.active{stroke:#6ee7b7;stroke-width:2.2}
+.flow-node.active-warn{stroke:#fbbf24;stroke-width:2.2}
+.flow-node.active-blue{stroke:#7dd3fc;stroke-width:2.2}
+.flow-edge{stroke:#3a4050;stroke-width:1.5;fill:none}
+.flow-edge.active{stroke:#fbbf24;stroke-width:2}
+.flow-label{fill:#e6e8ee;font-family:"SF Mono",monospace;font-size:11px}
+.flow-label.sub{fill:#8b93a7;font-size:10px}
+.click-hint{font-size:11px;color:var(--mute);margin-top:6px;text-align:center}
+
+</style>
+</head><body><div class="wrap"><h1>Router 治理与生产实践<span class="tag">PD · 7/7</span></h1><div class="sub">PD 生产运维的核心指标、失败清理链路、调优环境变量、Router 扩缩容、EPD 扩展、排障 checklist。配交互式 metrics dashboard 和故障场景切换。</div><div class="toc"><a href="#metrics">核心指标 📊</a><a href="#failure">失败清理</a><a href="#env">环境变量</a><a href="#router">Router 治理</a><a href="#epd">EPD 扩展</a><a href="#checklist">排障 checklist</a><a href="#summary">要点</a></div>
+<!-- PART 1 -->
+<h2 id="metrics"><span class="step">PART 1</span>PD 生产必看的核心指标</h2>
+<div class="card">
+<p>PD 把一次请求分成了 "Router 决策 + 两端排队 + KV transfer + D decode" 多段，排查性能必须拆到每段。</p>
+
+<table>
+<tr><th>指标</th><th>来源</th><th>正常范围</th><th>告警含义</th></tr>
+<tr><td><code>router_duration_ms</code></td><td>Router Metrics</td><td>&lt; 5ms</td><td>Router 的 policy 选择慢 / retry 频繁</td></tr>
+<tr><td><code>prefill_bootstrap_queue_time</code></td><td>req.time_stats</td><td>&lt; 5ms</td><td>D 的 metadata 没发过来 / D 侧 prealloc 慢</td></tr>
+<tr><td><code>prefill_waiting_queue_time</code></td><td>req.time_stats</td><td>&lt; 20ms</td><td>PrefillAdder 装不下（KV pool 满）</td></tr>
+<tr><td><code>kv_transfer_latency_ms</code></td><td>prefill.py:660</td><td>&lt; 30ms</td><td>RDMA 拥塞 / 大 prompt</td></tr>
+<tr><td><code>kv_transfer_speed_gb_s</code></td><td>prefill.py:670</td><td>&gt; 10 GB/s (IB) / &gt; 40 (NVLink)</td><td>低于阈值意味着网络有问题</td></tr>
+<tr><td><code>decode_prealloc_queue_time</code></td><td>req.time_stats</td><td>&lt; 10ms</td><td>D 侧 KV pool 占满</td></tr>
+<tr><td><code>decode_transfer_queue_time</code></td><td>req.time_stats</td><td>= kv_transfer_latency</td><td>如果差值大说明 poll 延迟</td></tr>
+<tr><td><code>bootstrap_failed_reqs</code></td><td>scheduler counter</td><td>0</td><td>D 没能 handshake 上 P（拓扑/timeout）</td></tr>
+<tr><td><code>transfer_failed_reqs</code></td><td>scheduler counter</td><td>0</td><td>RDMA 错 / P 挂</td></tr>
+</table>
+</div>
+
+<!-- Interactive metrics dashboard -->
+<div class="demo">
+<div class="demo-title">📊 模拟 metrics dashboard</div>
+<div class="demo-sub">切换故障场景，看各指标如何响应</div>
+
+<div class="demo-controls">
+  <button class="demo-btn" data-s="healthy">✅ healthy</button>
+  <button class="demo-btn" data-s="kv_slow">⚠️ RDMA 拥塞</button>
+  <button class="demo-btn" data-s="p_dead">❌ P 挂了</button>
+  <button class="demo-btn" data-s="d_full">⚠️ D KV pool 满</button>
+  <button class="demo-btn" data-s="ttl">❌ metadata timeout</button>
+</div>
+
+<div style="background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px">
+  <div class="grid cols-3" style="gap:10px">
+    <div class="queue-box">
+      <div class="queue-title">TTFT p99 <span class="cnt" id="mt-ttft">0</span></div>
+      <div style="font-size:11px;color:var(--mute)" id="mt-ttft-bar"></div>
+    </div>
+    <div class="queue-box">
+      <div class="queue-title">ITL p99 <span class="cnt" id="mt-itl">0</span></div>
+      <div style="font-size:11px;color:var(--mute)" id="mt-itl-bar"></div>
+    </div>
+    <div class="queue-box">
+      <div class="queue-title">bootstrap_failed <span class="cnt" id="mt-bf">0</span></div>
+      <div style="font-size:11px;color:var(--mute)" id="mt-bf-bar"></div>
+    </div>
+    <div class="queue-box">
+      <div class="queue-title">transfer_failed <span class="cnt" id="mt-tf">0</span></div>
+      <div style="font-size:11px;color:var(--mute)" id="mt-tf-bar"></div>
+    </div>
+    <div class="queue-box">
+      <div class="queue-title">kv speed (GB/s) <span class="cnt" id="mt-kv">0</span></div>
+      <div style="font-size:11px;color:var(--mute)" id="mt-kv-bar"></div>
+    </div>
+    <div class="queue-box">
+      <div class="queue-title">D 队列深度 <span class="cnt" id="mt-q">0</span></div>
+      <div style="font-size:11px;color:var(--mute)" id="mt-q-bar"></div>
+    </div>
+  </div>
+
+  <div style="margin-top:14px;background:#0f1218;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12.5px" id="mt-diag">
+    <span style="color:var(--mute)">诊断</span>：点上面任意场景
+  </div>
+</div>
+<div class="demo-narration" id="mt-narr">不同故障下指标的响应模式不同：是 TTFT 涨？还是 transfer_failed 涨？这是根因定位的一级线索。</div>
+</div>
+
+<script>
+(function(){
+  const SCENARIOS = {
+    healthy: {ttft:145, itl:42, bf:0, tf:0, kv:48, q:3,
+      diag:'✅ 健康：所有指标在预期区间。',
+      narr:'稳态下 TTFT 主要由 P prefill 时间决定（140ms 左右），ITL 稳定在 40ms。'},
+    kv_slow: {ttft:320, itl:42, bf:0, tf:0, kv:4, q:6,
+      diag:'⚠️ kv_transfer_speed 掉到 4 GB/s（预期 48），<br>→ 排查网卡、RDMA queue 深度、staging buffer 配置；<br>→ D 的 TransferQueue 会堆积；<br>→ TTFT 涨但 ITL 不变（decode 本身不受影响）',
+      narr:'KV transfer 是 TTFT 的附加开销，一旦慢下来只影响新请求的首 token。正在 decode 的请求不受影响（所以 ITL 稳定）。'},
+    p_dead: {ttft:9999, itl:42, bf:120, tf:15, kv:0, q:0,
+      diag:'❌ P 挂了（health check 挂）。<br>→ bootstrap_failed 大增：D 每次 send_metadata 超时；<br>→ transfer_failed 跟着涨；<br>→ D heartbeat_checker 会把剩余请求批量标 Failed；<br>→ Router 应该剔除这台 P',
+      narr:'P 宕机后，D 侧先出现 bootstrap timeout（没 P 收 metadata），然后 heartbeat_checker 触发大规模 fail。Router 的 health check 把 P 摘掉后恢复。'},
+    d_full: {ttft:220, itl:42, bf:0, tf:0, kv:48, q:18,
+      diag:'⚠️ D 的 KV pool 满，prealloc 堵住。<br>→ decode_prealloc_queue_time 涨；<br>→ 队列深度 &gt; 15 连续 N 秒 = 扩容信号；<br>→ 或调 max_running_requests/pre_alloc_size',
+      narr:'D 的 KV 预算不够时，新请求进 PreallocQueue 就走不动。running_batch 的 decode 速度不受影响，但排队时间拉长。'},
+    ttl: {ttft:9999, itl:42, bf:50, tf:0, kv:48, q:0,
+      diag:'❌ SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT 大量触发。<br>→ 可能 D 的 ZMQ 连不到 P 的 bootstrap_port（防火墙）；<br>→ 或 D 到 bootstrap server 的 HTTP 路径通，但 ZMQ 不通；<br>→ 检查 disaggregation_bootstrap_port 是否暴露',
+      narr:'这是最容易误判的场景：P 进程在、bootstrap HTTP 响应正常，但 ZMQ 端口被防火墙拦。只表现为 bootstrap_failed。'},
+  };
+
+  function makeBar(val, max, color){
+    const w = Math.min(100, val/max*100);
+    return `<div style="height:6px;background:#0a0d12;border-radius:3px;overflow:hidden;margin-top:4px"><div style="width:${w}%;height:100%;background:${color}"></div></div>`;
+  }
+
+  function show(key){
+    const s = SCENARIOS[key];
+    document.getElementById('mt-ttft').textContent = s.ttft >=9999 ? '∞' : s.ttft+'ms';
+    document.getElementById('mt-itl').textContent = s.itl+'ms';
+    document.getElementById('mt-bf').textContent = s.bf;
+    document.getElementById('mt-tf').textContent = s.tf;
+    document.getElementById('mt-kv').textContent = s.kv;
+    document.getElementById('mt-q').textContent = s.q;
+    document.getElementById('mt-ttft-bar').innerHTML = makeBar(Math.min(s.ttft,500), 500, s.ttft>200?'#fb7185':'#6ee7b7');
+    document.getElementById('mt-itl-bar').innerHTML  = makeBar(s.itl, 100, s.itl>50?'#fbbf24':'#6ee7b7');
+    document.getElementById('mt-bf-bar').innerHTML   = makeBar(s.bf, 100, s.bf>0?'#fb7185':'#6ee7b7');
+    document.getElementById('mt-tf-bar').innerHTML   = makeBar(s.tf, 100, s.tf>0?'#fb7185':'#6ee7b7');
+    document.getElementById('mt-kv-bar').innerHTML   = makeBar(s.kv, 60, s.kv<10?'#fb7185':'#6ee7b7');
+    document.getElementById('mt-q-bar').innerHTML    = makeBar(s.q, 30, s.q>15?'#fbbf24':'#6ee7b7');
+    document.getElementById('mt-diag').innerHTML = s.diag;
+    document.getElementById('mt-narr').innerHTML = s.narr;
+  }
+
+  document.querySelectorAll('[data-s]').forEach(b=>{
+    b.addEventListener('click', ()=>show(b.dataset.s));
+  });
+  show('healthy');
+})();
+</script>
+
+<!-- PART 2: failure paths -->
+<h2 id="failure"><span class="step">PART 2</span>失败路径：每个点都要清理到底</h2>
+<div class="card">
+<p>PD 里一个请求跨越多个进程和 buffer，任意一个环节失败都要<strong>完整清理</strong>：KV pool、tree cache 前缀锁、metadata buffer slot、sender/receiver 对象、transfer_infos 表项、Router 的活跃请求计数。漏清一个都会让后续请求命中"幽灵资源"。</p>
+
+<h3>典型清理链路</h3>
+<pre><span class="path">// disaggregation/prefill.py (P 侧失败清理)</span>
+<span class="kw">def</span> <span class="fn">release_kv_cache</span>(req, tree_cache, insert=<span class="kw">True</span>):
+    tree_cache.<span class="fn">cache_finished_req</span>(req, insert=insert)   <span class="com"># 解锁前缀</span>
+    req.<span class="fn">release_resource</span>()                                <span class="com"># 释放 req_pool_idx + KV slot</span>
+
+<span class="kw">def</span> <span class="fn">_cleanup_failed_req</span>(req):
+    <span class="fn">release_kv_cache</span>(req, tree_cache, insert=<span class="kw">False</span>)   <span class="com"># 失败时不插 tree（前缀可能坏）</span>
+    self.req_to_metadata_buffer_idx_allocator.<span class="fn">free</span>(req.metadata_buffer_index)
+    self.kv_manager.<span class="fn">remove_transfer_infos</span>(req.bootstrap_room)
+    self.metrics_collector.<span class="fn">increment_transfer_failed_reqs</span>()</pre>
+
+<h3>失败场景 → 触发源 → 清理</h3>
+<table>
+<tr><th>失败源</th><th>触发</th><th>清理</th></tr>
+<tr><td>D 侧 receiver 超时</td><td>SGLANG_DISAGGREGATION_WAITING_TIMEOUT (300s)</td><td>decode_req release KV + abort req</td></tr>
+<tr><td>P 侧 sender 超时</td><td>SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT</td><td>abort + remove transfer_infos</td></tr>
+<tr><td>RDMA 错</td><td>mooncake ret != 0</td><td>sync_status_to_decode_endpoint(Failed) → 两侧都标 Failed</td></tr>
+<tr><td>metadata buffer 串包</td><td>commit 时 bootstrap_room mismatch</td><td>abort，但不释放其他 req 的 buffer</td></tr>
+<tr><td>P heartbeat 挂</td><td>D 的 heartbeat_checker（每 5s 一次）</td><td>把该 P 的所有 pending req 批量标 Failed</td></tr>
+</table>
+</div>
+
+<!-- PART 3: env vars -->
+<h2 id="env"><span class="step">PART 3</span>调优环境变量速查</h2>
+<div class="card">
+<table>
+<tr><th>变量</th><th>作用</th><th>默认</th><th>调优建议</th></tr>
+<tr><td><code>SGLANG_DISAGGREGATION_THREAD_POOL_SIZE</code></td><td>P 侧 transfer_worker 线程数</td><td>0.5·cpu/8, [4,12]</td><td>IB 网卡瓶颈时可 +2</td></tr>
+<tr><td><code>SGLANG_DISAGGREGATION_QUEUE_SIZE</code></td><td>FastQueue 数量（多 D 并发分桶）</td><td>4</td><td>D 数 &gt; 4 时成比例加</td></tr>
+<tr><td><code>SGLANG_DISAGGREGATION_BOOTSTRAP_TIMEOUT</code></td><td>P 等 D metadata 最长时间</td><td>300s</td><td>健康环境可降到 30s 更快 fail</td></tr>
+<tr><td><code>SGLANG_DISAGGREGATION_WAITING_TIMEOUT</code></td><td>D 等 P transfer 最长时间</td><td>300s</td><td>同上</td></tr>
+<tr><td><code>SGLANG_DISAGGREGATION_HEARTBEAT_INTERVAL</code></td><td>D 探活 P 的 HTTP 间隔</td><td>5s</td><td>高 QPS 可降至 2s</td></tr>
+<tr><td><code>SGLANG_DISAGGREGATION_HEARTBEAT_MAX_FAILURE</code></td><td>连续失败几次 → P 离线</td><td>2</td><td>网络抖动多的环境设 3</td></tr>
+<tr><td><code>SGLANG_DISAGGREGATION_NUM_PRE_ALLOCATE_REQS</code></td><td>D 的 pre_alloc_size 上限</td><td>动态</td><td>大 KV 时手动设 32 开始试</td></tr>
+<tr><td><code>SGLANG_DISAGG_STAGING_BUFFER</code></td><td>异构 TP staging</td><td>0</td><td>非 MLA 且 TP 不匹配时开</td></tr>
+<tr><td><code>SGLANG_MOONCAKE_CUSTOM_MEM_POOL</code></td><td>NVLINK / BAREX / INTRA_NODE_NVLINK</td><td>unset</td><td>NVL72 开 NVLINK</td></tr>
+</table>
+</div>
+
+<!-- PART 4: Router governance -->
+<h2 id="router"><span class="step">PART 4</span>Router 治理：policy 选型与动态扩缩容</h2>
+<div class="card">
+<h3>policy 选型矩阵</h3>
+<table>
+<tr><th>场景</th><th>prefill-policy</th><th>decode-policy</th><th>原因</th></tr>
+<tr><td>一般 Chatbot</td><td>cache_aware</td><td>power_of_two</td><td>chat 有强前缀局部性</td></tr>
+<tr><td>纯 API、prompt 多样</td><td>power_of_two</td><td>power_of_two</td><td>cache_aware 收益小</td></tr>
+<tr><td>Agent 多步</td><td>prefix_hash</td><td>power_of_two</td><td>同一 session 固定到一台 P</td></tr>
+<tr><td>Benchmark 测试</td><td>round_robin</td><td>round_robin</td><td>结果可复现</td></tr>
+</table>
+
+<h3>动态扩缩容</h3>
+<pre><span class="com"># 增 P</span>
+curl -X POST http://router:30000/workers \
+  -H <span class="str">"Content-Type: application/json"</span> \
+  -d <span class="str">'{"url":"http://p3:30005","type":"prefill","bootstrap_port":9003}'</span>
+
+<span class="com"># 删 P（graceful：等 in-flight 请求完成）</span>
+curl -X DELETE http://router:30000/workers?url=http://p1:30001</pre>
+
+<p>源码：<span class="path">pd_router.rs</span> 的 <code>add_worker / remove_worker</code> 更新 WorkerRegistry；WorkerRegistry 同时更新 hash_ring（cache_aware 用），保证新 worker 立刻被纳入调度。</p>
+</div>
+
+<!-- PART 5: EPD -->
+<h2 id="epd"><span class="step">PART 5</span>EPD 扩展：多模态的三段式</h2>
+<div class="card">
+<p>VLM 请求多了 ViT encoder，如果和 LLM prefill 共用 GPU，算力错配。EPD 把请求拆成 Encoder → Prefill → Decode 三段：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 180" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="ear" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#fbbf24"/></marker></defs>
+<rect class="flow-node" x="20" y="60" width="100" height="60" rx="8"/>
+<text class="flow-label" x="70" y="90" text-anchor="middle">Client</text>
+<text class="flow-label sub" x="70" y="106" text-anchor="middle">img + text</text>
+
+<rect class="flow-node" x="160" y="60" width="120" height="60" rx="8" style="stroke:#fbbf24;stroke-width:2"/>
+<text class="flow-label" x="220" y="90" text-anchor="middle">Router (EPD)</text>
+<text class="flow-label sub" x="220" y="106" text-anchor="middle">+encoder pool</text>
+
+<rect class="flow-node" x="320" y="10" width="150" height="60" rx="8" style="stroke:#a78bfa"/>
+<text class="flow-label" x="395" y="35" text-anchor="middle" fill="#a78bfa">Encoder worker</text>
+<text class="flow-label sub" x="395" y="52" text-anchor="middle">ViT / audio</text>
+
+<rect class="flow-node" x="510" y="10" width="150" height="60" rx="8" style="stroke:#6ee7b7"/>
+<text class="flow-label" x="585" y="35" text-anchor="middle" fill="#6ee7b7">Prefill worker</text>
+<text class="flow-label sub" x="585" y="52" text-anchor="middle">LLM prompt</text>
+
+<rect class="flow-node" x="700" y="10" width="170" height="60" rx="8" style="stroke:#7dd3fc"/>
+<text class="flow-label" x="785" y="35" text-anchor="middle" fill="#7dd3fc">Decode worker</text>
+<text class="flow-label sub" x="785" y="52" text-anchor="middle">stream token</text>
+
+<path class="flow-edge" d="M120,90 L160,90" marker-end="url(#ear)"/>
+<path class="flow-edge active" d="M280,80 L320,40" marker-end="url(#ear)"/>
+<path class="flow-edge" d="M470,40 L510,40" marker-end="url(#ear)" stroke="#a78bfa"/>
+<path class="flow-edge" d="M660,40 L700,40" marker-end="url(#ear)" stroke="#fb7185"/>
+<text class="flow-label sub" x="485" y="28" fill="#a78bfa">mm_tokens</text>
+<text class="flow-label sub" x="680" y="28" fill="#fb7185">KV</text>
+
+<path class="flow-edge" d="M785,70 L260,130" marker-end="url(#ear)" stroke-dasharray="4 3"/>
+<text class="flow-label sub" x="500" y="130" fill="#6ee7b7">D → Router → Client (SSE)</text>
+</svg>
+</div>
+
+<p>源码模块：<span class="path">srt/disaggregation/encode_server.py / encode_grpc_server.py / encode_receiver.py</span>。Router 侧扩展：<span class="path">sgl-model-gateway/src/routers/http/epd_router.rs</span>。</p>
+</div>
+
+<!-- PART 6: debugging checklist -->
+<h2 id="checklist"><span class="step">PART 6</span>PD 故障排查 checklist</h2>
+<div class="card">
+<ol>
+<li><strong>Router 是否看到两边 worker</strong>：<code>curl /workers</code>，检查 prefill / decode 数量</li>
+<li><strong>BootstrapServer 是否 ready</strong>：<code>curl http://p:bootstrap_port/health</code></li>
+<li><strong>P rank 数量对不对</strong>：<code>curl /route?dp=-1&amp;cp=-1&amp;tp=-1&amp;pp=-1</code>，应该等于 dp·cp·tp·pp</li>
+<li><strong>D 到 P 的 ZMQ 能连通吗</strong>：从 D 机 <code>nc -z P_host P_bootstrap_port</code></li>
+<li><strong>队列长度趋势</strong>：P 的 BootstrapQueue/WaitingQueue/InflightQueue，D 的 PreallocQueue/TransferQueue</li>
+<li><strong>KV transfer 速率</strong>：kv_transfer_speed_gb_s 是否合理（IB 10~30，NVLink 40+）</li>
+<li><strong>bootstrap_failed / transfer_failed 计数</strong>：0 是健康，&gt;0 必须进日志排查</li>
+<li><strong>metrics buffer 使用率</strong>：avail_size 一直减不回来 = 泄露，立刻 kill 重启排查</li>
+<li><strong>cache_aware 的命中率</strong>：是不是 cache miss 高导致 P 选错</li>
+<li><strong>失败请求是否干净</strong>：对比 req_pool available_size 在失败前后差值</li>
+</ol>
+</div>
+
+<!-- PART 7 -->
+<h2 id="summary"><span class="step">PART 7</span>本章要点</h2>
+<div class="card">
+<table>
+<tr><th>问题</th><th>答案</th></tr>
+<tr><td>排查 PD 性能的第一步？</td><td>把 TTFT 拆到每段（Router / bootstrap / waiting / forward / transfer / commit）</td></tr>
+<tr><td>bootstrap_failed vs transfer_failed？</td><td>前者是握手没成功（ZMQ/拓扑问题）；后者是握手 OK 但 RDMA 没成功</td></tr>
+<tr><td>D 的 KV pool 满怎么办？</td><td>调大 max_total_tokens、SGLANG_DISAGGREGATION_NUM_PRE_ALLOCATE_REQS；或在 Router 侧限流</td></tr>
+<tr><td>怎么安全下线一台 P？</td><td>Router <code>DELETE /workers</code> → 停接新请求 → 等 in-flight 清空 → kill 进程</td></tr>
+<tr><td>EPD 和 PD 关系？</td><td>EPD 是 PD 的超集：在 P 前多加一段 Encoder worker</td></tr>
+</table>
+</div>
+
+<div class="card" style="margin-top:30px;background:var(--panel2)">
+<h3>🎓 7 章学完你应该掌握什么</h3>
+<ul class="tight">
+<li>能在 Router 日志里推断出每个请求的 P/D 分配、room_id、双发时间</li>
+<li>能从 P 的三个队列长度判断瓶颈在哪一段</li>
+<li>能从 D 的 pre_alloc / transfer / running 分布看出 KV pool 是否健康</li>
+<li>能解读 BootstrapServer HTTP API 的输出、读懂 transfer_infos 表</li>
+<li>能分辨 bootstrap 慢、RDMA 慢、commit 慢三种根因</li>
+<li>能在 TP 不一致的场景下理解 _resolve_rank_mapping 怎么算 required_*</li>
+<li>能做 PD 的动态扩缩容、性能调优和失败恢复</li>
+</ul>
+</div>
+<div class="nav"><a href="06-kv-transfer-bootstrap.html">← 上一篇：KV Transfer</a><a href="08-tokenizer-deep-dive.html">下一篇：Tokenizer →</a></div><div class="foot">SGLang PD Disaggregation · 原理 → 源码 → 流转 → 交互演示</div></div>  <script src="../course-nav.js"></script>
+</body></html>

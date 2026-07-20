@@ -1,0 +1,793 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Ingress 与 Gateway API · 七层路由</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Ingress 与 Gateway API <span class="tag">第三层 · 10/15</span></h1>
+<div class="sub">一个集群跑 10 个模型，怎么用一个公网 IP + 域名把请求路由到正确的后端——七层路由是推理平台的"前门"。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么需要七层路由</a>
+  <a href="#model">§1 Ingress 资源 + Controller 模型</a>
+  <a href="#config">§2 Ingress 配置详解</a>
+  <a href="#gateway">§3 Gateway API</a>
+  <a href="#canary">§4 金丝雀发布 / 灰度路由</a>
+  <a href="#ratelimit">§5 限流与熔断</a>
+  <a href="#takeaway">§6 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么需要七层路由</h2>
+
+<div class="card">
+<p>你的推理集群里同时跑了多个模型：</p>
+<ul class="tight">
+  <li><code>qwen3-72b</code> — 通用对话</li>
+  <li><code>qwen3-8b</code> — 轻量快速</li>
+  <li><code>deepseek-r1</code> — 深度推理</li>
+  <li><code>embedding-v3</code> — 向量化</li>
+  <li><code>reranker-v2</code> — 重排序</li>
+</ul>
+<p>每个模型背后是独立的 Deployment + Service。如果每个 Service 都用 <code>type: LoadBalancer</code>，你就需要 5 个公网 IP、5 个 DNS 记录、5 份 TLS 证书——<b>成本爆炸，管理地狱</b>。</p>
+
+<h3>七层路由的核心价值</h3>
+<div class="callout info">
+<b>一个入口 → 多个后端</b>：用 HTTP Host / Path 把请求分发到不同 Service。所有模型共享一个公网 IP、一张通配符证书、一套限流策略。这就是 Ingress 的本质——HTTP 层的反向代理规则。
+</div>
+
+<p>想象你要实现这样的路由表：</p>
+<table>
+<thead><tr><th>请求</th><th>路由到</th></tr></thead>
+<tbody>
+<tr><td><code>api.myinfer.com/v1/chat/completions</code> + Header <code>X-Model: qwen3-72b</code></td><td>sglang-qwen72b-svc:8000</td></tr>
+<tr><td><code>api.myinfer.com/v1/chat/completions</code> + Header <code>X-Model: qwen3-8b</code></td><td>sglang-qwen8b-svc:8000</td></tr>
+<tr><td><code>api.myinfer.com/v1/embeddings</code></td><td>embedding-svc:8000</td></tr>
+<tr><td><code>api.myinfer.com/v1/rerank</code></td><td>reranker-svc:8000</td></tr>
+</tbody>
+</table>
+
+<h3>四层 vs 七层</h3>
+<table>
+<thead><tr><th>维度</th><th>四层（Service type=LoadBalancer）</th><th>七层（Ingress / Gateway API）</th></tr></thead>
+<tbody>
+<tr><td>路由依据</td><td>IP + Port（看不到 HTTP 内容）</td><td>Host + Path + Header + Method</td></tr>
+<tr><td>TLS 终止</td><td>每个 Service 各自处理</td><td>在入口统一终止，后端只跑 HTTP</td></tr>
+<tr><td>一个 IP 服务几个模型</td><td>一个 LB = 一个 Service</td><td>一个 Ingress = N 个 Service</td></tr>
+<tr><td>成本</td><td>N 个公网 IP</td><td>1 个公网 IP</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+四层做不到按 URL 分发流量——四层只看 IP:Port，看不到 HTTP 的 Host、Path、Header。所以<b>多模型推理路由必须七层</b>。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="model"><span class="step">§1</span>Ingress 资源 + Ingress Controller 模型</h2>
+
+<div class="card">
+<p>Ingress 体系有两个角色，理解这个分离是关键：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 400" width="960">
+  <defs>
+    <linearGradient id="igBg" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#1a2332"/><stop offset="1" stop-color="#11141b"/></linearGradient>
+    <marker id="arrowG" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#6ee7b7"/></marker>
+    <marker id="arrowY" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#fbbf24"/></marker>
+    <marker id="arrowP" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 Z" fill="#a78bfa"/></marker>
+  </defs>
+
+  <!-- 外部流量 -->
+  <rect x="30" y="150" width="130" height="60" rx="10" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="95" y="177" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">Client 请求</text>
+  <text x="95" y="197" text-anchor="middle" fill="#8b93a7" font-size="10">api.myinfer.com</text>
+
+  <path d="M160 180 L220 180" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrowY)"/>
+
+  <!-- Cloud LB -->
+  <rect x="220" y="155" width="130" height="50" rx="8" fill="#1f2937" stroke="#8b93a7" stroke-dasharray="4 3"/>
+  <text x="285" y="177" text-anchor="middle" fill="#8b93a7" font-size="11">Cloud LB</text>
+  <text x="285" y="193" text-anchor="middle" fill="#8b93a7" font-size="9">四层入口（TCP 443）</text>
+
+  <path d="M350 180 L410 180" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arrowG)"/>
+
+  <!-- Ingress Controller -->
+  <rect x="410" y="100" width="240" height="160" rx="14" fill="url(#igBg)" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="530" y="130" text-anchor="middle" fill="#6ee7b7" font-size="14" font-weight="700">Ingress Controller</text>
+  <text x="530" y="150" text-anchor="middle" fill="#8b93a7" font-size="11">（Nginx / Traefik / Kong Pod）</text>
+  <text x="435" y="175" fill="#8b93a7" font-size="10">• TLS 终止 → 解密 HTTPS</text>
+  <text x="435" y="193" fill="#8b93a7" font-size="10">• Host/Path 匹配 → 选后端</text>
+  <text x="435" y="211" fill="#8b93a7" font-size="10">• 限流/超时/重写 → 策略执行</text>
+  <text x="435" y="229" fill="#8b93a7" font-size="10">• 转发到目标 Service Pod</text>
+
+  <!-- Ingress 资源 -->
+  <rect x="410" y="300" width="240" height="70" rx="10" fill="#1a1a2e" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="530" y="325" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="700">Ingress 资源（YAML）</text>
+  <text x="530" y="345" text-anchor="middle" fill="#8b93a7" font-size="10">只是规则定义 · 存在 etcd</text>
+  <text x="530" y="360" text-anchor="middle" fill="#8b93a7" font-size="10">本身不做任何代理工作</text>
+
+  <!-- watch 连线 -->
+  <path d="M530 300 L530 260" stroke="#a78bfa" stroke-width="1.2" stroke-dasharray="4 3" marker-end="url(#arrowP)"/>
+  <text x="540" y="285" fill="#a78bfa" font-size="9">watch &amp; reload</text>
+
+  <!-- 后端 Services -->
+  <rect x="720" y="80" width="210" height="220" rx="10" fill="#1f2937" stroke="#262b38"/>
+  <text x="825" y="103" text-anchor="middle" fill="#8b93a7" font-size="11">后端 Services</text>
+
+  <rect x="740" y="115" width="170" height="35" rx="6" fill="#162924" stroke="#6ee7b7"/>
+  <text x="750" y="137" fill="#6ee7b7" font-size="10">sglang-qwen72b-svc:8000</text>
+
+  <rect x="740" y="160" width="170" height="35" rx="6" fill="#162924" stroke="#6ee7b7"/>
+  <text x="750" y="182" fill="#6ee7b7" font-size="10">sglang-qwen8b-svc:8000</text>
+
+  <rect x="740" y="205" width="170" height="35" rx="6" fill="#162924" stroke="#7dd3fc"/>
+  <text x="750" y="227" fill="#7dd3fc" font-size="10">embedding-svc:8000</text>
+
+  <rect x="740" y="250" width="170" height="35" rx="6" fill="#162924" stroke="#7dd3fc"/>
+  <text x="750" y="272" fill="#7dd3fc" font-size="10">reranker-svc:8000</text>
+
+  <!-- 路由箭头 -->
+  <path d="M650 140 L740 132" stroke="#6ee7b7" stroke-width="1"/>
+  <path d="M650 160 L740 177" stroke="#6ee7b7" stroke-width="1"/>
+  <path d="M650 180 L740 222" stroke="#7dd3fc" stroke-width="1"/>
+  <path d="M650 200 L740 267" stroke="#7dd3fc" stroke-width="1"/>
+
+  <!-- 路径标注 -->
+  <text x="655" y="128" fill="#8b93a7" font-size="9">/qwen72b/*</text>
+  <text x="655" y="168" fill="#8b93a7" font-size="9">/qwen8b/*</text>
+  <text x="655" y="215" fill="#8b93a7" font-size="9">/embeddings/*</text>
+  <text x="655" y="260" fill="#8b93a7" font-size="9">/rerank/*</text>
+
+  <!-- 底部类比 -->
+  <text x="30" y="385" fill="#8b93a7" font-size="11.5">类比：Ingress 资源 = nginx.conf（声明规则）  |  Ingress Controller = nginx 进程（执行代理）  |  没有 Controller，Ingress 就是废纸</text>
+</svg>
+</div>
+
+<h3>Ingress 只是规则定义（像 nginx.conf）</h3>
+<ul class="tight">
+  <li>一段 YAML，声明"什么 Host + 什么 Path → 转发到哪个 Service"</li>
+  <li>存在 etcd 里，本身不做任何网络转发</li>
+  <li>你可以创建 100 个 Ingress 资源，但没有 Controller 就没有任何效果</li>
+</ul>
+
+<h3>Ingress Controller 是真正的反向代理（像 nginx 进程）</h3>
+<ul class="tight">
+  <li>以 Pod 形态运行在集群内（通常是 Deployment 或 DaemonSet）</li>
+  <li>持续 watch apiserver 上的 Ingress 资源，变更时自动 reload 配置</li>
+  <li>监听 80/443 端口，接收外部流量并执行路由</li>
+  <li>需要被外部访问到——所以它的 Service 通常是 <code>LoadBalancer</code> 或 <code>NodePort</code></li>
+</ul>
+
+<h3>常见 Ingress Controller</h3>
+<table>
+<thead><tr><th>Controller</th><th>底层代理</th><th>适用场景</th><th>特点</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>Nginx Ingress</b></td><td>Nginx / OpenResty</td><td>通用场景首选</td><td>注解最丰富、社区最大、排障资料多</td></tr>
+<tr><td style="color:#6ee7b7"><b>Traefik</b></td><td>Go 原生代理</td><td>云原生优先、自动发现</td><td>热更新零停顿、内置 Let's Encrypt、Dashboard 美观</td></tr>
+<tr><td style="color:#6ee7b7"><b>Kong Ingress</b></td><td>Nginx + Lua</td><td>需要 API 管理</td><td>认证/限流/计费插件开箱即用</td></tr>
+<tr><td style="color:#6ee7b7"><b>CLB Ingress</b></td><td>腾讯云 CLB</td><td>TKE 环境</td><td>直接使用云 LB 做七层，Pod 直连模式</td></tr>
+</tbody>
+</table>
+
+<div class="callout bad">
+<b>常见误区</b>：很多人以为 <code>kubectl apply -f ingress.yaml</code> 就能路由了。实际上如果集群里没有部署任何 Ingress Controller，这个 Ingress 对象只是安静地躺在 etcd 里——没有任何效果。排障第一步：<code>kubectl get pods -n ingress-nginx</code> 确认 Controller 在跑。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="config"><span class="step">§2</span>Ingress 配置详解</h2>
+
+<div class="card">
+<h3>基于 Host 的路由</h3>
+<p>不同域名分发到不同后端——适合多租户或多产品线：</p>
+<pre><span style="color:#6ee7b7">apiVersion</span>: networking.k8s.io/v1
+<span style="color:#6ee7b7">kind</span>: Ingress
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: multi-model-host-routing
+  <span style="color:#6ee7b7">namespace</span>: inference
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">ingressClassName</span>: nginx          <span style="color:#8b93a7"># 指定用哪个 Controller</span>
+  <span style="color:#6ee7b7">rules</span>:
+  - <span style="color:#6ee7b7">host</span>: chat.myinfer.com          <span style="color:#8b93a7"># 对话模型入口</span>
+    <span style="color:#6ee7b7">http</span>:
+      <span style="color:#6ee7b7">paths</span>:
+      - <span style="color:#6ee7b7">path</span>: /
+        <span style="color:#6ee7b7">pathType</span>: Prefix
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: sglang-chat-svc
+            <span style="color:#6ee7b7">port</span>:
+              <span style="color:#6ee7b7">number</span>: 8000
+  - <span style="color:#6ee7b7">host</span>: embed.myinfer.com         <span style="color:#8b93a7"># Embedding 入口</span>
+    <span style="color:#6ee7b7">http</span>:
+      <span style="color:#6ee7b7">paths</span>:
+      - <span style="color:#6ee7b7">path</span>: /
+        <span style="color:#6ee7b7">pathType</span>: Prefix
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: embedding-svc
+            <span style="color:#6ee7b7">port</span>:
+              <span style="color:#6ee7b7">number</span>: 8000
+</pre>
+
+<h3>基于 Path 的路由（推理平台最常用）</h3>
+<p>同一域名下，不同路径分发到不同后端：</p>
+<pre><span style="color:#6ee7b7">apiVersion</span>: networking.k8s.io/v1
+<span style="color:#6ee7b7">kind</span>: Ingress
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: multi-model-path-routing
+  <span style="color:#6ee7b7">namespace</span>: inference
+  <span style="color:#6ee7b7">annotations</span>:
+    <span style="color:#8b93a7"># 重写路径：去掉模型名前缀，让后端收到标准的 /v1/... 路径</span>
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">ingressClassName</span>: nginx
+  <span style="color:#6ee7b7">rules</span>:
+  - <span style="color:#6ee7b7">host</span>: api.myinfer.com
+    <span style="color:#6ee7b7">http</span>:
+      <span style="color:#6ee7b7">paths</span>:
+      <span style="color:#8b93a7"># /qwen72b/v1/chat/completions → 转发到 sglang-qwen72b-svc</span>
+      <span style="color:#8b93a7"># 后端收到的路径变为 /v1/chat/completions（标准 OpenAI 格式）</span>
+      - <span style="color:#6ee7b7">path</span>: /qwen72b(/|$)(.*)
+        <span style="color:#6ee7b7">pathType</span>: ImplementationSpecific
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: sglang-qwen72b-svc
+            <span style="color:#6ee7b7">port</span>:
+              <span style="color:#6ee7b7">number</span>: 8000
+      <span style="color:#8b93a7"># /qwen8b/v1/chat/completions → sglang-qwen8b-svc</span>
+      - <span style="color:#6ee7b7">path</span>: /qwen8b(/|$)(.*)
+        <span style="color:#6ee7b7">pathType</span>: ImplementationSpecific
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: sglang-qwen8b-svc
+            <span style="color:#6ee7b7">port</span>:
+              <span style="color:#6ee7b7">number</span>: 8000
+      <span style="color:#8b93a7"># /embeddings/... → embedding-svc</span>
+      - <span style="color:#6ee7b7">path</span>: /embeddings(/|$)(.*)
+        <span style="color:#6ee7b7">pathType</span>: ImplementationSpecific
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: embedding-svc
+            <span style="color:#6ee7b7">port</span>:
+              <span style="color:#6ee7b7">number</span>: 8000
+      <span style="color:#8b93a7"># /rerank/... → reranker-svc</span>
+      - <span style="color:#6ee7b7">path</span>: /rerank(/|$)(.*)
+        <span style="color:#6ee7b7">pathType</span>: ImplementationSpecific
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: reranker-svc
+            <span style="color:#6ee7b7">port</span>:
+              <span style="color:#6ee7b7">number</span>: 8000
+</pre>
+
+<h4>pathType 三种模式</h4>
+<table>
+<thead><tr><th>pathType</th><th>匹配规则</th><th>示例</th></tr></thead>
+<tbody>
+<tr><td><code>Prefix</code></td><td>前缀匹配，按 <code>/</code> 分段</td><td><code>/v1</code> 匹配 <code>/v1/chat</code>、<code>/v1/models</code>，但<b>不</b>匹配 <code>/v1chat</code></td></tr>
+<tr><td><code>Exact</code></td><td>精确匹配，末尾 / 敏感</td><td><code>/v1/models</code> 只匹配 <code>/v1/models</code>，不匹配 <code>/v1/models/</code></td></tr>
+<tr><td><code>ImplementationSpecific</code></td><td>由 Controller 定义</td><td>Nginx Ingress 支持正则捕获组（如上面的 rewrite 示例）</td></tr>
+</tbody>
+</table>
+
+<div class="callout bad">
+<b>Prefix 匹配的坑</b>：Prefix 是按 <code>/</code> 分段匹配的，不是字符串前缀！<code>/v1/chat</code> 会匹配 <code>/v1/chat/xxx</code>，但<b>不会</b>匹配 <code>/v1/chatbot</code>（因为 <code>chatbot</code> 和 <code>chat</code> 不是同一个 path segment）。
+</div>
+
+<h3>TLS 终止：Secret 存证书 + Ingress 引用</h3>
+<p>Ingress 在入口处终止 HTTPS，后端 Pod 只需处理 HTTP——简化证书管理：</p>
+<pre><span style="color:#8b93a7"># 1. 创建 Secret 存放证书和私钥</span>
+<span style="color:#6ee7b7">apiVersion</span>: v1
+<span style="color:#6ee7b7">kind</span>: Secret
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: myinfer-tls
+  <span style="color:#6ee7b7">namespace</span>: inference
+<span style="color:#6ee7b7">type</span>: kubernetes.io/tls
+<span style="color:#6ee7b7">data</span>:
+  tls.crt: LS0tLS1CRUdJTi...    <span style="color:#8b93a7"># base64 编码的证书链</span>
+  tls.key: LS0tLS1CRUdJTi...    <span style="color:#8b93a7"># base64 编码的私钥</span>
+---
+<span style="color:#8b93a7"># 2. Ingress 中引用 Secret</span>
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">tls</span>:
+  - <span style="color:#6ee7b7">hosts</span>:
+    - api.myinfer.com
+    - "*.myinfer.com"           <span style="color:#8b93a7"># 通配符证书覆盖所有子域</span>
+    <span style="color:#6ee7b7">secretName</span>: myinfer-tls     <span style="color:#8b93a7"># 引用上面的 Secret</span>
+</pre>
+
+<h3>注解控制：超时 / 限流 / 重写 / WebSocket</h3>
+<table>
+<thead><tr><th>注解（nginx.ingress.kubernetes.io/ 前缀省略）</th><th>作用</th><th>推理场景建议值</th></tr></thead>
+<tbody>
+<tr><td><code>proxy-read-timeout</code></td><td>等待后端响应的超时（秒）</td><td><code>"300"</code>（长推理可能 5 分钟）</td></tr>
+<tr><td><code>proxy-send-timeout</code></td><td>向后端发送请求体的超时</td><td><code>"60"</code></td></tr>
+<tr><td><code>proxy-body-size</code></td><td>允许的请求体大小上限</td><td><code>"50m"</code>（大 prompt / 音频文件）</td></tr>
+<tr><td><code>proxy-buffering</code></td><td>是否缓冲后端响应</td><td><code>"off"</code>（<b>SSE 流式必须关</b>）</td></tr>
+<tr><td><code>proxy-http-version</code></td><td>后端 HTTP 版本</td><td><code>"1.1"</code>（WebSocket/SSE 需要）</td></tr>
+<tr><td><code>upstream-hash-by</code></td><td>一致性 hash（会话亲和）</td><td><code>"$http_x_session_id"</code>（KV Cache 亲和）</td></tr>
+<tr><td><code>rewrite-target</code></td><td>URL 重写目标</td><td><code>/$2</code>（配合正则去前缀）</td></tr>
+</tbody>
+</table>
+
+<div class="callout bad">
+<b>踩坑警告：流式推理（SSE）必须关闭 proxy-buffering</b><br/>
+Nginx 默认缓冲后端响应。推理服务逐 token 输出，但客户端要等整个响应完成才收到第一个字——用户体验极差。加上 <code>nginx.ingress.kubernetes.io/proxy-buffering: "off"</code> 才能实现真正的流式输出。
+</div>
+
+<h3>YAML 完整示例：多模型推理路由</h3>
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：生产级 Ingress 配置（含 TLS + 流式 + 超时）</button>
+<div class="expand-content">
+<pre><span style="color:#6ee7b7">apiVersion</span>: networking.k8s.io/v1
+<span style="color:#6ee7b7">kind</span>: Ingress
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: inference-gateway
+  <span style="color:#6ee7b7">namespace</span>: inference
+  <span style="color:#6ee7b7">annotations</span>:
+    <span style="color:#8b93a7"># URL 重写：去掉模型名前缀</span>
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+    <span style="color:#8b93a7"># 超时：推理可能很慢</span>
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "60"
+    <span style="color:#8b93a7"># 请求体：大 prompt + 音频文件</span>
+    nginx.ingress.kubernetes.io/proxy-body-size: "50m"
+    <span style="color:#8b93a7"># 流式输出：关闭缓冲</span>
+    nginx.ingress.kubernetes.io/proxy-buffering: "off"
+    nginx.ingress.kubernetes.io/proxy-http-version: "1.1"
+    <span style="color:#8b93a7"># HTTPS 强制跳转</span>
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    <span style="color:#8b93a7"># CORS 跨域（前端直调推理 API）</span>
+    nginx.ingress.kubernetes.io/enable-cors: "true"
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">ingressClassName</span>: nginx
+  <span style="color:#6ee7b7">tls</span>:
+  - <span style="color:#6ee7b7">hosts</span>: ["api.myinfer.com"]
+    <span style="color:#6ee7b7">secretName</span>: myinfer-tls
+  <span style="color:#6ee7b7">rules</span>:
+  - <span style="color:#6ee7b7">host</span>: api.myinfer.com
+    <span style="color:#6ee7b7">http</span>:
+      <span style="color:#6ee7b7">paths</span>:
+      - <span style="color:#6ee7b7">path</span>: /qwen72b(/|$)(.*)
+        <span style="color:#6ee7b7">pathType</span>: ImplementationSpecific
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: sglang-qwen72b-svc
+            <span style="color:#6ee7b7">port</span>: {<span style="color:#6ee7b7">number</span>: 8000}
+      - <span style="color:#6ee7b7">path</span>: /qwen8b(/|$)(.*)
+        <span style="color:#6ee7b7">pathType</span>: ImplementationSpecific
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: sglang-qwen8b-svc
+            <span style="color:#6ee7b7">port</span>: {<span style="color:#6ee7b7">number</span>: 8000}
+      - <span style="color:#6ee7b7">path</span>: /deepseek-r1(/|$)(.*)
+        <span style="color:#6ee7b7">pathType</span>: ImplementationSpecific
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: sglang-deepseek-svc
+            <span style="color:#6ee7b7">port</span>: {<span style="color:#6ee7b7">number</span>: 8000}
+      - <span style="color:#6ee7b7">path</span>: /embeddings(/|$)(.*)
+        <span style="color:#6ee7b7">pathType</span>: ImplementationSpecific
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: embedding-svc
+            <span style="color:#6ee7b7">port</span>: {<span style="color:#6ee7b7">number</span>: 8000}
+      - <span style="color:#6ee7b7">path</span>: /rerank(/|$)(.*)
+        <span style="color:#6ee7b7">pathType</span>: ImplementationSpecific
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: reranker-svc
+            <span style="color:#6ee7b7">port</span>: {<span style="color:#6ee7b7">number</span>: 8000}
+</pre>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+<b>多模型推理统一入口</b>：一个 Ingress + 多条 path 规则，所有模型共享一个域名 <code>api.myinfer.com</code>。客户端通过路径区分模型（<code>/qwen72b/v1/chat/completions</code>），配合 <code>rewrite-target</code> 注解去掉前缀，让后端 SGLang 收到标准的 OpenAI 格式请求 <code>/v1/chat/completions</code>。这是推理平台最常见的 Ingress 用法。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gateway"><span class="step">§3</span>Gateway API（Ingress 的继任者）</h2>
+
+<div class="card">
+<p>Ingress API 从 K8S 1.1 引入，设计时妥协很多（只能 Host+Path、全靠注解扩展、不同 Controller 注解互不兼容）。<b>Gateway API</b>（2023 年 GA）是官方推荐的下一代方案。</p>
+
+<h3>三层模型：GatewayClass → Gateway → HTTPRoute</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 340" width="900">
+  <!-- GatewayClass 层 -->
+  <rect x="50" y="20" width="800" height="80" rx="10" fill="#1a1a2e" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="70" y="48" fill="#a78bfa" font-size="14" font-weight="700">GatewayClass</text>
+  <text x="70" y="68" fill="#8b93a7" font-size="11">定义用哪个 Controller 实现（如 nginx、istio、cilium、envoy）</text>
+  <text x="70" y="86" fill="#8b93a7" font-size="11">类比 StorageClass——声明"用什么底层设施"，由平台管理员创建一次</text>
+  <rect x="650" y="35" width="180" height="28" rx="6" fill="#a78bfa" opacity=".15" stroke="#a78bfa"/>
+  <text x="665" y="54" fill="#a78bfa" font-size="10" font-weight="600">角色：平台 SRE</text>
+
+  <!-- Gateway 层 -->
+  <rect x="50" y="120" width="800" height="80" rx="10" fill="#162924" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="70" y="148" fill="#6ee7b7" font-size="14" font-weight="700">Gateway</text>
+  <text x="70" y="168" fill="#8b93a7" font-size="11">定义监听端口、TLS 证书、允许哪些 namespace 的 Route 挂载</text>
+  <text x="70" y="186" fill="#8b93a7" font-size="11">一个 Gateway 对应一个物理入口（像一台 Nginx 实例），集群管理员创建</text>
+  <rect x="650" y="135" width="180" height="28" rx="6" fill="#6ee7b7" opacity=".15" stroke="#6ee7b7"/>
+  <text x="665" y="154" fill="#6ee7b7" font-size="10" font-weight="600">角色：集群运维</text>
+
+  <!-- HTTPRoute 层 -->
+  <rect x="50" y="220" width="800" height="100" rx="10" fill="#1f2937" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="70" y="248" fill="#fbbf24" font-size="14" font-weight="700">HTTPRoute / GRPCRoute / TCPRoute</text>
+  <text x="70" y="268" fill="#8b93a7" font-size="11">定义 Host/Path/Header/Method 匹配规则 + 后端 Service + 流量权重</text>
+  <text x="70" y="288" fill="#8b93a7" font-size="11">应用开发者在自己 namespace 创建，可跨 namespace 引用 Gateway（需 Gateway 侧授权）</text>
+  <text x="70" y="308" fill="#8b93a7" font-size="11">支持 backendRefs 权重分配——原生金丝雀发布，不需要注解 hack</text>
+  <rect x="650" y="235" width="180" height="28" rx="6" fill="#fbbf24" opacity=".15" stroke="#fbbf24"/>
+  <text x="665" y="254" fill="#fbbf24" font-size="10" font-weight="600">角色：应用开发者</text>
+
+  <!-- 箭头 -->
+  <path d="M450 100 L450 120" stroke="#8b93a7" stroke-width="1.5"/>
+  <path d="M450 200 L450 220" stroke="#8b93a7" stroke-width="1.5"/>
+  <text x="458" y="113" fill="#8b93a7" font-size="9">引用</text>
+  <text x="458" y="213" fill="#8b93a7" font-size="9">挂载到</text>
+</svg>
+</div>
+
+<h3>比 Ingress 好在哪</h3>
+<table>
+<thead><tr><th>维度</th><th>Ingress 的问题</th><th>Gateway API 的解法</th></tr></thead>
+<tbody>
+<tr><td><b>角色分离</b></td><td>所有配置堆在一个 Ingress 对象</td><td>三层分离：平台管 Class，运维管 Gateway，开发管 Route</td></tr>
+<tr><td><b>跨 namespace</b></td><td>Ingress 只能引用同 namespace 的 Service</td><td>HTTPRoute 可跨 namespace 引用 Gateway 和 Service</td></tr>
+<tr><td><b>匹配规则</b></td><td>只有 Host + Path</td><td>Host + Path + Header + QueryParam + Method</td></tr>
+<tr><td><b>流量管理</b></td><td>靠注解（不同 Controller 不兼容）</td><td>标准化的 backendRefs.weight 流量拆分</td></tr>
+<tr><td><b>协议覆盖</b></td><td>只有 HTTP/HTTPS</td><td>HTTP / gRPC / TCP / TLS / UDP 全覆盖</td></tr>
+<tr><td><b>可移植性</b></td><td>注解 = 厂商锁定</td><td>统一 spec，换 GatewayClass 即换底层实现</td></tr>
+</tbody>
+</table>
+
+<h3>Gateway API YAML 示例</h3>
+<pre><span style="color:#8b93a7"># 1. GatewayClass — 平台管理员创建一次</span>
+<span style="color:#6ee7b7">apiVersion</span>: gateway.networking.k8s.io/v1
+<span style="color:#6ee7b7">kind</span>: GatewayClass
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: nginx
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">controllerName</span>: k8s.nginx.org/nginx-gateway-controller
+---
+<span style="color:#8b93a7"># 2. Gateway — 运维团队创建，定义监听器</span>
+<span style="color:#6ee7b7">apiVersion</span>: gateway.networking.k8s.io/v1
+<span style="color:#6ee7b7">kind</span>: Gateway
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: inference-gw
+  <span style="color:#6ee7b7">namespace</span>: infra               <span style="color:#8b93a7"># 运维 namespace</span>
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">gatewayClassName</span>: nginx
+  <span style="color:#6ee7b7">listeners</span>:
+  - <span style="color:#6ee7b7">name</span>: https
+    <span style="color:#6ee7b7">port</span>: 443
+    <span style="color:#6ee7b7">protocol</span>: HTTPS
+    <span style="color:#6ee7b7">hostname</span>: "*.myinfer.com"
+    <span style="color:#6ee7b7">tls</span>:
+      <span style="color:#6ee7b7">certificateRefs</span>:
+      - <span style="color:#6ee7b7">name</span>: myinfer-tls
+    <span style="color:#6ee7b7">allowedRoutes</span>:
+      <span style="color:#6ee7b7">namespaces</span>:
+        <span style="color:#6ee7b7">from</span>: Selector            <span style="color:#8b93a7"># 只允许带特定 label 的 namespace</span>
+        <span style="color:#6ee7b7">selector</span>:
+          <span style="color:#6ee7b7">matchLabels</span>:
+            gateway-access: "true"
+---
+<span style="color:#8b93a7"># 3. HTTPRoute — 开发者在自己 namespace 创建路由规则</span>
+<span style="color:#6ee7b7">apiVersion</span>: gateway.networking.k8s.io/v1
+<span style="color:#6ee7b7">kind</span>: HTTPRoute
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: qwen72b-route
+  <span style="color:#6ee7b7">namespace</span>: inference            <span style="color:#8b93a7"># 开发者的 namespace</span>
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">parentRefs</span>:
+  - <span style="color:#6ee7b7">name</span>: inference-gw
+    <span style="color:#6ee7b7">namespace</span>: infra              <span style="color:#8b93a7"># 跨 namespace 引用 Gateway！</span>
+  <span style="color:#6ee7b7">hostnames</span>: ["api.myinfer.com"]
+  <span style="color:#6ee7b7">rules</span>:
+  - <span style="color:#6ee7b7">matches</span>:
+    - <span style="color:#6ee7b7">path</span>:
+        <span style="color:#6ee7b7">type</span>: PathPrefix
+        <span style="color:#6ee7b7">value</span>: /v1/chat
+      <span style="color:#6ee7b7">headers</span>:                   <span style="color:#8b93a7"># 基于 Header 匹配——Ingress 做不到！</span>
+      - <span style="color:#6ee7b7">name</span>: X-Model
+        <span style="color:#6ee7b7">value</span>: qwen3-72b
+    <span style="color:#6ee7b7">backendRefs</span>:
+    - <span style="color:#6ee7b7">name</span>: sglang-qwen72b-svc
+      <span style="color:#6ee7b7">port</span>: 8000
+</pre>
+
+<div class="callout info">
+<b>什么时候该用 Gateway API</b>：① 新集群新项目 → 直接上 Gateway API。② 多团队共享入口 → Gateway API 的角色分离能力是杀手级特性。③ 现有 Nginx Ingress 用得好好的 → 不必急迁，Ingress 短期内不废弃，只是冻结不再新增功能。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="canary"><span class="step">§4</span>金丝雀发布 / 灰度路由</h2>
+
+<div class="card">
+<p>上线新模型版本时，不想一次性全量切换——需要先灰度 10% 验证效果。七层路由天然支持这个能力。</p>
+
+<h3>方式一：基于 Header 的流量切分</h3>
+<p>只有带特定 Header 的请求路由到新版本——适合内部测试人员验证：</p>
+<pre><span style="color:#8b93a7"># 主 Ingress（生产流量 → 稳定版 v1.0）</span>
+<span style="color:#6ee7b7">apiVersion</span>: networking.k8s.io/v1
+<span style="color:#6ee7b7">kind</span>: Ingress
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: qwen72b-stable
+  <span style="color:#6ee7b7">namespace</span>: inference
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">ingressClassName</span>: nginx
+  <span style="color:#6ee7b7">rules</span>:
+  - <span style="color:#6ee7b7">host</span>: api.myinfer.com
+    <span style="color:#6ee7b7">http</span>:
+      <span style="color:#6ee7b7">paths</span>:
+      - <span style="color:#6ee7b7">path</span>: /qwen72b
+        <span style="color:#6ee7b7">pathType</span>: Prefix
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: sglang-qwen72b-stable    <span style="color:#8b93a7"># 稳定版 checkpoint</span>
+            <span style="color:#6ee7b7">port</span>: {<span style="color:#6ee7b7">number</span>: 8000}
+---
+<span style="color:#8b93a7"># 金丝雀 Ingress（只有带 Header 的请求 → 新版本）</span>
+<span style="color:#6ee7b7">apiVersion</span>: networking.k8s.io/v1
+<span style="color:#6ee7b7">kind</span>: Ingress
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: qwen72b-canary
+  <span style="color:#6ee7b7">namespace</span>: inference
+  <span style="color:#6ee7b7">annotations</span>:
+    nginx.ingress.kubernetes.io/canary: "true"               <span style="color:#8b93a7"># 声明为金丝雀</span>
+    nginx.ingress.kubernetes.io/canary-by-header: "X-Canary" <span style="color:#8b93a7"># Header 名</span>
+    nginx.ingress.kubernetes.io/canary-by-header-value: "true"
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">ingressClassName</span>: nginx
+  <span style="color:#6ee7b7">rules</span>:
+  - <span style="color:#6ee7b7">host</span>: api.myinfer.com
+    <span style="color:#6ee7b7">http</span>:
+      <span style="color:#6ee7b7">paths</span>:
+      - <span style="color:#6ee7b7">path</span>: /qwen72b
+        <span style="color:#6ee7b7">pathType</span>: Prefix
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: sglang-qwen72b-canary    <span style="color:#8b93a7"># 新版本（新 checkpoint）</span>
+            <span style="color:#6ee7b7">port</span>: {<span style="color:#6ee7b7">number</span>: 8000}
+</pre>
+<p>测试方法：<code>curl -H "X-Canary: true" https://api.myinfer.com/qwen72b/v1/chat/completions -d '...'</code></p>
+
+<h3>方式二：基于权重的流量切分</h3>
+<p>按比例随机分配流量给新版本——适合线上灰度验证：</p>
+<pre><span style="color:#8b93a7"># 金丝雀 Ingress 改用 canary-weight（其他不变）</span>
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">annotations</span>:
+    nginx.ingress.kubernetes.io/canary: "true"
+    nginx.ingress.kubernetes.io/canary-weight: "10"  <span style="color:#8b93a7"># 10% 随机流量到新版本</span>
+</pre>
+
+<h3>推理场景：新模型版本灰度 10% 流量验证</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 800 200" width="800">
+  <!-- 流量入口 -->
+  <rect x="20" y="70" width="130" height="50" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="85" y="95" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">100% 流量</text>
+
+  <path d="M150 95 L210 95" stroke="#8b93a7" stroke-width="1.5"/>
+
+  <!-- Ingress Controller -->
+  <rect x="210" y="60" width="170" height="70" rx="10" fill="#162924" stroke="#6ee7b7"/>
+  <text x="295" y="85" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">Nginx Ingress</text>
+  <text x="295" y="105" text-anchor="middle" fill="#8b93a7" font-size="10">canary-weight: 10</text>
+
+  <!-- 90% 箭头 -->
+  <path d="M380 80 L500 55" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="425" y="55" fill="#6ee7b7" font-size="11" font-weight="600">90%</text>
+
+  <!-- 10% 箭头 -->
+  <path d="M380 110 L500 140" stroke="#fbbf24" stroke-width="2"/>
+  <text x="425" y="145" fill="#fbbf24" font-size="11" font-weight="600">10%</text>
+
+  <!-- stable -->
+  <rect x="500" y="30" width="270" height="50" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="520" y="52" fill="#6ee7b7" font-size="11" font-weight="600">sglang-qwen72b-stable</text>
+  <text x="520" y="70" fill="#8b93a7" font-size="10">checkpoint: qwen3-72b-base-v1.0</text>
+
+  <!-- canary -->
+  <rect x="500" y="120" width="270" height="50" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="520" y="142" fill="#fbbf24" font-size="11" font-weight="600">sglang-qwen72b-canary</text>
+  <text x="520" y="160" fill="#8b93a7" font-size="10">checkpoint: qwen3-72b-ft-v1.1</text>
+
+  <!-- 底部说明 -->
+  <text x="20" y="192" fill="#8b93a7" font-size="11">验证指标：P99 TTFT、throughput (tokens/s)、输出质量评分。确认无退化后，weight 逐步调到 50 → 100。</text>
+</svg>
+</div>
+
+<div class="callout warn">
+<b>注意</b>：Nginx Ingress 的 canary 注解要求金丝雀 Ingress 和主 Ingress 使用<b>相同的 host + path</b>，否则不生效。另外同一个 host+path 只能有一个 canary Ingress。
+</div>
+
+<h3>Gateway API 的流量拆分（更优雅）</h3>
+<pre><span style="color:#8b93a7"># Gateway API 原生支持 backendRefs 权重——不需要创建两个 Ingress</span>
+<span style="color:#6ee7b7">apiVersion</span>: gateway.networking.k8s.io/v1
+<span style="color:#6ee7b7">kind</span>: HTTPRoute
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: qwen72b-canary-route
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">parentRefs</span>:
+  - <span style="color:#6ee7b7">name</span>: inference-gw
+    <span style="color:#6ee7b7">namespace</span>: infra
+  <span style="color:#6ee7b7">rules</span>:
+  - <span style="color:#6ee7b7">matches</span>:
+    - <span style="color:#6ee7b7">path</span>:
+        <span style="color:#6ee7b7">type</span>: PathPrefix
+        <span style="color:#6ee7b7">value</span>: /v1/chat
+    <span style="color:#6ee7b7">backendRefs</span>:
+    - <span style="color:#6ee7b7">name</span>: sglang-qwen72b-stable
+      <span style="color:#6ee7b7">port</span>: 8000
+      <span style="color:#6ee7b7">weight</span>: 90                   <span style="color:#8b93a7"># 标准化的流量拆分</span>
+    - <span style="color:#6ee7b7">name</span>: sglang-qwen72b-canary
+      <span style="color:#6ee7b7">port</span>: 8000
+      <span style="color:#6ee7b7">weight</span>: 10                   <span style="color:#8b93a7"># 不需要注解 hack</span>
+</pre>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+推理模型灰度时的特别注意：新版本 Pod 刚启动时 KV Cache 是冷的，前几分钟延迟会偏高。建议灰度初期至少观察 <b>10 分钟</b>（让 Cache 热起来），而不是看到延迟升高就立刻回滚。同时关注<b>输出质量</b>——延迟正常但回答质量下降也是回滚信号。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="ratelimit"><span class="step">§5</span>限流与熔断</h2>
+
+<div class="card">
+<p>GPU 推理服务的并发能力极其有限——一块 A100 跑 72B 模型同时处理不了几个请求。不限流的后果：OOM、队列爆满、延迟飙升、全部用户受影响。</p>
+
+<h3>Nginx Ingress 的 rate-limiting 注解</h3>
+<pre><span style="color:#6ee7b7">apiVersion</span>: networking.k8s.io/v1
+<span style="color:#6ee7b7">kind</span>: Ingress
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: inference-ratelimit
+  <span style="color:#6ee7b7">namespace</span>: inference
+  <span style="color:#6ee7b7">annotations</span>:
+    <span style="color:#8b93a7"># 每个客户端 IP 限 100 QPS</span>
+    nginx.ingress.kubernetes.io/limit-rps: "100"
+    <span style="color:#8b93a7"># 允许突发 3 倍（300 个请求进入排队）</span>
+    nginx.ingress.kubernetes.io/limit-burst-multiplier: "3"
+    <span style="color:#8b93a7"># 每个 IP 最多 50 个并发连接</span>
+    nginx.ingress.kubernetes.io/limit-connections: "50"
+    <span style="color:#8b93a7"># 超限返回 429 Too Many Requests</span>
+    nginx.ingress.kubernetes.io/server-snippet: |
+      limit_req_status 429;
+    <span style="color:#8b93a7"># 内部监控系统 IP 段不限流</span>
+    nginx.ingress.kubernetes.io/limit-whitelist-source-range: "10.0.0.0/8"
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">ingressClassName</span>: nginx
+  <span style="color:#6ee7b7">rules</span>:
+  - <span style="color:#6ee7b7">host</span>: api.myinfer.com
+    <span style="color:#6ee7b7">http</span>:
+      <span style="color:#6ee7b7">paths</span>:
+      - <span style="color:#6ee7b7">path</span>: /
+        <span style="color:#6ee7b7">pathType</span>: Prefix
+        <span style="color:#6ee7b7">backend</span>:
+          <span style="color:#6ee7b7">service</span>:
+            <span style="color:#6ee7b7">name</span>: sglang-router-svc
+            <span style="color:#6ee7b7">port</span>: {<span style="color:#6ee7b7">number</span>: 8000}
+</pre>
+
+<h3>推理场景：每个 API Key 限 100 QPS</h3>
+<p>按 IP 限流粒度太粗——多个用户可能共用代理 IP。更精细的做法是按 <code>X-API-Key</code> Header 限流：</p>
+<pre><span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">annotations</span>:
+    <span style="color:#8b93a7"># 用自定义 Lua snippet 实现按 Header 限流</span>
+    nginx.ingress.kubernetes.io/configuration-snippet: |
+      set $limit_key $http_x_api_key;
+      if ($limit_key = "") {
+        set $limit_key $binary_remote_addr;   # 没有 Key 退回 IP 限流
+      }
+    nginx.ingress.kubernetes.io/limit-rps: "100"          <span style="color:#8b93a7"># 每个 Key 100 QPS</span>
+    nginx.ingress.kubernetes.io/limit-connections: "50"   <span style="color:#8b93a7"># 每个 Key 50 并发</span>
+</pre>
+
+<h3>连接数限制保护后端 GPU 不被打爆</h3>
+<div class="callout bad">
+<b>为什么必须限制并发连接数</b>：SGLang/vLLM 使用 continuous batching，一个请求占一个 KV Cache slot。如果并发请求超过 GPU 显存能支撑的 batch size（比如 72B 模型 4xA100 只能同时处理 ~60 个请求），新请求排队 → 延迟飙升，或直接 OOM → 服务崩溃。<b>Ingress 层的 limit-connections 是最外层保护伞</b>。
+</div>
+
+<h3>分层防护架构</h3>
+<table>
+<thead><tr><th>层次</th><th>限流机制</th><th>作用</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>L1 · Ingress 层</b></td><td>limit-rps + limit-connections</td><td>粗粒度：防 DDoS、限客户端 QPS 和并发</td></tr>
+<tr><td style="color:#fbbf24"><b>L2 · API Gateway 层</b></td><td>按 API Key 的 token/分钟配额</td><td>细粒度：计费、配额管理、多租户隔离</td></tr>
+<tr><td style="color:#fb7185"><b>L3 · 推理引擎层</b></td><td>max_num_seqs / max_batch_size</td><td>保底：SGLang/vLLM 内部的 batch 上限</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>注意</b>：Nginx Ingress 的限流注解是<b>每个 Controller Pod 独立计算</b>的。如果你有 3 个 Nginx Pod，实际限流阈值约为配置值的 3 倍。需要全局精确限流时，用 Kong（内置 Redis 分布式计数）或外置 Ratelimit Service（如 Envoy ratelimit）。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+推理平台的限流建议分级：<b>免费用户</b> 5 QPS / 10 并发，<b>付费用户</b> 100 QPS / 50 并发，<b>内部服务</b> 不限。Ingress 层做 L1 粗粒度保护（单 IP 不超过 200 QPS），API Gateway 层做 L2 按 Key 精细限流。两层互补，缺一不可。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§6</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① 七层路由价值</div><div>一个公网 IP + 一张证书 → 按 Host/Path/Header 分发到 N 个模型后端——多模型推理的标配</div>
+  <div class="k">② 两个概念分清</div><div>Ingress 资源 = 路由规则声明（nginx.conf）· Ingress Controller = 反向代理进程（nginx 主进程）</div>
+  <div class="k">③ SSE 流式必须</div><div>proxy-buffering: "off" + proxy-http-version: "1.1"，否则 token-by-token 输出失效</div>
+  <div class="k">④ pathType 陷阱</div><div>Prefix 按 / 分段匹配：/v1/chat 匹配 /v1/chat/xxx 但不匹配 /v1/chatbot</div>
+  <div class="k">⑤ Gateway API 三层</div><div>GatewayClass（平台）→ Gateway（运维）→ HTTPRoute（开发）· 角色分离 + 跨 ns + 原生流量拆分</div>
+  <div class="k">⑥ 金丝雀两步走</div><div>Header 灰度做内部验证 → Weight 灰度做线上放量 → 观察延迟+质量 → 全量切换</div>
+  <div class="k">⑦ 限流是底线</div><div>GPU 昂贵 · Ingress 层限 QPS + 并发是第一道防线 · 配合 API Gateway 做 Key 级配额</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——七层路由解决了"请求怎么进来"的问题，但推理服务还有一个底层痛点：GPU 间通信。当 Tensor Parallel 跨节点时，Pod 网络的 overlay 开销完全不可接受。下一章深入 RDMA 和 HostNetwork——为什么要绕过 Pod 网络，以及怎么做。→ <a href="11-rdma-and-hostnetwork.html" style="color:var(--brand)">11-rdma-and-hostnetwork.html</a>
+</div>
+</div>
+
+<div class="foot">
+第三层 · 10 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

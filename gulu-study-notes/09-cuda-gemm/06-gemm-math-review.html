@@ -1,0 +1,432 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C5 · GEMM 数学回顾 · CUDA 视角</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.type{color:#fb7185}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+svg text{font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.svg-wrap{margin:20px 0;text-align:center}
+.svg-wrap svg{max-width:100%}
+.formula{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 20px;margin:12px 0;font-family:"SF Mono","JetBrains Mono",monospace;font-size:13px;line-height:1.8}
+.highlight{color:var(--brand);font-weight:600}
+.highlight2{color:var(--brand2);font-weight:600}
+.highlight-warn{color:var(--warn);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>C5 · GEMM 数学回顾 · CUDA 视角 <span class="tag">CUDA GEMM 系列 · 6/15</span></h1>
+<p class="sub">快速回顾 GEMM 数学（你在 Triton T6 学过），加入 CUDA 特有的视角：每个 thread 算什么、warp 怎么分工、数据怎么流动。</p>
+
+<!-- §1 -->
+<h2><span class="step">§1</span>数学回顾（30 秒）</h2>
+
+<p>快速回顾 Triton T6 的内容：</p>
+
+<div class="formula">
+C = A &times; B &nbsp;&nbsp;&nbsp; A[M, K] &times; B[K, N] = C[M, N]<br>
+C[i, j] = &Sigma;<sub>k</sub> A[i, k] &middot; B[k, j]
+</div>
+
+<div class="card">
+<table>
+<tr><th>指标</th><th>公式</th><th>含义</th></tr>
+<tr><td><span class="highlight">FLOPs</span></td><td><code>2 &times; M &times; N &times; K</code></td><td>乘 + 加 各一次</td></tr>
+<tr><td><span class="highlight2">Memory</span></td><td><code>(M&times;K + K&times;N + M&times;N) &times; sizeof</code></td><td>读 A、读 B、写 C</td></tr>
+<tr><td><span class="highlight-warn">AI (算术强度)</span></td><td><code>2MNK / Memory</code></td><td>大矩阵 → compute-bound</td></tr>
+</table>
+</div>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 600 220" width="600" height="220" xmlns="http://www.w3.org/2000/svg">
+  <!-- Matrix A -->
+  <rect x="30" y="40" width="120" height="150" rx="6" fill="#1a2332" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="90" y="30" text-anchor="middle" fill="#6ee7b7" font-size="13" font-weight="600">A [M, K]</text>
+  <text x="90" y="120" text-anchor="middle" fill="#8b93a7" font-size="11">M 行</text>
+  <text x="90" y="140" text-anchor="middle" fill="#8b93a7" font-size="11">K 列</text>
+  <!-- multiply sign -->
+  <text x="175" y="120" text-anchor="middle" fill="#e6e8ee" font-size="22">&times;</text>
+  <!-- Matrix B -->
+  <rect x="200" y="40" width="150" height="120" rx="6" fill="#1a2332" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="275" y="30" text-anchor="middle" fill="#7dd3fc" font-size="13" font-weight="600">B [K, N]</text>
+  <text x="275" y="105" text-anchor="middle" fill="#8b93a7" font-size="11">K 行</text>
+  <text x="275" y="125" text-anchor="middle" fill="#8b93a7" font-size="11">N 列</text>
+  <!-- equals sign -->
+  <text x="380" y="120" text-anchor="middle" fill="#e6e8ee" font-size="22">=</text>
+  <!-- Matrix C -->
+  <rect x="410" y="40" width="150" height="150" rx="6" fill="#1a2332" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="485" y="30" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="600">C [M, N]</text>
+  <text x="485" y="120" text-anchor="middle" fill="#8b93a7" font-size="11">M 行</text>
+  <text x="485" y="140" text-anchor="middle" fill="#8b93a7" font-size="11">N 列</text>
+  <!-- dot product arrow -->
+  <line x1="90" y1="200" x2="485" y2="200" stroke="#8b93a7" stroke-width="1" stroke-dasharray="4"/>
+  <text x="290" y="215" text-anchor="middle" fill="#8b93a7" font-size="11">C[i,j] = A 的第 i 行 · B 的第 j 列 的内积</text>
+</svg>
+</div>
+
+<div class="callout info">
+<strong>这些在 Triton 教程中讲过。</strong>这节重点是 CUDA 特有的分工方式——thread 怎么分配、数据怎么复用。
+</div>
+
+<!-- §2 -->
+<h2><span class="step">§2</span>CUDA GEMM 的分工层次</h2>
+
+<p>CUDA GEMM 的核心：<strong>三层分工</strong> —— Grid → Block → Thread，每层有自己的数据复用策略。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 800 520" width="800" height="520" xmlns="http://www.w3.org/2000/svg">
+  <!-- Outer: Grid Level -->
+  <rect x="20" y="20" width="760" height="480" rx="12" fill="none" stroke="#fbbf24" stroke-width="2" stroke-dasharray="6"/>
+  <text x="40" y="50" fill="#fbbf24" font-size="14" font-weight="600">Grid Level (所有 blocks)</text>
+  <text x="40" y="72" fill="#8b93a7" font-size="12">每个 block 负责 C 的一个 [BM &times; BN] tile</text>
+
+  <!-- Middle: Block Level -->
+  <rect x="50" y="90" width="700" height="380" rx="10" fill="#11141b" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="70" y="118" fill="#7dd3fc" font-size="13" font-weight="600">Block Level (所有 threads 协作)</text>
+  <text x="70" y="140" fill="#8b93a7" font-size="12">K-loop: 每步协作加载 A_tile + B_tile → shared memory</text>
+
+  <!-- Inner: Thread Level -->
+  <rect x="80" y="160" width="650" height="280" rx="8" fill="#161a23" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="100" y="188" fill="#6ee7b7" font-size="13" font-weight="600">Thread Level</text>
+  <text x="100" y="210" fill="#8b93a7" font-size="12">每个 thread 负责 C 的一个子块 [TM &times; TN] 个输出元素</text>
+  <text x="100" y="232" fill="#8b93a7" font-size="12">从 shared memory 读数据，累加到自己的 registers</text>
+
+  <!-- Thread grid illustration -->
+  <!-- Show 4x4 small blocks inside -->
+  <g transform="translate(120,250)">
+    <rect x="0" y="0" width="40" height="40" rx="3" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+    <text x="20" y="24" text-anchor="middle" fill="#6ee7b7" font-size="9">T(0,0)</text>
+    <rect x="45" y="0" width="40" height="40" rx="3" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+    <text x="65" y="24" text-anchor="middle" fill="#6ee7b7" font-size="9">T(0,1)</text>
+    <rect x="90" y="0" width="40" height="40" rx="3" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+    <text x="110" y="24" text-anchor="middle" fill="#6ee7b7" font-size="9">T(0,2)</text>
+    <rect x="135" y="0" width="40" height="40" rx="3" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+    <text x="155" y="24" text-anchor="middle" fill="#8b93a7" font-size="9">...</text>
+
+    <rect x="0" y="45" width="40" height="40" rx="3" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+    <text x="20" y="69" text-anchor="middle" fill="#6ee7b7" font-size="9">T(1,0)</text>
+    <rect x="45" y="45" width="40" height="40" rx="3" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+    <text x="65" y="69" text-anchor="middle" fill="#6ee7b7" font-size="9">T(1,1)</text>
+    <rect x="90" y="45" width="40" height="40" rx="3" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+    <text x="110" y="69" text-anchor="middle" fill="#6ee7b7" font-size="9">T(1,2)</text>
+    <rect x="135" y="45" width="40" height="40" rx="3" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+    <text x="155" y="69" text-anchor="middle" fill="#8b93a7" font-size="9">...</text>
+
+    <rect x="0" y="90" width="40" height="40" rx="3" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+    <text x="20" y="114" text-anchor="middle" fill="#8b93a7" font-size="9">...</text>
+    <rect x="45" y="90" width="40" height="40" rx="3" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+    <text x="65" y="114" text-anchor="middle" fill="#8b93a7" font-size="9">...</text>
+    <rect x="90" y="90" width="40" height="40" rx="3" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+    <text x="110" y="114" text-anchor="middle" fill="#8b93a7" font-size="9">...</text>
+    <rect x="135" y="90" width="40" height="40" rx="3" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+    <text x="155" y="114" text-anchor="middle" fill="#8b93a7" font-size="9">...</text>
+  </g>
+
+  <!-- Labels on the right -->
+  <g transform="translate(420,260)">
+    <text x="0" y="0" fill="#e6e8ee" font-size="13" font-weight="600">关键公式:</text>
+    <text x="0" y="28" fill="#6ee7b7" font-size="12">Block tile:  [BM &times; BN]  (例: 128 &times; 128)</text>
+    <text x="0" y="52" fill="#7dd3fc" font-size="12">Thread tile: [TM &times; TN]  (例: 8 &times; 8)</text>
+    <text x="0" y="76" fill="#fbbf24" font-size="12">Threads/block: (BM/TM) &times; (BN/TN)</text>
+    <text x="0" y="100" fill="#fbbf24" font-size="12">             = 16 &times; 16 = 256</text>
+    <text x="0" y="136" fill="#fb7185" font-size="11" font-style="italic">Triton 没有 thread tile 这一层</text>
+    <text x="0" y="156" fill="#fb7185" font-size="11" font-style="italic">Triton 的一个 program 直接拥有 [BM&times;BN]</text>
+    <text x="0" y="176" fill="#fb7185" font-size="11" font-style="italic">CUDA 里需要再分给 threads</text>
+  </g>
+</svg>
+</div>
+
+<div class="callout warn">
+<strong>Triton vs CUDA 的关键区别：</strong>Triton 的一个 program 直接拥有整个 <code>[BM &times; BN]</code>。CUDA 里需要把它再细分给每个 thread，每个 thread 只负责 <code>[TM &times; TN]</code> 个输出。
+</div>
+
+<!-- §3 -->
+<h2><span class="step">§3</span>数据复用分析（CUDA 视角）</h2>
+
+<p>GEMM 优化的本质：<strong>让每个数据元素被使用尽可能多次</strong>。CUDA 有两层复用：</p>
+
+<h3>Level 1 — Block 级复用（Shared Memory）</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 700 280" width="700" height="280" xmlns="http://www.w3.org/2000/svg">
+  <!-- A_tile -->
+  <rect x="40" y="40" width="80" height="200" rx="6" fill="#1a2332" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="80" y="30" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">A_tile [BM, BK]</text>
+  <!-- highlight one element -->
+  <rect x="55" y="80" width="12" height="12" rx="2" fill="#6ee7b7"/>
+  <text x="61" y="89" text-anchor="middle" fill="#0b0d12" font-size="7">a</text>
+
+  <!-- arrows from a to multiple threads -->
+  <line x1="67" y1="86" x2="180" y2="60" stroke="#6ee7b7" stroke-width="1" marker-end="url(#arrow-g)"/>
+  <line x1="67" y1="86" x2="180" y2="100" stroke="#6ee7b7" stroke-width="1" marker-end="url(#arrow-g)"/>
+  <line x1="67" y1="86" x2="180" y2="140" stroke="#6ee7b7" stroke-width="1" marker-end="url(#arrow-g)"/>
+  <line x1="67" y1="86" x2="180" y2="180" stroke="#6ee7b7" stroke-width="1" marker-end="url(#arrow-g)"/>
+
+  <!-- Threads column -->
+  <rect x="180" y="48" width="60" height="24" rx="4" fill="#161a23" stroke="#7dd3fc" stroke-width="1"/>
+  <text x="210" y="64" text-anchor="middle" fill="#7dd3fc" font-size="10">Thread 0</text>
+  <rect x="180" y="88" width="60" height="24" rx="4" fill="#161a23" stroke="#7dd3fc" stroke-width="1"/>
+  <text x="210" y="104" text-anchor="middle" fill="#7dd3fc" font-size="10">Thread 1</text>
+  <rect x="180" y="128" width="60" height="24" rx="4" fill="#161a23" stroke="#7dd3fc" stroke-width="1"/>
+  <text x="210" y="144" text-anchor="middle" fill="#7dd3fc" font-size="10">Thread 2</text>
+  <rect x="180" y="168" width="60" height="24" rx="4" fill="#161a23" stroke="#7dd3fc" stroke-width="1"/>
+  <text x="210" y="184" text-anchor="middle" fill="#8b93a7" font-size="10">...</text>
+
+  <text x="210" y="220" text-anchor="middle" fill="#6ee7b7" font-size="11">每个 A 元素被</text>
+  <text x="210" y="236" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">BN/TN 个 thread 使用</text>
+
+  <!-- Separator -->
+  <line x1="320" y1="30" x2="320" y2="270" stroke="#262b38" stroke-width="1" stroke-dasharray="4"/>
+
+  <!-- Level 2: Thread level -->
+  <text x="500" y="30" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="600">Level 2: Thread 内 Register 复用</text>
+
+  <!-- a_frag column -->
+  <rect x="380" y="60" width="30" height="120" rx="4" fill="#1a2332" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="395" y="55" text-anchor="middle" fill="#6ee7b7" font-size="10">a_frag</text>
+  <text x="395" y="77" text-anchor="middle" fill="#8b93a7" font-size="9">a0</text>
+  <text x="395" y="97" text-anchor="middle" fill="#8b93a7" font-size="9">a1</text>
+  <text x="395" y="117" text-anchor="middle" fill="#8b93a7" font-size="9">a2</text>
+  <text x="395" y="137" text-anchor="middle" fill="#8b93a7" font-size="9">...</text>
+  <text x="395" y="157" text-anchor="middle" fill="#8b93a7" font-size="9">aTM</text>
+  <text x="395" y="195" text-anchor="middle" fill="#6ee7b7" font-size="10">[TM,1]</text>
+
+  <!-- b_frag row -->
+  <rect x="440" y="60" width="180" height="24" rx="4" fill="#1a2332" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="530" y="55" text-anchor="middle" fill="#7dd3fc" font-size="10">b_frag</text>
+  <text x="460" y="76" text-anchor="middle" fill="#8b93a7" font-size="9">b0</text>
+  <text x="490" y="76" text-anchor="middle" fill="#8b93a7" font-size="9">b1</text>
+  <text x="520" y="76" text-anchor="middle" fill="#8b93a7" font-size="9">b2</text>
+  <text x="550" y="76" text-anchor="middle" fill="#8b93a7" font-size="9">...</text>
+  <text x="600" y="76" text-anchor="middle" fill="#8b93a7" font-size="9">bTN</text>
+  <text x="530" y="100" text-anchor="middle" fill="#7dd3fc" font-size="10">[1,TN]</text>
+
+  <!-- outer product result -->
+  <rect x="440" y="120" width="180" height="120" rx="6" fill="#161a23" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="530" y="145" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">acc[TM][TN]</text>
+  <text x="530" y="165" text-anchor="middle" fill="#8b93a7" font-size="10">外积累加</text>
+  <text x="530" y="185" text-anchor="middle" fill="#8b93a7" font-size="10">a_frag[tm] &times; b_frag[tn]</text>
+  <text x="530" y="215" text-anchor="middle" fill="#fbbf24" font-size="10">A 的 TM 元素被 TN 列复用</text>
+  <text x="530" y="232" text-anchor="middle" fill="#fbbf24" font-size="10">B 的 TN 元素被 TM 行复用</text>
+
+  <!-- Arrow markers -->
+  <defs>
+    <marker id="arrow-g" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6" fill="none" stroke="#6ee7b7" stroke-width="1"/>
+    </marker>
+  </defs>
+</svg>
+</div>
+
+<div class="card">
+<h3>总复用次数</h3>
+<div class="formula">
+<span class="highlight">A 元素:</span> 被 BN/TN 个 thread 使用 &times; 每个 thread 用 TN 次 = <span class="highlight">BN 次</span><br>
+<span class="highlight2">B 元素:</span> 被 BM/TM 个 thread 使用 &times; 每个 thread 用 TM 次 = <span class="highlight2">BM 次</span>
+</div>
+<p style="color:var(--mute);font-size:13px;margin:8px 0 0">例：BM=BN=128 → 每个元素被复用 128 次！这就是 tiled GEMM 快的原因。</p>
+</div>
+
+<!-- §4 -->
+<h2><span class="step">§4</span>参数选择的约束</h2>
+
+<div class="card">
+<table>
+<tr><th>参数</th><th>典型值</th><th>约束条件</th></tr>
+<tr><td><code>BM</code></td><td>64 ~ 256</td><td>受 shared memory 容量限制</td></tr>
+<tr><td><code>BN</code></td><td>64 ~ 256</td><td>受 shared memory 容量限制</td></tr>
+<tr><td><code>BK</code></td><td>8 ~ 64</td><td>BK &times; (BM + BN) &times; sizeof &le; shared memory</td></tr>
+<tr><td><code>TM</code></td><td>4 ~ 8</td><td>TM &times; TN = register tile → 占 register 数量</td></tr>
+<tr><td><code>TN</code></td><td>4 ~ 8</td><td>同上</td></tr>
+<tr><td><code>threads/block</code></td><td>128 ~ 256</td><td>(BM/TM) &times; (BN/TN)</td></tr>
+</table>
+</div>
+
+<h3>约束 1：Shared Memory</h3>
+<pre>
+<span class="com">// 每步 K-loop 加载两个 tile 到 shared memory</span>
+shared_bytes = (BM &times; BK + BK &times; BN) &times; <span class="num">4</span> bytes
+
+<span class="com">// 例: BM=128, BN=128, BK=32</span>
+= (<span class="num">128</span> &times; <span class="num">32</span> + <span class="num">32</span> &times; <span class="num">128</span>) &times; <span class="num">4</span>
+= <span class="num">8192</span> &times; <span class="num">4</span> = <span class="num">32 KB</span> &larr; OK (A100 有 164 KB/SM)
+</pre>
+
+<h3>约束 2：Register</h3>
+<pre>
+<span class="com">// 每个 thread 的 register 占用</span>
+accumulators: TM &times; TN       <span class="com">// 存储输出 tile</span>
+A fragment:   TM              <span class="com">// 从 shared 读的 A 列</span>
+B fragment:   TN              <span class="com">// 从 shared 读的 B 行</span>
+<span class="kw">Total</span>: TM &times; TN + TM + TN
+
+<span class="com">// 例: TM=8, TN=8</span>
+= <span class="num">8</span> &times; <span class="num">8</span> + <span class="num">8</span> + <span class="num">8</span> = <span class="num">80</span> registers/thread
+&times; <span class="num">256</span> threads = <span class="num">20,480</span> registers/block &larr; OK (65,536 可用/SM)
+</pre>
+
+<div class="callout warn">
+<strong>参数选择是一个多约束优化问题：</strong>增大 BM/BN 提高复用，但消耗更多 shared memory；增大 TM/TN 提高 register 复用，但减少 occupancy。需要平衡。
+</div>
+
+<!-- §5 -->
+<h2><span class="step">§5</span>GEMM Kernel 的完整数据流</h2>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 800 600" width="800" height="600" xmlns="http://www.w3.org/2000/svg">
+  <!-- Timeline -->
+  <line x1="80" y1="40" x2="80" y2="560" stroke="#262b38" stroke-width="2"/>
+
+  <!-- Step 1 -->
+  <circle cx="80" cy="60" r="16" fill="#6ee7b7" stroke="none"/>
+  <text x="80" y="65" text-anchor="middle" fill="#0b0d12" font-size="12" font-weight="700">1</text>
+  <text x="110" y="56" fill="#e6e8ee" font-size="13" font-weight="600">Block (by, bx) 启动</text>
+  <text x="110" y="76" fill="#8b93a7" font-size="12">确定负责: C[by*BM : (by+1)*BM, bx*BN : (bx+1)*BN]</text>
+
+  <!-- Step 2 -->
+  <circle cx="80" cy="120" r="16" fill="#7dd3fc" stroke="none"/>
+  <text x="80" y="125" text-anchor="middle" fill="#0b0d12" font-size="12" font-weight="700">2</text>
+  <text x="110" y="116" fill="#e6e8ee" font-size="13" font-weight="600">初始化累加器</text>
+  <text x="110" y="136" fill="#8b93a7" font-size="12">float acc[TM][TN] = {0};  // 每个 thread 的私有 register</text>
+
+  <!-- Step 3 - K loop -->
+  <rect x="60" y="160" width="700" height="320" rx="10" fill="#11141b" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="4"/>
+  <circle cx="80" cy="180" r="16" fill="#a78bfa" stroke="none"/>
+  <text x="80" y="185" text-anchor="middle" fill="#0b0d12" font-size="12" font-weight="700">3</text>
+  <text x="110" y="176" fill="#a78bfa" font-size="13" font-weight="600">K-loop (k = 0, BK, 2*BK, ...)</text>
+
+  <!-- 3a -->
+  <rect x="120" y="200" width="600" height="50" rx="6" fill="#1a2332" stroke="#6ee7b7" stroke-width="1"/>
+  <text x="140" y="218" fill="#6ee7b7" font-size="11" font-weight="600">3a. 协作加载 (所有 threads)</text>
+  <text x="140" y="238" fill="#8b93a7" font-size="11">Global A[...] → A_shared[BM][BK] &nbsp;&nbsp;&amp;&amp;&nbsp;&nbsp; Global B[...] → B_shared[BK][BN]</text>
+
+  <!-- 3b -->
+  <rect x="120" y="260" width="600" height="35" rx="6" fill="#1a2332" stroke="#fb7185" stroke-width="1"/>
+  <text x="140" y="282" fill="#fb7185" font-size="11" font-weight="600">3b. __syncthreads()  ← 确保所有数据到位</text>
+
+  <!-- 3c -->
+  <rect x="120" y="305" width="600" height="100" rx="6" fill="#1a2332" stroke="#fbbf24" stroke-width="1"/>
+  <text x="140" y="325" fill="#fbbf24" font-size="11" font-weight="600">3c. 每个 thread 执行 TM&times;TN 的小矩阵乘</text>
+  <text x="140" y="348" fill="#8b93a7" font-size="11">for kk in range(BK):</text>
+  <text x="160" y="366" fill="#8b93a7" font-size="11">a_frag[TM] = A_shared[row*TM : (row+1)*TM][kk]</text>
+  <text x="160" y="384" fill="#8b93a7" font-size="11">b_frag[TN] = B_shared[kk][col*TN : (col+1)*TN]</text>
+  <text x="160" y="402" fill="#e6e8ee" font-size="11">acc[tm][tn] += a_frag[tm] * b_frag[tn]  // 外积</text>
+
+  <!-- 3d -->
+  <rect x="120" y="415" width="600" height="35" rx="6" fill="#1a2332" stroke="#fb7185" stroke-width="1"/>
+  <text x="140" y="437" fill="#fb7185" font-size="11" font-weight="600">3d. __syncthreads()  ← 确保计算完成后才覆盖 shared</text>
+
+  <!-- Step 4 -->
+  <circle cx="80" cy="520" r="16" fill="#fbbf24" stroke="none"/>
+  <text x="80" y="525" text-anchor="middle" fill="#0b0d12" font-size="12" font-weight="700">4</text>
+  <text x="110" y="516" fill="#e6e8ee" font-size="13" font-weight="600">写回 Global Memory</text>
+  <text x="110" y="536" fill="#8b93a7" font-size="12">acc[TM][TN] → C[global_row : +TM, global_col : +TN]</text>
+  <text x="110" y="556" fill="#8b93a7" font-size="11">（可合并写入，coalesced write）</text>
+</svg>
+</div>
+
+<div class="callout">
+<strong>核心循环模式：</strong>加载 → 同步 → 计算 → 同步 → 下一轮加载。两次 <code>__syncthreads()</code> 是必须的：第一次保证加载完成，第二次保证计算完成后才能覆盖 shared memory。
+</div>
+
+<!-- §6 -->
+<h2><span class="step">§6</span>对比 Triton 的 K-loop</h2>
+
+<div class="card">
+<table>
+<tr><th>步骤</th><th>Triton</th><th>CUDA</th></tr>
+<tr>
+  <td>加载 tile</td>
+  <td><code>tl.load</code>（整个 tile 一步）</td>
+  <td>threads 协作 + <code>__syncthreads</code></td>
+</tr>
+<tr>
+  <td>存储位置</td>
+  <td>编译器自动选 shared / register</td>
+  <td>手动 <code>__shared__</code> 声明</td>
+</tr>
+<tr>
+  <td>内层计算</td>
+  <td><code>tl.dot</code>（整个 tile matmul）</td>
+  <td>每 thread 做 TM&times;TN 的小 matmul</td>
+</tr>
+<tr>
+  <td>同步</td>
+  <td>不需要（单 program）</td>
+  <td><code>__syncthreads</code> &times; 2（加载前后）</td>
+</tr>
+<tr>
+  <td>指针移动</td>
+  <td><code>ptrs += BLOCK_K * stride</code></td>
+  <td>手动计算新偏移</td>
+</tr>
+</table>
+</div>
+
+<div class="callout info">
+<strong>Triton 的 <code>tl.dot</code> 在 CUDA 里展开成：</strong><code>for kk (BK 步) &times; for tm &times; for tn</code> 的三重循环。Triton 帮你做了所有 thread 协调工作，CUDA 需要手动完成。
+</div>
+
+<!-- §7 -->
+<h2><span class="step">§7</span>接下来的路线图</h2>
+
+<div class="card">
+<table>
+<tr><th>章节</th><th>内容</th><th>新引入的 CUDA 概念</th></tr>
+<tr><td><span class="highlight">C6</span></td><td>Naive GEMM</td><td>1 thread = 1 element，基础索引</td></tr>
+<tr><td><span class="highlight">C7</span></td><td>Shared Memory Tiling</td><td><code>__shared__</code>, <code>__syncthreads</code></td></tr>
+<tr><td><span class="highlight">C8</span></td><td>Double Buffer</td><td>Prefetch，overlap compute/load</td></tr>
+<tr><td><span class="highlight">C9</span></td><td>Tensor Core Basics</td><td>WMMA 指令，wmma fragments</td></tr>
+<tr><td><span class="highlight">C10</span></td><td>完整 Tensor Core GEMM</td><td>mma layout</td></tr>
+<tr><td><span class="highlight">C11</span></td><td>Swizzle + Bank</td><td>Shared memory swizzle，消除 bank conflict</td></tr>
+<tr><td><span class="highlight">C12</span></td><td>Split-K + Persistent</td><td>Cooperative groups，高级并行</td></tr>
+</table>
+</div>
+
+<!-- §8 -->
+<h2><span class="step">§8</span>带走</h2>
+
+<div class="card" style="border-color:var(--brand)">
+<ol style="margin:0;padding-left:20px;line-height:2">
+<li><strong>CUDA GEMM = Grid(blocks) &times; Block(threads) &times; Thread(register tile)</strong> 三层分工</li>
+<li><strong>Block tile [BM&times;BN]</strong> → shared memory 复用；<strong>Thread tile [TM&times;TN]</strong> → register 复用</li>
+<li><strong>K-loop</strong>：加载 → 同步 → 计算 → 同步 的循环</li>
+<li>参数受 <strong>shared memory + register</strong> 双重约束，需要平衡复用率与 occupancy</li>
+</ol>
+</div>
+
+<p class="foot">C5 · GEMM 数学回顾 — CUDA GEMM 系列 6/15</p>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

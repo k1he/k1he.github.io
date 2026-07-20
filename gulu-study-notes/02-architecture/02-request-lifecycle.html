@@ -1,0 +1,666 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>03 · 单请求全流程时序与源码</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.65 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1200px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:30px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:28px}
+h2{font-size:20px;margin:36px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h3{font-size:16px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:14px 0 6px;color:#fbbf24}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:14px 0}
+.grid{display:grid;gap:16px}
+.grid.cols-2{grid-template-columns:1fr 1fr}
+@media (max-width:900px){.grid.cols-2{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;font-size:12px}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow:auto;line-height:1.55}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:#1f2430;color:#cbd5e1;border:1px solid var(--line);margin-right:6px}
+.b-brand{background:rgba(110,231,183,.12);color:var(--brand);border-color:rgba(110,231,183,.3)}
+.b-info{background:rgba(125,211,252,.12);color:var(--brand2);border-color:rgba(125,211,252,.3)}
+.b-warn{background:rgba(251,191,36,.12);color:var(--warn);border-color:rgba(251,191,36,.3)}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:3px 0}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px;overflow:auto}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.foot{color:var(--mute);font-size:12px;margin-top:40px;text-align:center}
+a{color:var(--brand2);text-decoration:none}a:hover{text-decoration:underline}
+.line-no{color:#4b5563;display:inline-block;width:34px;text-align:right;padding-right:8px;user-select:none}
+.step{display:flex;gap:14px;align-items:flex-start;padding:12px 0;border-bottom:1px dashed var(--line)}
+.step:last-child{border-bottom:none}
+.num-bubble{flex-shrink:0;width:32px;height:32px;border-radius:50%;background:#1a1f2b;border:1px solid var(--brand);color:var(--brand);display:flex;align-items:center;justify-content:center;font-weight:600;font-family:"SF Mono",monospace}
+.step-body{flex:1;min-width:0}
+.step-title{font-weight:600;color:#e6e8ee}
+.step-meta{font-size:11.5px;color:var(--mute);margin-top:2px}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:12.5px}
+th{color:var(--mute);font-weight:500}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>单请求全流程时序与源码 <span class="tag">03</span></h1>
+<div class="sub">从 <code>curl /v1/chat/completions</code> 到客户端拿到第一个 SSE chunk —— 14 步、4 进程、2 CUDA stream 的完整剧本</div>
+
+<div class="toc">
+  <a href="#scenario">场景设定</a>
+  <a href="#sequence">时序图</a>
+  <a href="#step">14 步逐行源码</a>
+  <a href="#timing">时间剖析</a>
+</div>
+
+<!-- ========== Scenario ========== -->
+<h2 id="scenario">一、场景设定（最简单的单请求）</h2>
+<div class="card">
+<table>
+<tr><th>项</th><th>值</th></tr>
+<tr><td>启动命令</td><td><code>python -m minisgl --model "Qwen/Qwen3-0.6B"</code> （TP=1, page_size=1, overlap on）</td></tr>
+<tr><td>请求</td><td><code>POST /v1/chat/completions</code> · <code>{messages:[{role:"user",content:"你好"}], max_tokens:5, stream:true}</code></td></tr>
+<tr><td>初始状态</td><td>引擎刚启动，Radix tree 空，没有任何 inflight req</td></tr>
+<tr><td>预期输出</td><td>5 个 token 的增量 SSE 流（你好 → 哈哈 → ...）</td></tr>
+</table>
+<p>整个流程要走完：<strong>tokenize → prefill 1 步 → decode 4 步 → 流式 detokenize</strong>。我们把 prefill 这一步特别详细地拆开。</p>
+</div>
+
+<!-- ========== Sequence Diagram ========== -->
+<h2 id="sequence">二、时序图（4 进程 + 2 CUDA stream）</h2>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 1180" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <defs>
+    <marker id="m1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7dd3fc"/></marker>
+    <marker id="m2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#fbbf24"/></marker>
+    <marker id="m3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6ee7b7"/></marker>
+    <marker id="m4" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#a78bfa"/></marker>
+  </defs>
+
+  <!-- Lifelines -->
+  <g font-size="12" font-weight="600" fill="#e6e8ee" text-anchor="middle">
+    <rect x="40" y="20" width="130" height="36" rx="6" fill="#1a1f2b" stroke="#3b82f6"/><text x="105" y="44">Client (curl)</text>
+    <rect x="200" y="20" width="130" height="36" rx="6" fill="#1a1f2b" stroke="#3b82f6"/><text x="265" y="44">API Server</text>
+    <rect x="360" y="20" width="130" height="36" rx="6" fill="#1a1f2b" stroke="#a78bfa"/><text x="425" y="44">Tokenizer</text>
+    <rect x="520" y="20" width="170" height="36" rx="6" fill="#1a1f2b" stroke="#6ee7b7"/><text x="605" y="44">Scheduler (CPU)</text>
+    <rect x="720" y="20" width="170" height="36" rx="6" fill="#1a1f2b" stroke="#fbbf24"/><text x="805" y="44">Engine.stream (GPU)</text>
+    <rect x="920" y="20" width="120" height="36" rx="6" fill="#1a1f2b" stroke="#fb7185"/><text x="980" y="44">KV Pool</text>
+    <rect x="1060" y="20" width="120" height="36" rx="6" fill="#1a1f2b" stroke="#a78bfa"/><text x="1120" y="44">Detokenizer</text>
+  </g>
+
+  <!-- vertical lifelines -->
+  <g stroke="#2f3646" stroke-dasharray="3 4">
+    <line x1="105" y1="60" x2="105" y2="1160"/>
+    <line x1="265" y1="60" x2="265" y2="1160"/>
+    <line x1="425" y1="60" x2="425" y2="1160"/>
+    <line x1="605" y1="60" x2="605" y2="1160"/>
+    <line x1="805" y1="60" x2="805" y2="1160"/>
+    <line x1="980" y1="60" x2="980" y2="1160"/>
+    <line x1="1120" y1="60" x2="1120" y2="1160"/>
+  </g>
+
+  <!-- Phase: HTTP -->
+  <rect x="20" y="70" width="1170" height="22" fill="#1a1f2b" stroke="#262b38"/>
+  <text x="32" y="86" fill="#7dd3fc" font-size="11" font-weight="600">PHASE 1 · HTTP / FastAPI</text>
+
+  <!-- 1 -->
+  <line x1="105" y1="105" x2="265" y2="105" stroke="#7dd3fc" stroke-width="1.6" marker-end="url(#m1)"/>
+  <text x="185" y="100" text-anchor="middle" fill="#cbd5e1" font-size="10">① POST /v1/chat/completions {stream:true}</text>
+
+  <line x1="265" y1="125" x2="265" y2="160" stroke="#7dd3fc" stroke-width="1.6"/>
+  <text x="270" y="143" fill="#cbd5e1" font-size="10">v1_completions(): uid=state.new_user(); 创建 asyncio.Event</text>
+
+  <!-- 2 -->
+  <line x1="265" y1="170" x2="425" y2="170" stroke="#7dd3fc" stroke-width="1.6" marker-end="url(#m1)"/>
+  <text x="345" y="165" text-anchor="middle" fill="#cbd5e1" font-size="10">② ZMQ Push: TokenizeMsg(uid, text, sampling_params)</text>
+
+  <!-- Phase 2 -->
+  <rect x="20" y="190" width="1170" height="22" fill="#1a1f2b" stroke="#262b38"/>
+  <text x="32" y="206" fill="#a78bfa" font-size="11" font-weight="600">PHASE 2 · Tokenize</text>
+
+  <line x1="425" y1="225" x2="425" y2="265" stroke="#a78bfa" stroke-width="1.6"/>
+  <text x="430" y="245" fill="#cbd5e1" font-size="10">③ apply_chat_template + tokenizer.encode → input_ids (int32)</text>
+
+  <!-- 4 -->
+  <line x1="425" y1="275" x2="605" y2="275" stroke="#a78bfa" stroke-width="1.6" marker-end="url(#m4)"/>
+  <text x="515" y="270" text-anchor="middle" fill="#cbd5e1" font-size="10">④ ZMQ Push: UserMsg(uid, input_ids, sampling_params)</text>
+
+  <!-- Phase 3 -->
+  <rect x="20" y="295" width="1170" height="22" fill="#1a1f2b" stroke="#262b38"/>
+  <text x="32" y="311" fill="#6ee7b7" font-size="11" font-weight="600">PHASE 3 · Schedule (rank0 single-rank path)</text>
+
+  <line x1="605" y1="330" x2="605" y2="370" stroke="#6ee7b7" stroke-width="1.6"/>
+  <text x="610" y="350" fill="#cbd5e1" font-size="10">⑤ overlap_loop: receive_msg() → _process_one_msg(UserMsg) → prefill_manager.add_one_req</text>
+
+  <line x1="605" y1="380" x2="605" y2="450" stroke="#6ee7b7" stroke-width="2"/>
+  <rect x="538" y="385" width="135" height="60" fill="#0f2a1f" stroke="#6ee7b7" rx="4"/>
+  <text x="605" y="402" text-anchor="middle" fill="#6ee7b7" font-size="10">⑥ _schedule_next_batch</text>
+  <text x="605" y="418" text-anchor="middle" fill="#cbd5e1" font-size="9.5">PrefillAdder.try_add_one</text>
+  <text x="605" y="432" text-anchor="middle" fill="#cbd5e1" font-size="9.5">cache.match_req → no hit</text>
+
+  <!-- 7 KV alloc -->
+  <line x1="605" y1="450" x2="980" y2="450" stroke="#fb7185" stroke-width="1.6" marker-end="url(#m1)"/>
+  <text x="790" y="445" text-anchor="middle" fill="#fb7185" font-size="10">⑦ free_slots.allocate(N pages) + page_table.write</text>
+
+  <!-- 8 -->
+  <line x1="605" y1="475" x2="605" y2="525" stroke="#6ee7b7" stroke-width="2"/>
+  <rect x="535" y="475" width="140" height="50" fill="#0f2a1f" stroke="#6ee7b7" rx="4"/>
+  <text x="605" y="492" text-anchor="middle" fill="#6ee7b7" font-size="10">⑧ _prepare_batch (CPU)</text>
+  <text x="605" y="507" text-anchor="middle" fill="#cbd5e1" font-size="9.5">positions / mappings</text>
+  <text x="605" y="520" text-anchor="middle" fill="#cbd5e1" font-size="9.5">attn_backend.prepare_metadata</text>
+
+  <!-- Phase 4 GPU prefill -->
+  <rect x="20" y="540" width="1170" height="22" fill="#1a1f2b" stroke="#262b38"/>
+  <text x="32" y="556" fill="#fbbf24" font-size="11" font-weight="600">PHASE 4 · GPU Forward (PREFILL, 1 batch)</text>
+
+  <line x1="605" y1="575" x2="805" y2="575" stroke="#fbbf24" stroke-width="2" marker-end="url(#m2)"/>
+  <text x="700" y="570" text-anchor="middle" fill="#fbbf24" font-size="10">⑨ engine.forward_batch(batch, sample_args) [async]</text>
+
+  <line x1="805" y1="585" x2="805" y2="710" stroke="#fbbf24" stroke-width="3"/>
+  <rect x="735" y="590" width="140" height="120" fill="#2a1f0b" stroke="#fbbf24" rx="4"/>
+  <text x="805" y="608" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">model.forward()</text>
+  <text x="805" y="624" text-anchor="middle" fill="#cbd5e1" font-size="9.5">embed → 28 layers</text>
+  <text x="805" y="638" text-anchor="middle" fill="#cbd5e1" font-size="9.5">  RMSNorm → QKV proj</text>
+  <text x="805" y="652" text-anchor="middle" fill="#cbd5e1" font-size="9.5">  RoPE → Attention</text>
+  <text x="805" y="666" text-anchor="middle" fill="#cbd5e1" font-size="9.5">  写 KV → MLP</text>
+  <text x="805" y="682" text-anchor="middle" fill="#cbd5e1" font-size="9.5">→ logits[:batch.size]</text>
+  <text x="805" y="700" text-anchor="middle" fill="#cbd5e1" font-size="9.5">→ sampler.sample()</text>
+
+  <line x1="805" y1="715" x2="980" y2="715" stroke="#fb7185" stroke-width="1.6" marker-end="url(#m1)" stroke-dasharray="4 3"/>
+  <text x="890" y="710" text-anchor="middle" fill="#fb7185" font-size="10">  attn 写入 KV pool</text>
+
+  <line x1="805" y1="735" x2="605" y2="735" stroke="#fbbf24" stroke-width="1.6" marker-end="url(#m2)" stroke-dasharray="4 3"/>
+  <text x="700" y="730" text-anchor="middle" fill="#fbbf24" font-size="10">⑩ next_tokens_gpu → next_tokens_cpu (D2H async) + Event.record</text>
+
+  <!-- Phase 5 -->
+  <rect x="20" y="755" width="1170" height="22" fill="#1a1f2b" stroke="#262b38"/>
+  <text x="32" y="771" fill="#6ee7b7" font-size="11" font-weight="600">PHASE 5 · Process Result (next loop iter)</text>
+
+  <line x1="605" y1="790" x2="605" y2="850" stroke="#6ee7b7" stroke-width="2"/>
+  <rect x="540" y="795" width="130" height="55" fill="#0f2a1f" stroke="#6ee7b7" rx="4"/>
+  <text x="605" y="812" text-anchor="middle" fill="#6ee7b7" font-size="10">⑪ _process_last_data</text>
+  <text x="605" y="826" text-anchor="middle" fill="#cbd5e1" font-size="9.5">copy_done.synchronize()</text>
+  <text x="605" y="840" text-anchor="middle" fill="#cbd5e1" font-size="9.5">cache.cache_req(finished=False)</text>
+
+  <line x1="605" y1="865" x2="1120" y2="865" stroke="#6ee7b7" stroke-width="1.6" marker-end="url(#m3)"/>
+  <text x="850" y="860" text-anchor="middle" fill="#6ee7b7" font-size="10">⑫ ZMQ Push: DetokenizeMsg(uid, next_token=15046, finished=False)</text>
+
+  <line x1="1120" y1="885" x2="1120" y2="920" stroke="#a78bfa" stroke-width="1.6"/>
+  <text x="1125" y="905" fill="#cbd5e1" font-size="10" text-anchor="start">⑬ detokenize: 增量字符串 "你好"</text>
+
+  <line x1="1120" y1="935" x2="265" y2="935" stroke="#a78bfa" stroke-width="1.6" marker-end="url(#m4)"/>
+  <text x="690" y="930" text-anchor="middle" fill="#cbd5e1" font-size="10">⑭ ZMQ Push: BaseFrontendMsg(UserReply(uid, "你好", finished=False))</text>
+
+  <line x1="265" y1="955" x2="105" y2="955" stroke="#7dd3fc" stroke-width="1.6" marker-end="url(#m1)"/>
+  <text x="185" y="950" text-anchor="middle" fill="#cbd5e1" font-size="10">⑭' SSE chunk → 客户端</text>
+
+  <!-- decode loop annotation -->
+  <rect x="20" y="980" width="1170" height="22" fill="#1a1f2b" stroke="#262b38"/>
+  <text x="32" y="996" fill="#7dd3fc" font-size="11" font-weight="600">PHASE 6 · DECODE LOOP × 4 (一直到 max_tokens=5 或 EOS)</text>
+
+  <line x1="605" y1="1015" x2="805" y2="1015" stroke="#fbbf24" stroke-width="1.6" marker-end="url(#m2)"/>
+  <text x="700" y="1010" text-anchor="middle" fill="#cbd5e1" font-size="10">⑮ decode_manager.schedule_next_batch (batch.phase="decode")</text>
+
+  <line x1="805" y1="1035" x2="805" y2="1075" stroke="#fbbf24" stroke-width="3"/>
+  <rect x="735" y="1040" width="140" height="40" fill="#2a1f0b" stroke="#fbbf24" rx="4"/>
+  <text x="805" y="1057" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">CUDA Graph replay</text>
+  <text x="805" y="1071" text-anchor="middle" fill="#cbd5e1" font-size="9.5">(padded to bs=1)</text>
+
+  <line x1="805" y1="1090" x2="1120" y2="1090" stroke="#a78bfa" stroke-width="1.6" stroke-dasharray="4 3" marker-end="url(#m4)"/>
+  <text x="950" y="1085" text-anchor="middle" fill="#cbd5e1" font-size="10">⑯ ... 重复 ⑪⑫⑬⑭ ...</text>
+
+  <line x1="105" y1="1135" x2="105" y2="1100" stroke="#7dd3fc" stroke-width="1.6" stroke-dasharray="4 3" />
+  <text x="115" y="1115" fill="#7dd3fc" font-size="10">每步收到一个 SSE chunk</text>
+
+  <!-- final -->
+  <line x1="605" y1="1140" x2="605" y2="1155" stroke="#fb7185" stroke-width="2"/>
+  <text x="615" y="1150" fill="#fb7185" font-size="10">⑰ finished=True → free table_idx + cache_req(finished=True)</text>
+
+</svg>
+</div>
+
+<!-- ========== 14 Steps ========== -->
+<h2 id="step">三、14 步逐行源码深度解读</h2>
+
+<!-- ========== Step 1 ========== -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">1</div>
+<div class="step-body">
+<div class="step-title">Client → API Server</div>
+<div class="step-meta">协议 HTTP/1.1, FastAPI 路由匹配 <code>/v1/chat/completions</code></div>
+<pre><code><span class="com"># server/api_server.py:256</span>
+<span class="kw">@app</span>.<span class="fn">post</span>(<span class="str">"/v1/chat/completions"</span>)
+<span class="kw">async def</span> <span class="fn">v1_completions</span>(req: OpenAICompletionRequest, request: Request):
+    state = <span class="fn">get_global_state</span>()                 <span class="com"># FrontendManager 单例</span>
+    <span class="kw">if</span> req.messages:
+        prompt = [msg.<span class="fn">model_dump</span>() <span class="kw">for</span> msg <span class="kw">in</span> req.messages]  <span class="com"># list of dict</span>
+    <span class="kw">else</span>:
+        prompt = req.prompt</code></pre>
+</div></div>
+</div>
+
+<!-- Step 2 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">2</div>
+<div class="step-body">
+<div class="step-title">API Server → Tokenizer (ZMQ)</div>
+<div class="step-meta"><code>FrontendManager.new_user()</code> 分配 uid, 注册 ack_map &amp; event_map; 通过 ZMQ Push 发到 tokenizer</div>
+<pre><code><span class="com"># server/api_server.py:266</span>
+uid = state.<span class="fn">new_user</span>()       <span class="com"># 自增 + 创建 asyncio.Event</span>
+<span class="kw">await</span> state.<span class="fn">send_one</span>(
+    <span class="fn">TokenizeMsg</span>(
+        uid=uid,
+        text=prompt,
+        sampling_params=<span class="fn">SamplingParams</span>(
+            ignore_eos=req.ignore_eos,
+            max_tokens=req.max_tokens,         <span class="com"># 5</span>
+            temperature=req.temperature,        <span class="com"># 1.0</span>
+            top_k=req.top_k, top_p=req.top_p,
+        ),
+    )
+)
+<span class="kw">return</span> <span class="fn">StreamingResponse</span>(
+    state.<span class="fn">stream_with_cancellation</span>(state.<span class="fn">stream_chat_completions</span>(uid), request, uid),
+    media_type=<span class="str">"text/event-stream"</span>,
+)</code></pre>
+
+<div class="callout">
+<strong>异步关键点：</strong>这里立即返回 <code>StreamingResponse</code>，FastAPI 走 ASGI 流式协议。真正的数据来自 <code>state.wait_for_ack(uid)</code>——它阻塞在 <code>asyncio.Event</code> 上，等 detokenizer 通过 listener 把 reply 塞进 <code>ack_map[uid]</code>。
+</div>
+</div></div>
+</div>
+
+<!-- Step 3 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">3</div>
+<div class="step-body">
+<div class="step-title">Tokenizer Worker · 文本 → token id</div>
+<div class="step-meta"><code>tokenizer/server.py:60</code> 主循环；调用 HuggingFace tokenizer</div>
+<pre><code><span class="com"># tokenizer/tokenize.py:14</span>
+<span class="kw">def</span> <span class="fn">tokenize</span>(self, msgs):
+    results = []
+    <span class="kw">for</span> msg <span class="kw">in</span> msgs:
+        <span class="kw">if</span> isinstance(msg.text, list):
+            prompt = self.tokenizer.<span class="fn">apply_chat_template</span>(   <span class="com"># 对话格式化</span>
+                msg.text, tokenize=<span class="kw">False</span>, add_generation_prompt=<span class="kw">True</span>,
+            )
+        <span class="kw">else</span>:
+            prompt = msg.text
+        input_ids = self.tokenizer.<span class="fn">encode</span>(prompt, return_tensors=<span class="str">"pt"</span>)
+        results.<span class="fn">append</span>(input_ids.<span class="fn">view</span>(-1).<span class="fn">to</span>(torch.int32))
+    <span class="kw">return</span> results</code></pre>
+<p>对于 <code>"你好"</code>，Qwen3 chat template 会展开成大约 20-30 个 token（含 system prompt + im_start/im_end 标记）。</p>
+</div></div>
+</div>
+
+<!-- Step 4 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">4</div>
+<div class="step-body">
+<div class="step-title">Tokenizer → Scheduler (ZMQ Push)</div>
+<pre><code><span class="com"># tokenizer/server.py:87</span>
+<span class="kw">if</span> len(tokenize_msg) &gt; 0:
+    tensors = tokenize_manager.<span class="fn">tokenize</span>(tokenize_msg)
+    batch_output = <span class="fn">BatchBackendMsg</span>(data=[
+        <span class="fn">UserMsg</span>(uid=msg.uid, input_ids=t, sampling_params=msg.sampling_params)
+        <span class="kw">for</span> msg, t <span class="kw">in</span> zip(tokenize_msg, tensors, strict=<span class="kw">True</span>)
+    ])
+    <span class="kw">if</span> len(batch_output.data) == 1:
+        batch_output = batch_output.data[0]   <span class="com"># 拆掉单元素 batch 包装</span>
+    send_backend.<span class="fn">put</span>(batch_output)         <span class="com"># ZMQ → scheduler</span></code></pre>
+</div></div>
+</div>
+
+<!-- Step 5 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">5</div>
+<div class="step-body">
+<div class="step-title">Scheduler 收消息 · 入 PrefillManager.pending_list</div>
+<div class="step-meta">第一轮 <code>overlap_loop</code> 因为没有 inflight 工作所以 blocking=True</div>
+<pre><code><span class="com"># scheduler/scheduler.py:90-96</span>
+blocking = <span class="kw">not</span> (last_data <span class="kw">or</span> prefill_manager.runnable <span class="kw">or</span> decode_manager.runnable)
+<span class="kw">for</span> msg <span class="kw">in</span> self.<span class="fn">receive_msg</span>(blocking=blocking):   <span class="com"># 阻塞 ZMQ pull</span>
+    self.<span class="fn">_process_one_msg</span>(msg)
+
+<span class="com"># scheduler/scheduler.py:175 (UserMsg branch)</span>
+input_len, max_seq_len = len(msg.input_ids), self.engine.max_seq_len
+max_output_len = max_seq_len - input_len
+<span class="kw">if</span> msg.sampling_params.max_tokens &gt; max_output_len:
+    msg.sampling_params.max_tokens = max_output_len    <span class="com"># 截断保护</span>
+self.prefill_manager.<span class="fn">add_one_req</span>(msg)               <span class="com"># 入 pending_list</span></code></pre>
+</div></div>
+</div>
+
+<!-- Step 6 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">6</div>
+<div class="step-body">
+<div class="step-title">_schedule_next_batch · 进 PrefillAdder</div>
+<pre><code><span class="com"># scheduler/scheduler.py:219</span>
+<span class="kw">def</span> <span class="fn">_schedule_next_batch</span>(self):
+    batch = (self.prefill_manager.<span class="fn">schedule_next_batch</span>(self.prefill_budget)
+             <span class="kw">or</span> self.decode_manager.<span class="fn">schedule_next_batch</span>())
+    <span class="kw">return</span> self.<span class="fn">_prepare_batch</span>(batch) <span class="kw">if</span> batch <span class="kw">else</span> <span class="kw">None</span>
+
+<span class="com"># scheduler/prefill.py:131</span>
+adder = <span class="fn">PrefillAdder</span>(
+    token_budget=8192,                              <span class="com"># max_extend_tokens 默认</span>
+    reserved_size=0,                                <span class="com"># 没有 inflight decode</span>
+    cache_manager=self.cache_manager,
+    table_manager=self.table_manager,
+)
+
+<span class="com"># scheduler/prefill.py:39  -- _try_allocate_one</span>
+handle = self.cache_manager.<span class="fn">match_req</span>(req).cuda_handle
+cached_len = handle.cached_len           <span class="com"># 第一次请求 → 0（root 节点）</span>
+extend_len = req.input_len - 0           <span class="com"># 全量 prefill</span>
+estimated_len = extend_len + req.output_len   <span class="com"># 例如 25 + 5 = 30</span></code></pre>
+</div></div>
+</div>
+
+<!-- Step 7 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">7</div>
+<div class="step-body">
+<div class="step-title">分配 KV 物理页 + 写 page_table</div>
+<div class="step-meta">这是 prefill 准备阶段最重的一步，发生在 CPU 但要往 GPU tensor 写数据</div>
+<pre><code><span class="com"># scheduler/scheduler.py:204  _prepare_batch</span>
+self.engine.graph_runner.<span class="fn">pad_batch</span>(batch)        <span class="com"># prefill 不走 graph，no-op</span>
+self.cache_manager.<span class="fn">allocate_paged</span>(batch.reqs)   <span class="com"># ★ 分配 KV 页</span>
+batch.positions = <span class="fn">_make_positions</span>(batch, self.device)
+input_mapping  = <span class="fn">_make_input_tuple</span>(batch, self.device)
+write_mapping  = <span class="fn">_make_write_tuple</span>(batch, self.device)
+batch.out_loc  = self.engine.page_table[input_mapping]
+self.engine.attn_backend.<span class="fn">prepare_metadata</span>(batch)  <span class="com"># attn 元数据</span>
+
+<span class="com"># scheduler/cache.py:42</span>
+<span class="kw">def</span> <span class="fn">allocate_paged</span>(self, reqs):
+    needed_pages = 0
+    allocation_info = []
+    <span class="kw">for</span> req <span class="kw">in</span> reqs:
+        first_page = <span class="fn">div_ceil</span>(req.cached_len, self.page_size)   <span class="com"># 0</span>
+        last_page  = <span class="fn">div_ceil</span>(req.device_len,  self.page_size)   <span class="com"># 25</span>
+        <span class="kw">if</span> last_page &gt; first_page:
+            needed_pages += last_page - first_page                  <span class="com"># 25</span>
+            allocation_info.<span class="fn">append</span>((req.table_idx, first_page, last_page))
+    <span class="kw">if</span> needed_pages &gt; 0:
+        allocated = self.<span class="fn">_page_to_token</span>(self.<span class="fn">_allocate</span>(needed_pages))
+        <span class="fn">_write_page_table</span>(self.page_table, allocated, allocation_info, self.page_size)</code></pre>
+<div class="callout warn">
+<strong>page_table 是什么</strong>：一个 <code>[max_running_req+1, max_seq_len]</code> 的 GPU int32 tensor。<code>page_table[req.table_idx, k]</code> 存放的是"第 k 个 token 在 KV pool 里的物理位置"。<u>它是 paged attention 的"地址映射表"</u>。
+</div>
+</div></div>
+</div>
+
+<!-- Step 8 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">8</div>
+<div class="step-body">
+<div class="step-title">_make_positions / _make_input_tuple / _make_write_tuple</div>
+<pre><code><span class="com"># scheduler/scheduler.py:236  _make_positions</span>
+<span class="kw">def</span> <span class="fn">_make_positions</span>(batch, device):
+    needed_size = sum(r.extend_len <span class="kw">for</span> r <span class="kw">in</span> batch.padded_reqs)   <span class="com"># 25</span>
+    indices_host = torch.<span class="fn">empty</span>(needed_size, dtype=torch.int32, pin_memory=<span class="kw">True</span>)
+    offset = 0
+    <span class="kw">for</span> req <span class="kw">in</span> batch.padded_reqs:
+        torch.<span class="fn">arange</span>(req.cached_len, req.device_len,    <span class="com"># [0,1,2,...,24]</span>
+                     dtype=torch.int32,
+                     out=indices_host[offset : offset + req.extend_len])
+        offset += req.extend_len
+    <span class="kw">return</span> indices_host.<span class="fn">to</span>(device, non_blocking=<span class="kw">True</span>)</code></pre>
+<p>三个 tuple 的语义：</p>
+<table>
+<tr><th>tuple</th><th>shape</th><th>含义</th></tr>
+<tr><td><code>positions</code></td><td>[total_extend_len]</td><td>每个 token 在序列中的位置（用于 RoPE）</td></tr>
+<tr><td><code>input_tuple</code></td><td>(table_idx_per_token, positions)</td><td>用 advanced indexing 把 token 从 token_pool 取出</td></tr>
+<tr><td><code>write_tuple</code></td><td>(table_idx_per_req, last_pos_or_-1)</td><td>下一个 token 写回 token_pool 的位置</td></tr>
+</table>
+</div></div>
+</div>
+
+<!-- Step 9 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">9</div>
+<div class="step-body">
+<div class="step-title">engine.forward_batch · 真正的 GPU 计算</div>
+<pre><code><span class="com"># engine/engine.py:191</span>
+<span class="kw">def</span> <span class="fn">forward_batch</span>(self, batch, args):
+    <span class="kw">assert</span> torch.cuda.<span class="fn">current_stream</span>() == self.stream
+    <span class="kw">with</span> self.ctx.<span class="fn">forward_batch</span>(batch):              <span class="com"># 把 batch 挂到全局 ctx</span>
+        <span class="kw">if</span> self.graph_runner.<span class="fn">can_use_cuda_graph</span>(batch):
+            logits = self.graph_runner.<span class="fn">replay</span>(batch)
+        <span class="kw">else</span>:
+            logits = self.model.<span class="fn">forward</span>()              <span class="com"># prefill 走 eager</span>
+
+    <span class="kw">for</span> req <span class="kw">in</span> batch.reqs:
+        req.<span class="fn">complete_one</span>()                               <span class="com"># cached_len ← device_len; device_len += 1</span>
+
+    next_tokens_gpu = self.sampler.<span class="fn">sample</span>(logits[:batch.size], args).<span class="fn">to</span>(torch.int32)
+    next_tokens_cpu = next_tokens_gpu.<span class="fn">to</span>(<span class="str">"cpu"</span>, non_blocking=<span class="kw">True</span>)   <span class="com"># D2H async</span>
+    copy_done_event = torch.cuda.<span class="fn">Event</span>()
+    copy_done_event.<span class="fn">record</span>(self.stream)
+    <span class="kw">return</span> <span class="fn">ForwardOutput</span>(next_tokens_gpu, next_tokens_cpu, copy_done_event)</code></pre>
+
+<div class="callout">
+<strong>三个返回值的妙处</strong>：<code>next_tokens_gpu</code> 留给下一步 decode（不离开 GPU），<code>next_tokens_cpu</code> 给 CPU 用来发给 detokenizer，<code>copy_done_event</code> 让 CPU 知道什么时候这个异步 D2H 拷贝完成。
+</div>
+</div></div>
+</div>
+
+<!-- Step 10 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">10</div>
+<div class="step-body">
+<div class="step-title">model.forward 内部 · 一次 prefill 的层堆栈</div>
+<pre><code><span class="com"># 以 Qwen3-0.6B 为例，28 个 transformer layer 叠加</span>
+hidden = <span class="fn">embed_tokens</span>(input_ids)                       <span class="com"># [25, 1024]</span>
+<span class="kw">for</span> layer <span class="kw">in</span> layers:
+    h = <span class="fn">RMSNorm</span>(hidden)
+    qkv = <span class="fn">QKVParallelLinear</span>(h)                         <span class="com"># col-parallel</span>
+    q,k,v = qkv.<span class="fn">split</span>(...)
+    q,k = <span class="fn">apply_rotary</span>(q, k, positions)                  <span class="com"># RoPE</span>
+    <span class="com"># attention backend 写 KV：</span>
+    attn_backend.<span class="fn">write_kv</span>(k, v, batch.out_loc, kv_cache)
+    o = attn_backend.<span class="fn">forward_extend</span>(q, kv_cache, batch.attn_metadata)
+    o = <span class="fn">RowParallelLinear</span>(o) + hidden                 <span class="com"># row-parallel + all-reduce</span>
+    h2 = <span class="fn">RMSNorm</span>(o)
+    hidden = <span class="fn">SwiGLUMlp</span>(h2) + o
+hidden = <span class="fn">RMSNorm</span>(hidden)
+logits = <span class="fn">lm_head</span>(hidden[batch.out_loc_for_sample])      <span class="com"># 只取最后位置</span></code></pre>
+<p class="kvp">细节文件：<code>models/qwen3.py</code>, <code>layers/attention.py</code>, <code>attention/fa.py</code> 或 <code>attention/fi.py</code>。</p>
+</div></div>
+</div>
+
+<!-- Step 11 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">11</div>
+<div class="step-body">
+<div class="step-title">_process_last_data · CPU 处理 GPU 算完的批</div>
+<pre><code><span class="com"># scheduler/scheduler.py:138</span>
+batch, (_, next_tokens_cpu, copy_done) = last_data[0].batch, last_data[1]
+copy_done.<span class="fn">synchronize</span>()                <span class="com"># 等异步 D2H 完成</span>
+<span class="kw">with</span> self.cache_manager.<span class="fn">lazy_free_region</span>():
+    <span class="kw">for</span> i, req <span class="kw">in</span> enumerate(batch.reqs):
+        <span class="kw">if</span> isinstance(req, ChunkedReq): <span class="kw">continue</span>
+        next_token = next_tokens_cpu[i]
+        req.<span class="fn">append_host</span>(next_token.<span class="fn">unsqueeze</span>(0))   <span class="com"># 追加到 input_ids（host）</span>
+        finished = <span class="kw">not</span> req.can_decode
+        <span class="kw">if not</span> req.sampling_params.ignore_eos:
+            finished |= next_token == self.eos_token_id
+        reply.<span class="fn">append</span>(<span class="fn">DetokenizeMsg</span>(uid=req.uid, next_token=int(next_token), finished=finished))
+
+        <span class="kw">if</span> finished:
+            self.decode_manager.<span class="fn">remove_req</span>(req)
+            self.<span class="fn">_free_req_resources</span>(req)
+        <span class="kw">elif</span> batch.is_prefill:
+            self.cache_manager.<span class="fn">cache_req</span>(req, finished=<span class="kw">False</span>)   <span class="com">★ 插 Radix Tree</span>
+self.<span class="fn">send_result</span>(reply)</code></pre>
+</div></div>
+</div>
+
+<!-- Step 12 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">12</div>
+<div class="step-body">
+<div class="step-title">cache_req · 把这次 prefill 插入 Radix Tree</div>
+<pre><code><span class="com"># scheduler/cache.py:55  cache_req(finished=False)</span>
+insert_ids = req.input_ids[:req.cached_len]                     <span class="com"># 25 个 token</span>
+page_indices = self.page_table[req.table_idx, :req.cached_len]   <span class="com"># 25 个物理页号</span>
+old_handle = req.cache_handle                                    <span class="com"># root 节点 handle, cached_len=0</span>
+cached_len, new_handle = self.prefix_cache.<span class="fn">insert_prefix</span>(insert_ids, page_indices)
+<span class="com"># Radix Tree: root → new_node(key=25 个 token, value=25 个页号)</span>
+self.<span class="fn">unlock</span>(old_handle)                                       <span class="com"># root 不会真正减到 0</span>
+self.<span class="fn">_free</span>(page_indices[old_handle.cached_len : cached_len])  <span class="com"># 空 slice，no-op</span>
+<span class="kw">if not</span> finished:
+    req.cache_handle = new_handle                                <span class="com">★ 现在锁住 25 个 token 的前缀</span>
+    self.<span class="fn">lock</span>(new_handle)</code></pre>
+<div class="callout">这一步之后，如果<u>下一个请求带相同的 system prompt</u>，<code>match_req</code> 就能直接命中这 25 个 token，prefill 跳过、KV 复用。</div>
+</div></div>
+</div>
+
+<!-- Step 13 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">13</div>
+<div class="step-body">
+<div class="step-title">DetokenizeMsg → De-tokenizer Worker</div>
+<pre><code><span class="com"># tokenizer/server.py:67</span>
+detokenize_msg = [m <span class="kw">for</span> m <span class="kw">in</span> pending_msg <span class="kw">if</span> isinstance(m, DetokenizeMsg)]
+<span class="kw">if</span> len(detokenize_msg) &gt; 0:
+    replies = detokenize_manager.<span class="fn">detokenize</span>(detokenize_msg)
+    batch_output = <span class="fn">BatchFrontendMsg</span>(data=[
+        <span class="fn">UserReply</span>(uid=msg.uid, incremental_output=reply, finished=msg.finished)
+        <span class="kw">for</span> msg, reply <span class="kw">in</span> zip(detokenize_msg, replies, strict=<span class="kw">True</span>)
+    ])
+    <span class="kw">if</span> len(batch_output.data) == 1:
+        batch_output = batch_output.data[0]
+    send_frontend.<span class="fn">put</span>(batch_output)
+
+<span class="com"># tokenizer/detokenize.py:70  detokenize 内部</span>
+<span class="kw">for</span> msg <span class="kw">in</span> msgs:
+    s = self.decode_map[msg.uid]                <span class="com"># DecodeStatus</span>
+    <span class="kw">if not</span> (msg.finished <span class="kw">and</span> msg.next_token == self.eos_token_id):
+        s.decoded_ids.<span class="fn">append</span>(msg.next_token)
+    read_ids.<span class="fn">append</span>(s.decoded_ids[s.surr_offset:])
+    surr_ids.<span class="fn">append</span>(s.decoded_ids[s.surr_offset:s.read_offset])
+read_texts = self.tokenizer.<span class="fn">batch_decode</span>(read_ids)
+surr_texts = self.tokenizer.<span class="fn">batch_decode</span>(surr_ids)
+new_text = read_str[len(surr_str):]              <span class="com"># 新增的可打印文本</span></code></pre>
+<p><strong>为什么搞 surrogate offset？</strong> Multi-byte UTF-8（特别 CJK 和 emoji）经常出现"半个字符"的中间状态，需要回退一段重新解码才能避免输出乱码。这段算法借自 SGLang。</p>
+</div></div>
+</div>
+
+<!-- Step 14 -->
+<div class="card">
+<div class="step">
+<div class="num-bubble">14</div>
+<div class="step-body">
+<div class="step-title">UserReply → API Server → SSE Chunk</div>
+<pre><code><span class="com"># server/api_server.py:117  FrontendManager.listen()</span>
+<span class="kw">async def</span> <span class="fn">listen</span>(self):
+    <span class="kw">while True</span>:
+        msg = <span class="kw">await</span> self.recv_tokenizer.<span class="fn">get</span>()
+        <span class="kw">for</span> msg <span class="kw">in</span> <span class="fn">_unwrap_msg</span>(msg):
+            <span class="kw">if</span> msg.uid <span class="kw">not in</span> self.ack_map: <span class="kw">continue</span>
+            self.ack_map[msg.uid].<span class="fn">append</span>(msg)
+            self.event_map[msg.uid].<span class="fn">set</span>()           <span class="com">★ 唤醒等待的协程</span>
+
+<span class="com"># server/api_server.py:161  stream_chat_completions(uid)</span>
+<span class="kw">async for</span> ack <span class="kw">in</span> self.<span class="fn">wait_for_ack</span>(uid):
+    delta = {<span class="str">"role"</span>: <span class="str">"assistant"</span>} <span class="kw">if</span> first_chunk <span class="kw">else</span> {}
+    <span class="kw">if</span> ack.incremental_output:
+        delta[<span class="str">"content"</span>] = ack.incremental_output
+    chunk = {<span class="str">"id"</span>: f<span class="str">"cmpl-{uid}"</span>, <span class="str">"object"</span>: <span class="str">"text_completion.chunk"</span>,
+             <span class="str">"choices"</span>: [{<span class="str">"delta"</span>: delta, <span class="str">"index"</span>: 0, <span class="str">"finish_reason"</span>: <span class="kw">None</span>}]}
+    <span class="kw">yield</span> f<span class="str">"data: {json.dumps(chunk)}\n\n"</span>.<span class="fn">encode</span>()</code></pre>
+<p>Uvicorn 把每个 yield 出去的 chunk 通过 HTTP/1.1 chunked-encoding 直接 flush 到客户端。<strong>第一个 chunk 到达客户端的时刻就是 TTFT</strong>。</p>
+</div></div>
+</div>
+
+<!-- Decode Loop -->
+<h2>四、Decode 循环（步骤 ⑮~⑰）</h2>
+<div class="card">
+<p>Prefill 后这个 req 自动进入 <code>decode_manager.running_reqs</code>（通过 <code>scheduler._forward</code> 末尾的 <code>filter_reqs</code>）。下一轮 <code>overlap_loop</code>：</p>
+<pre><code><span class="com"># scheduler.py:227  _forward</span>
+<span class="kw">def</span> <span class="fn">_forward</span>(self, forward_input):
+    batch, sample_args, input_mapping, output_mapping = forward_input
+    batch.input_ids = self.token_pool[input_mapping]
+    forward_output = self.engine.<span class="fn">forward_batch</span>(batch, sample_args)
+    self.token_pool[output_mapping] = forward_output.next_tokens_gpu  <span class="com">★ GPU 直接写回</span>
+    self.decode_manager.<span class="fn">filter_reqs</span>(forward_input.batch.reqs)        <span class="com"># 加入 decode</span>
+    <span class="kw">return</span> forward_output</code></pre>
+
+<p>从此每步 <code>_schedule_next_batch</code> 走 decode 路径：</p>
+<ul class="tight">
+  <li><code>decode_manager.schedule_next_batch()</code> 直接把 <code>running_reqs</code> 一锅端</li>
+  <li><code>graph_runner.can_use_cuda_graph(batch)</code> 返回 True（decode + bs 在录制范围内）</li>
+  <li><code>graph_runner.replay(batch)</code> 不重启 kernel launch，直接 replay 录制好的图</li>
+  <li>每步只有 1 个新 token，<code>extend_len = 1</code></li>
+</ul>
+
+<div class="callout warn">
+<strong>第 5 个 token 出来后</strong>：<code>req.can_decode</code> 返回 False（<code>remain_len = 0</code>），<code>_process_last_data</code> 触发 <code>finished=True</code>：
+<pre><code><span class="kw">def</span> <span class="fn">_free_req_resources</span>(self, req):
+    self.table_manager.<span class="fn">free</span>(req.table_idx)         <span class="com"># 槽位回收</span>
+    self.cache_manager.<span class="fn">cache_req</span>(req, finished=<span class="kw">True</span>)  <span class="com"># 完整序列插入 Radix, 尾部释放</span></code></pre>
+同时发送 <code>DetokenizeMsg(finished=True)</code>，detokenizer 出 <code>UserReply(finished=True)</code>，<code>stream_chat_completions</code> 看到后发 <code>data: [DONE]</code>，HTTP stream 关闭。
+</div>
+</div>
+
+<!-- Timing -->
+<h2 id="timing">五、时间剖析（典型 H200 数值）</h2>
+<div class="card">
+<table>
+<tr><th>阶段</th><th>耗时量级</th><th>瓶颈</th></tr>
+<tr><td>HTTP + ASGI 路由</td><td>~100 µs</td><td>FastAPI</td></tr>
+<tr><td>ZMQ Push (api→tok)</td><td>~30 µs</td><td>IPC socket</td></tr>
+<tr><td>tokenize 25 token</td><td>~500 µs</td><td>HF tokenizer Python 开销</td></tr>
+<tr><td>ZMQ Push (tok→sched)</td><td>~30 µs</td><td>IPC</td></tr>
+<tr><td>_schedule_next_batch + _prepare_batch</td><td>~200 µs</td><td>Python + 几个小 H2D copy</td></tr>
+<tr><td><strong>prefill forward (25 token, eager)</strong></td><td><strong>~10-20 ms</strong></td><td>GPU compute, 占 TTFT 主要部分</td></tr>
+<tr><td>D2H copy + sync</td><td>~50 µs</td><td>1 个 int32</td></tr>
+<tr><td>cache_req + Radix insert</td><td>~80 µs</td><td>Python tree walk</td></tr>
+<tr><td>ZMQ + detokenize + ZMQ</td><td>~200 µs</td><td>2 个 IPC + 1 次 batch_decode</td></tr>
+<tr><td>SSE flush</td><td>~30 µs</td><td>uvicorn</td></tr>
+<tr><td><strong>总 TTFT</strong></td><td><strong>~12-22 ms</strong></td><td>prefill GPU 占大头</td></tr>
+<tr><td>每步 decode (CUDA Graph)</td><td>~3-5 ms / token</td><td>GPU mem-bound</td></tr>
+<tr><td>每步 decode 全链路 (含 ZMQ)</td><td>~3.5-5.5 ms / token</td><td>得益于 overlap，CPU 部分被吃掉</td></tr>
+</table>
+
+<div class="callout">
+<strong>Overlap Scheduling 怎么"省"出时间</strong>：第 ⑪⑫⑬⑭ 步（处理 last_data + detokenize + 回复 client）和第 ⑨⑩ 步（forward + sample）发生在<u>同一次 loop iteration</u>，但因为 forward 是异步 launch + GPU 执行，CPU 在等 GPU 时同步处理上一批的结果。理想情况下 CPU 路径完全被 GPU 时间覆盖，TTFT 和 ITL 都只剩 GPU 时间。
+</div>
+</div>
+
+<div class="foot">
+<strong>← 上一节</strong> <a href="03-scheduler-core.html">02 · 调度层</a> &nbsp;·&nbsp;
+<strong>下一节 →</strong> <a href="../03-scheduling/01-multi-request.html">04 · 多请求调度</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

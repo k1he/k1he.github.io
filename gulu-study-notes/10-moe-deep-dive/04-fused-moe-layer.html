@@ -1,0 +1,342 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>FusedMoE Layer 源码深读 — 咕噜的学习笔记</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--purple);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--purple);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--purple)}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--purple);color:var(--purple)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>FusedMoE Layer 源码深读 <span class="tag">MoE · 04/07</span></h1>
+<p class="sub">深入 SGLang 的 FusedMoE Layer 实现 — 从类初始化到完整前向计算流程</p>
+
+<div class="toc">
+  <a href="#init">__init__ 参数</a>
+  <a href="#parallelism">Expert Parallelism 配置</a>
+  <a href="#forward">forward_impl 三步</a>
+  <a href="#dispatcher">Dispatcher 创建</a>
+  <a href="#weights">权重布局</a>
+  <a href="#quant">量化方法</a>
+  <a href="#cuda-graph">CUDA Graph 兼容</a>
+</div>
+
+<!-- Section: __init__ -->
+<h2 id="init"><span class="step">01</span>FusedMoE 类初始化参数</h2>
+
+<p>FusedMoE 是 SGLang 中 MoE 层的核心实现类，位于 <code>sglang/srt/layers/moe/fused_moe_triton/layer.py</code>。它统一封装了路由、Expert 并行、量化等复杂逻辑。</p>
+
+<div class="card">
+<h3>核心构造参数</h3>
+<pre><code><span class="kw">class</span> <span class="fn">FusedMoE</span>(nn.Module):
+    <span class="kw">def</span> <span class="fn">__init__</span>(
+        self,
+        num_experts: <span class="fn">int</span>,              <span class="com"># Expert 总数 (e.g., 256 for DeepSeek-V3)</span>
+        top_k: <span class="fn">int</span>,                    <span class="com"># 每个 token 激活的 expert 数</span>
+        hidden_size: <span class="fn">int</span>,              <span class="com"># 输入/输出维度</span>
+        intermediate_size: <span class="fn">int</span>,        <span class="com"># FFN 中间维度</span>
+        params_dtype: torch.dtype = <span class="kw">None</span>,
+        reduce_results: <span class="fn">bool</span> = <span class="kw">True</span>,  <span class="com"># 是否在 TP 组内 allreduce</span>
+        renormalize: <span class="fn">bool</span> = <span class="kw">True</span>,     <span class="com"># topk 权重归一化</span>
+        use_grouped_topk: <span class="fn">bool</span> = <span class="kw">False</span>,<span class="com"># 分组 topk (DeepSeek 风格)</span>
+        num_expert_group: <span class="fn">int</span> = <span class="kw">None</span>, <span class="com"># 分组数量</span>
+        topk_group: <span class="fn">int</span> = <span class="kw">None</span>,       <span class="com"># 每组选几个 expert</span>
+        quant_config: Optional[QuantizationConfig] = <span class="kw">None</span>,
+        tp_size: Optional[<span class="fn">int</span>] = <span class="kw">None</span>,
+        ep_size: Optional[<span class="fn">int</span>] = <span class="kw">None</span>,
+        ...
+    ):
+</code></pre>
+</div>
+
+<div class="callout info">
+<strong>关键理解：</strong> <code>num_experts</code> 是全局 expert 总数，实际每张 GPU 上的 expert 数量由 EP/TP 策略决定。对 DeepSeek-V3 来说，<code>num_experts=256</code>，若 <code>ep_size=8</code>，则每 GPU 持有 32 个 experts。
+</div>
+
+<!-- Section: Parallelism -->
+<h2 id="parallelism"><span class="step">02</span>Expert Parallelism 配置</h2>
+
+<p>FusedMoE 同时支持 TP（Tensor Parallelism）和 EP（Expert Parallelism），二者的切分维度不同：</p>
+
+<div class="grid cols-2">
+<div class="card">
+<h4>TP 模式（默认）</h4>
+<p>每个 GPU 持有全部 expert，但每个 expert 的中间维度被切分：</p>
+<pre><code><span class="com"># intermediate_size 按 TP 切分</span>
+intermediate_size_per_partition = (
+    intermediate_size // moe_tp_size
+)</code></pre>
+</div>
+<div class="card">
+<h4>EP 模式</h4>
+<p>将 expert 分到不同 GPU，每个 GPU 只持有一部分 expert：</p>
+<pre><code><span class="com"># expert 数量按 EP 切分</span>
+num_local_experts = num_experts // moe_ep_size
+
+<span class="com"># EP + TP 混合时</span>
+<span class="com"># ep_size * tp_size = total_gpus</span></code></pre>
+</div>
+</div>
+
+<div class="card">
+<h3>并行度计算逻辑</h3>
+<pre><code><span class="com"># 来自 layer.py __init__</span>
+self.moe_ep_size = ep_size <span class="kw">or</span> get_tensor_model_parallel_world_size()
+self.moe_tp_size = tp_size <span class="kw">or</span> (
+    get_tensor_model_parallel_world_size() // self.moe_ep_size
+)
+
+<span class="com"># 本地 expert 数量</span>
+<span class="kw">assert</span> num_experts % self.moe_ep_size == <span class="num">0</span>
+self.num_local_experts = num_experts // self.moe_ep_size
+
+<span class="com"># 中间层维度（如果 TP 还需进一步切分）</span>
+self.intermediate_size_per_partition = (
+    intermediate_size // self.moe_tp_size
+)</code></pre>
+</div>
+
+<div class="callout warn">
+<strong>约束条件：</strong> <code>ep_size × tp_size</code> 必须等于总的 tensor parallel world size。若 world_size=8 且 ep_size=4，则 tp_size=2。
+</div>
+
+<!-- Section: Forward -->
+<h2 id="forward"><span class="step">03</span>forward_impl 三步流程</h2>
+
+<p>FusedMoE 的前向计算遵循经典的 <strong>dispatch → compute → combine</strong> 三阶段模式：</p>
+
+<div class="card">
+<pre><code><span class="kw">def</span> <span class="fn">forward_impl</span>(self, hidden_states, router_logits, ...):
+    <span class="com"># ═══ Step 1: Dispatch ═══</span>
+    <span class="com"># 将 token 路由到对应的 expert (可能涉及跨 GPU 通信)</span>
+    dispatch_output = self.dispatcher.dispatch(
+        hidden_states=hidden_states,
+        router_logits=router_logits,
+        topk_ids=topk_ids,
+        topk_weights=topk_weights,
+        ...
+    )
+
+    <span class="com"># ═══ Step 2: Run MoE Core ═══</span>
+    <span class="com"># 在本地 expert 上执行 FFN 计算</span>
+    moe_output = self.run_moe_core(
+        dispatched_input=dispatch_output.dispatched_input,
+        topk_ids=dispatch_output.topk_ids,
+        topk_weights=dispatch_output.topk_weights,
+        ...
+    )
+
+    <span class="com"># ═══ Step 3: Combine ═══</span>
+    <span class="com"># 收集各 expert 的输出并加权求和</span>
+    final_hidden = self.dispatcher.combine(
+        moe_output=moe_output,
+        dispatch_output=dispatch_output,
+        ...
+    )
+    <span class="kw">return</span> final_hidden</code></pre>
+</div>
+
+<div class="grid cols-3">
+<div class="card">
+<h4>Dispatch</h4>
+<p>根据 topk_ids 将 token 发送到正确的 GPU/expert。单 GPU 时就是简单的 index；EP 时需要 all-to-all。</p>
+</div>
+<div class="card">
+<h4>Run MoE Core</h4>
+<p>核心 FFN 计算：gate_up_proj → activation → down_proj。使用 Triton fused kernel 提升效率。</p>
+</div>
+<div class="card">
+<h4>Combine</h4>
+<p>将各 expert 输出按 topk_weights 加权求和。EP 时需要 all-to-all 回传。</p>
+</div>
+</div>
+
+<!-- Section: Dispatcher -->
+<h2 id="dispatcher"><span class="step">04</span>Dispatcher 创建策略</h2>
+
+<p><code>create_moe_dispatcher()</code> 根据配置选择不同的 Dispatcher 实现：</p>
+
+<div class="card">
+<pre><code><span class="kw">def</span> <span class="fn">create_moe_dispatcher</span>(
+    a2a_backend: <span class="fn">str</span>,
+    ep_size: <span class="fn">int</span>,
+    num_experts: <span class="fn">int</span>,
+    num_local_experts: <span class="fn">int</span>,
+    ...
+) -> TokenDispatcher:
+    <span class="kw">if</span> ep_size == <span class="num">1</span>:
+        <span class="com"># 单 GPU，无需通信</span>
+        <span class="kw">return</span> <span class="fn">StandardDispatcher</span>(...)
+
+    <span class="kw">if</span> a2a_backend == <span class="str">"deepep_normal"</span>:
+        <span class="kw">return</span> <span class="fn">DeepEPDispatcherNormal</span>(...)
+    <span class="kw">elif</span> a2a_backend == <span class="str">"deepep_low_latency"</span>:
+        <span class="kw">return</span> <span class="fn">DeepEPDispatcherLowLatency</span>(...)
+    <span class="kw">elif</span> a2a_backend == <span class="str">"flashinfer"</span>:
+        <span class="kw">return</span> <span class="fn">FlashinferDispatcher</span>(...)
+    <span class="kw">else</span>:
+        <span class="kw">raise</span> ValueError(f<span class="str">"Unknown a2a_backend: {a2a_backend}"</span>)</code></pre>
+</div>
+
+<table>
+<thead>
+<tr><th>Dispatcher</th><th>通信方式</th><th>适用场景</th></tr>
+</thead>
+<tbody>
+<tr><td><code>StandardDispatcher</code></td><td>无通信（单GPU）</td><td>ep_size=1，调试/小规模</td></tr>
+<tr><td><code>DeepEPDispatcherNormal</code></td><td>异步 all-to-all</td><td>高吞吐 prefill 场景</td></tr>
+<tr><td><code>DeepEPDispatcherLowLatency</code></td><td>SM-managed RDMA</td><td>低延迟 decode 场景</td></tr>
+<tr><td><code>FlashinferDispatcher</code></td><td>Flashinfer a2a</td><td>替代 DeepEP 的通信方案</td></tr>
+</tbody>
+</table>
+
+<!-- Section: Weights -->
+<h2 id="weights"><span class="step">05</span>权重布局: w13 与 w2</h2>
+
+<p>MoE FFN 中有三个投影矩阵：gate_proj、up_proj、down_proj。SGLang 将 gate 和 up 融合为 <code>w13</code>：</p>
+
+<div class="card">
+<h3>融合策略</h3>
+<pre><code><span class="com"># w13 = [gate_proj, up_proj] 拼接 (SwiGLU 风格)</span>
+<span class="com"># Shape: [num_local_experts, 2 * intermediate_size_per_partition, hidden_size]</span>
+self.w13_weight = nn.Parameter(
+    torch.empty(
+        self.num_local_experts,
+        <span class="num">2</span> * self.intermediate_size_per_partition,  <span class="com"># gate + up 拼接</span>
+        self.hidden_size,
+    )
+)
+
+<span class="com"># w2 = down_proj</span>
+<span class="com"># Shape: [num_local_experts, hidden_size, intermediate_size_per_partition]</span>
+self.w2_weight = nn.Parameter(
+    torch.empty(
+        self.num_local_experts,
+        self.hidden_size,
+        self.intermediate_size_per_partition,
+    )
+)</code></pre>
+</div>
+
+<div class="callout">
+<strong>为什么融合 w13？</strong> gate_proj 和 up_proj 共享相同的输入 <code>x</code>，融合后只需一次 GEMM 就能得到 <code>[gate(x), up(x)]</code>，减少 kernel launch 和内存带宽开销。Triton kernel 对此做了专门优化。
+</div>
+
+<div class="card">
+<h3>计算流程示意</h3>
+<pre><code><span class="com"># 前向计算伪代码</span>
+gate_up = x @ w13.T        <span class="com"># [tokens, 2*intermediate]</span>
+gate, up = split(gate_up)  <span class="com"># 各 [tokens, intermediate]</span>
+activated = silu(gate) * up <span class="com"># SwiGLU activation</span>
+output = activated @ w2.T  <span class="com"># [tokens, hidden_size]</span></code></pre>
+</div>
+
+<!-- Section: Quant -->
+<h2 id="quant"><span class="step">06</span>量化方法选择</h2>
+
+<p>FusedMoE 通过 <code>quant_method</code> 接口支持多种量化方案，在 <code>__init__</code> 阶段确定：</p>
+
+<div class="card">
+<pre><code><span class="com"># 量化方法映射</span>
+<span class="kw">if</span> quant_config <span class="kw">is None</span>:
+    self.quant_method = <span class="fn">UnquantizedFusedMoEMethod</span>()
+<span class="kw">elif</span> isinstance(quant_config, Fp8Config):
+    self.quant_method = <span class="fn">Fp8MoEMethod</span>(quant_config)
+<span class="kw">elif</span> isinstance(quant_config, CompressedTensorsConfig):
+    self.quant_method = <span class="fn">CompressedTensorsMoEMethod</span>(quant_config)
+<span class="kw">elif</span> isinstance(quant_config, ModelOptConfig):
+    self.quant_method = <span class="fn">ModelOptFp8MoEMethod</span>(quant_config)
+...</code></pre>
+</div>
+
+<table>
+<thead>
+<tr><th>量化方法</th><th>精度</th><th>典型加速</th><th>说明</th></tr>
+</thead>
+<tbody>
+<tr><td><code>UnquantizedFusedMoEMethod</code></td><td>BF16/FP16</td><td>1x（基准）</td><td>无量化，精度最高</td></tr>
+<tr><td><code>Fp8MoEMethod</code></td><td>FP8 E4M3</td><td>~1.8x</td><td>支持 per-tensor 和 block-wise 两种 scale</td></tr>
+<tr><td><code>CompressedTensorsMoEMethod</code></td><td>INT8/FP8</td><td>~1.5-2x</td><td>vLLM 兼容的压缩格式</td></tr>
+<tr><td><code>ModelOptFp8MoEMethod</code></td><td>FP8</td><td>~1.8x</td><td>NVIDIA ModelOpt 工具生成的量化模型</td></tr>
+</tbody>
+</table>
+
+<!-- Section: CUDA Graph -->
+<h2 id="cuda-graph"><span class="step">07</span>CUDA Graph 兼容: Piecewise Capture</h2>
+
+<p>MoE 的动态路由（每次 token 分配不同）给 CUDA Graph 带来挑战。SGLang 使用 <strong>piecewise capture</strong> 策略：</p>
+
+<div class="card">
+<h3>问题与解决方案</h3>
+<pre><code><span class="com"># 问题：MoE 路由是动态的，topk_ids 每次不同</span>
+<span class="com"># → 直接用 CUDA Graph 捕获完整前向会失效</span>
+
+<span class="com"># 解决方案：分段捕获</span>
+<span class="com"># 1. Attention 部分可以安全地 CUDA Graph 捕获</span>
+<span class="com"># 2. MoE dispatch/combine 标记为 graph-breaking point</span>
+<span class="com"># 3. MoE core compute 可以捕获（输入已排好序）</span>
+
+<span class="com"># layer.py 中的标记</span>
+self.use_piecewise_cuda_graph = (
+    server_args.enable_cuda_graph
+    <span class="kw">and</span> self.ep_size > <span class="num">1</span>
+)
+
+<span class="com"># 在 forward 中根据标记决定是否断开 graph</span>
+<span class="kw">if</span> self.use_piecewise_cuda_graph:
+    <span class="com"># 插入 graph-breaking barrier</span>
+    torch.cuda.current_stream().synchronize()</code></pre>
+</div>
+
+<div class="callout info">
+<strong>Piecewise 含义：</strong> 不是把整个模型的前向作为一个 CUDA Graph 捕获，而是把它拆成多个片段（piece），每个片段内部是 Graph，片段之间允许动态逻辑。这样 MoE 的动态路由不会破坏其他部分的 Graph 加速。
+</div>
+
+<!-- Navigation -->
+<div class="nav">
+  <a href="03-topk-and-router.html">← 03 TopK 路由机制</a>
+  <a href="05-triton-kernel.html">05 Triton Kernel 深读 →</a>
+</div>
+
+<p class="foot">咕噜的学习笔记 · MoE Deep Dive · Page 04/07</p>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

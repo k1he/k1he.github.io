@@ -1,0 +1,786 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>C0 · CUDA 编程模型 · Grid / Block / Thread</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+@media (max-width:900px){.cols-2{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.type{color:#fb7185}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.run{background:#1a1f2b;border:1px dashed var(--brand);border-radius:10px;padding:10px 14px;font-family:"SF Mono",monospace;font-size:12.5px;color:var(--brand);margin:8px 0}
+.cmp{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:10px 0}
+.cmp pre{margin:0}
+.cmp .lbl{font-family:"SF Mono",monospace;font-size:12px;color:var(--mute);margin-bottom:6px}
+.cmp .l{color:var(--bad)}.cmp .r{color:var(--brand)}
+@media (max-width:700px){.cmp{grid-template-columns:1fr}}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>C0 · CUDA 编程模型 · Grid / Block / Thread <span class="tag">CUDA GEMM 系列 · 1/15</span></h1>
+<div class="sub">从 Triton 的 "program" 退一步，回到 CUDA 的原生抽象——你会看到 Triton 帮你隐藏了多少细节，同时获得 100% 的控制权。</div>
+
+<div class="toc">
+  <a href="#s1">§1 从 Triton 过来</a>
+  <a href="#s2">§2 三层并行模型</a>
+  <a href="#s3">§3 坐标系统</a>
+  <a href="#s4">§4 Kernel 启动</a>
+  <a href="#s5">§5 多维 Block/Grid</a>
+  <a href="#s6">§6 Warp</a>
+  <a href="#s7">§7 Grid-Stride Loop</a>
+  <a href="#s8">§8 完整代码</a>
+  <a href="#s9">§9 带走</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s1"><span class="step">§1</span>从 Triton 过来的你，需要知道什么变了</h2>
+
+<div class="card">
+<table>
+<thead><tr><th>Triton 你已经会的</th><th>CUDA 对应</th><th>新增的复杂度</th></tr></thead>
+<tbody>
+<tr><td><code>program</code></td><td>Threadblock (Block/CTA)</td><td>Block 内还有 threads</td></tr>
+<tr><td><code>program_id(0)</code></td><td><code>blockIdx.x</code></td><td>还有 <code>threadIdx.x</code></td></tr>
+<tr><td><code>BLOCK_SIZE</code> (编译器决定线程数)</td><td><code>blockDim.x</code> (你决定)</td><td>需要手动选</td></tr>
+<tr><td><code>tl.arange</code> 自动向量化</td><td>每个 thread 处理 1 个(或几个)元素</td><td>手动循环</td></tr>
+<tr><td><code>tl.load/store</code> (自动 coalesce)</td><td>手动保证 coalesced access</td><td>可能出错</td></tr>
+</tbody>
+</table>
+
+<div class="callout info">
+<b>核心对应关系：</b>Triton 的 1 个 program 对应 CUDA 的 1 个 Block。但 Triton 隐藏了 Block 内部的线程分工——CUDA 里你要亲自安排。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s2"><span class="step">§2</span>CUDA 的三层并行模型</h2>
+
+<div class="card">
+<h3>Grid → Block → Thread 层次结构</h3>
+
+<ul class="tight">
+  <li><b>Grid</b>：所有 blocks 的集合。维度：<code>gridDim.x / y / z</code></li>
+  <li><b>Block (CTA)</b>：一组可以协作的线程。维度：<code>blockDim.x / y / z</code>。Block 内线程共享 shared memory，可以 <code>__syncthreads()</code></li>
+  <li><b>Thread</b>：最小执行单位。每个 thread 有自己的 registers + local memory</li>
+</ul>
+
+<div class="svg-wrap" style="margin-top:16px">
+<svg viewBox="0 0 820 340" width="820">
+  <!-- Grid outer box -->
+  <rect x="20" y="20" width="780" height="300" rx="12" fill="none" stroke="#6ee7b7" stroke-width="2" stroke-dasharray="6,3"/>
+  <text x="40" y="46" fill="#6ee7b7" font-size="14" font-weight="700">Grid (gridDim.x = 4)</text>
+
+  <!-- Block 0 -->
+  <rect x="40" y="60" width="170" height="240" rx="8" fill="#161a23" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="55" y="84" fill="#7dd3fc" font-size="12" font-weight="600">Block 0</text>
+  <!-- Threads in Block 0 -->
+  <rect x="55" y="95" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="67" y="114" fill="#a78bfa" font-size="10">T0</text>
+  <rect x="125" y="95" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="137" y="114" fill="#a78bfa" font-size="10">T1</text>
+  <rect x="55" y="130" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="67" y="149" fill="#a78bfa" font-size="10">T2</text>
+  <rect x="125" y="130" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="137" y="149" fill="#a78bfa" font-size="10">T3</text>
+  <rect x="55" y="165" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="67" y="184" fill="#a78bfa" font-size="10">T4</text>
+  <rect x="125" y="165" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="137" y="184" fill="#a78bfa" font-size="10">T5</text>
+  <rect x="55" y="200" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="67" y="219" fill="#a78bfa" font-size="10">T6</text>
+  <rect x="125" y="200" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="137" y="219" fill="#a78bfa" font-size="10">T7</text>
+  <!-- shared mem -->
+  <rect x="55" y="240" width="130" height="24" rx="4" fill="rgba(251,191,36,.12)" stroke="#fbbf24" stroke-dasharray="3,2"/>
+  <text x="70" y="257" fill="#fbbf24" font-size="10">Shared Memory</text>
+  <text x="62" y="286" fill="#8b93a7" font-size="10">blockDim.x = 8</text>
+
+  <!-- Block 1 -->
+  <rect x="230" y="60" width="170" height="240" rx="8" fill="#161a23" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="245" y="84" fill="#7dd3fc" font-size="12" font-weight="600">Block 1</text>
+  <rect x="245" y="95" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="257" y="114" fill="#a78bfa" font-size="10">T0</text>
+  <rect x="315" y="95" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="327" y="114" fill="#a78bfa" font-size="10">T1</text>
+  <rect x="245" y="130" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="257" y="149" fill="#a78bfa" font-size="10">T2</text>
+  <rect x="315" y="130" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="327" y="149" fill="#a78bfa" font-size="10">T3</text>
+  <rect x="245" y="165" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="257" y="184" fill="#a78bfa" font-size="10">T4</text>
+  <rect x="315" y="165" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="327" y="184" fill="#a78bfa" font-size="10">T5</text>
+  <rect x="245" y="200" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="257" y="219" fill="#a78bfa" font-size="10">T6</text>
+  <rect x="315" y="200" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="327" y="219" fill="#a78bfa" font-size="10">T7</text>
+  <rect x="245" y="240" width="130" height="24" rx="4" fill="rgba(251,191,36,.12)" stroke="#fbbf24" stroke-dasharray="3,2"/>
+  <text x="260" y="257" fill="#fbbf24" font-size="10">Shared Memory</text>
+  <text x="252" y="286" fill="#8b93a7" font-size="10">blockDim.x = 8</text>
+
+  <!-- Block 2 -->
+  <rect x="420" y="60" width="170" height="240" rx="8" fill="#161a23" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="435" y="84" fill="#7dd3fc" font-size="12" font-weight="600">Block 2</text>
+  <rect x="435" y="95" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="447" y="114" fill="#a78bfa" font-size="10">T0</text>
+  <rect x="505" y="95" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="517" y="114" fill="#a78bfa" font-size="10">T1</text>
+  <rect x="435" y="130" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="447" y="149" fill="#a78bfa" font-size="10">T2</text>
+  <rect x="505" y="130" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="517" y="149" fill="#a78bfa" font-size="10">T3</text>
+  <rect x="435" y="165" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="447" y="184" fill="#a78bfa" font-size="10">T4</text>
+  <rect x="505" y="165" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="517" y="184" fill="#a78bfa" font-size="10">T5</text>
+  <rect x="435" y="200" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="447" y="219" fill="#a78bfa" font-size="10">T6</text>
+  <rect x="505" y="200" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="517" y="219" fill="#a78bfa" font-size="10">T7</text>
+  <rect x="435" y="240" width="130" height="24" rx="4" fill="rgba(251,191,36,.12)" stroke="#fbbf24" stroke-dasharray="3,2"/>
+  <text x="450" y="257" fill="#fbbf24" font-size="10">Shared Memory</text>
+  <text x="442" y="286" fill="#8b93a7" font-size="10">blockDim.x = 8</text>
+
+  <!-- Block 3 -->
+  <rect x="610" y="60" width="170" height="240" rx="8" fill="#161a23" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="625" y="84" fill="#7dd3fc" font-size="12" font-weight="600">Block 3</text>
+  <rect x="625" y="95" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="637" y="114" fill="#a78bfa" font-size="10">T0</text>
+  <rect x="695" y="95" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="707" y="114" fill="#a78bfa" font-size="10">T1</text>
+  <rect x="625" y="130" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="637" y="149" fill="#a78bfa" font-size="10">T2</text>
+  <rect x="695" y="130" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="707" y="149" fill="#a78bfa" font-size="10">T3</text>
+  <rect x="625" y="165" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="637" y="184" fill="#a78bfa" font-size="10">T4</text>
+  <rect x="695" y="165" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="707" y="184" fill="#a78bfa" font-size="10">T5</text>
+  <rect x="625" y="200" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="637" y="219" fill="#a78bfa" font-size="10">T6</text>
+  <rect x="695" y="200" width="60" height="28" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="707" y="219" fill="#a78bfa" font-size="10">T7</text>
+  <rect x="625" y="240" width="130" height="24" rx="4" fill="rgba(251,191,36,.12)" stroke="#fbbf24" stroke-dasharray="3,2"/>
+  <text x="640" y="257" fill="#fbbf24" font-size="10">Shared Memory</text>
+  <text x="632" y="286" fill="#8b93a7" font-size="10">blockDim.x = 8</text>
+</svg>
+</div>
+
+<h3>现代 GPU 关键数字 (A100 / H100)</h3>
+<div class="kv">
+  <span class="k">Max threads/block</span><span>1024</span>
+  <span class="k">Max blocks/SM</span><span>32（视资源占用，有时 16）</span>
+  <span class="k">典型选择</span><span>128 或 256 threads per block</span>
+  <span class="k">Shared mem/block</span><span>最高 164 KB (H100) / 164 KB (A100 可配)</span>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s3"><span class="step">§3</span>坐标系统 — threadIdx, blockIdx, blockDim</h2>
+
+<div class="card">
+<pre><span class="com">// 每个 thread 都能访问这些内置变量:</span>
+<span class="kw">int</span> tid  = <span class="fn">threadIdx</span>.x;    <span class="com">// 我在 Block 内的编号 [0, blockDim.x)</span>
+<span class="kw">int</span> bid  = <span class="fn">blockIdx</span>.x;     <span class="com">// 我所在 Block 的编号 [0, gridDim.x)</span>
+<span class="kw">int</span> bdim = <span class="fn">blockDim</span>.x;     <span class="com">// 一个 Block 里有多少 threads</span>
+
+<span class="com">// 全局唯一编号:</span>
+<span class="kw">int</span> global_id = bid * bdim + tid;</pre>
+
+<div class="svg-wrap" style="margin-top:16px">
+<svg viewBox="0 0 780 260" width="780">
+  <!-- Block 0 -->
+  <rect x="20" y="50" width="170" height="140" rx="8" fill="#161a23" stroke="#7dd3fc"/>
+  <text x="30" y="42" fill="#7dd3fc" font-size="12" font-weight="600">Block 0 (blockIdx=0)</text>
+  <rect x="35" y="65" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="44" y="84" fill="#e6e8ee" font-size="10">tid=0</text>
+  <text x="44" y="96" fill="#6ee7b7" font-size="9">gid=0</text>
+  <rect x="110" y="65" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="119" y="84" fill="#e6e8ee" font-size="10">tid=1</text>
+  <text x="119" y="96" fill="#6ee7b7" font-size="9">gid=1</text>
+  <rect x="35" y="105" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="44" y="124" fill="#e6e8ee" font-size="10">tid=2</text>
+  <text x="44" y="136" fill="#6ee7b7" font-size="9">gid=2</text>
+  <rect x="110" y="105" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="119" y="124" fill="#e6e8ee" font-size="10">tid=3</text>
+  <text x="119" y="136" fill="#6ee7b7" font-size="9">gid=3</text>
+
+  <!-- Block 1 -->
+  <rect x="210" y="50" width="170" height="140" rx="8" fill="#161a23" stroke="#7dd3fc"/>
+  <text x="220" y="42" fill="#7dd3fc" font-size="12" font-weight="600">Block 1 (blockIdx=1)</text>
+  <rect x="225" y="65" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="234" y="84" fill="#e6e8ee" font-size="10">tid=0</text>
+  <text x="234" y="96" fill="#6ee7b7" font-size="9">gid=4</text>
+  <rect x="300" y="65" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="309" y="84" fill="#e6e8ee" font-size="10">tid=1</text>
+  <text x="309" y="96" fill="#6ee7b7" font-size="9">gid=5</text>
+  <rect x="225" y="105" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="234" y="124" fill="#e6e8ee" font-size="10">tid=2</text>
+  <text x="234" y="136" fill="#6ee7b7" font-size="9">gid=6</text>
+  <rect x="300" y="105" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="309" y="124" fill="#e6e8ee" font-size="10">tid=3</text>
+  <text x="309" y="136" fill="#6ee7b7" font-size="9">gid=7</text>
+
+  <!-- Block 2 with highlight -->
+  <rect x="400" y="50" width="170" height="140" rx="8" fill="#161a23" stroke="#fbbf24" stroke-width="2"/>
+  <text x="410" y="42" fill="#fbbf24" font-size="12" font-weight="600">Block 2 (blockIdx=2)</text>
+  <rect x="415" y="65" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="424" y="84" fill="#e6e8ee" font-size="10">tid=0</text>
+  <text x="424" y="96" fill="#6ee7b7" font-size="9">gid=8</text>
+  <!-- Highlighted thread -->
+  <rect x="490" y="65" width="65" height="30" rx="4" fill="rgba(251,191,36,.15)" stroke="#fbbf24" stroke-width="2"/>
+  <text x="499" y="84" fill="#fbbf24" font-size="10" font-weight="700">tid=1</text>
+  <text x="499" y="96" fill="#fbbf24" font-size="9" font-weight="700">gid=9</text>
+  <rect x="415" y="105" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="424" y="124" fill="#e6e8ee" font-size="10">tid=2</text>
+  <text x="424" y="136" fill="#6ee7b7" font-size="9">gid=10</text>
+  <rect x="490" y="105" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="499" y="124" fill="#e6e8ee" font-size="10">tid=3</text>
+  <text x="499" y="136" fill="#6ee7b7" font-size="9">gid=11</text>
+
+  <!-- Block 3 -->
+  <rect x="590" y="50" width="170" height="140" rx="8" fill="#161a23" stroke="#7dd3fc"/>
+  <text x="600" y="42" fill="#7dd3fc" font-size="12" font-weight="600">Block 3 (blockIdx=3)</text>
+  <rect x="605" y="65" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="614" y="84" fill="#e6e8ee" font-size="10">tid=0</text>
+  <text x="614" y="96" fill="#6ee7b7" font-size="9">gid=12</text>
+  <rect x="680" y="65" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="689" y="84" fill="#e6e8ee" font-size="10">tid=1</text>
+  <text x="689" y="96" fill="#6ee7b7" font-size="9">gid=13</text>
+  <rect x="605" y="105" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="614" y="124" fill="#e6e8ee" font-size="10">tid=2</text>
+  <text x="614" y="136" fill="#6ee7b7" font-size="9">gid=14</text>
+  <rect x="680" y="105" width="65" height="30" rx="4" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="689" y="124" fill="#e6e8ee" font-size="10">tid=3</text>
+  <text x="689" y="136" fill="#6ee7b7" font-size="9">gid=15</text>
+
+  <!-- Formula annotation -->
+  <line x1="522" y1="100" x2="522" y2="210" stroke="#fbbf24" stroke-dasharray="3,2"/>
+  <rect x="380" y="210" width="310" height="36" rx="6" fill="rgba(251,191,36,.08)" stroke="#fbbf24"/>
+  <text x="395" y="234" fill="#fbbf24" font-size="12" font-family="SF Mono,monospace">global_id = 2 * 4 + 1 = 9</text>
+
+  <!-- Legend -->
+  <text x="20" y="250" fill="#8b93a7" font-size="11">blockDim.x = 4 · gridDim.x = 4 · 总线程数 = 16</text>
+</svg>
+</div>
+
+<h3>对比 Triton</h3>
+<div class="cmp">
+  <div>
+    <div class="lbl"><span class="r">Triton</span> — 一个 program 处理 BLOCK_SIZE 个元素</div>
+<pre><span class="com"># Triton</span>
+pid = tl.program_id(<span class="num">0</span>)
+offsets = pid * BLOCK_SIZE + tl.arange(<span class="num">0</span>, BLOCK_SIZE)</pre>
+  </div>
+  <div>
+    <div class="lbl"><span class="l">CUDA</span> — 一个 thread 处理 1 个元素</div>
+<pre><span class="com">// CUDA</span>
+<span class="kw">int</span> idx = blockIdx.x * blockDim.x + threadIdx.x;
+<span class="com">// 或者一个 thread 处理多个元素 (grid-stride loop)</span></pre>
+  </div>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s4"><span class="step">§4</span>Kernel 函数定义与启动</h2>
+
+<div class="card">
+<pre><span class="com">// __global__ = 可以从 CPU 调用、在 GPU 上执行</span>
+<span class="kw">__global__</span> <span class="type">void</span> <span class="fn">my_kernel</span>(<span class="type">float</span>* input, <span class="type">float</span>* output, <span class="type">int</span> n) {
+    <span class="kw">int</span> idx = blockIdx.x * blockDim.x + threadIdx.x;
+    <span class="kw">if</span> (idx &lt; n) {
+        output[idx] = input[idx] * <span class="num">2.0f</span>;
+    }
+}
+
+<span class="com">// 启动方式: &lt;&lt;&lt;grid_size, block_size&gt;&gt;&gt;</span>
+<span class="kw">int</span> n = <span class="num">1000000</span>;
+<span class="kw">int</span> block_size = <span class="num">256</span>;
+<span class="kw">int</span> grid_size = (n + block_size - <span class="num">1</span>) / block_size;  <span class="com">// cdiv</span>
+<span class="fn">my_kernel</span>&lt;&lt;&lt;grid_size, block_size&gt;&gt;&gt;(d_input, d_output, n);</pre>
+
+<h3>关键概念</h3>
+<ul class="tight">
+  <li><code>__global__</code>：kernel 声明——表示这个函数从 CPU 调用、在 GPU 上执行</li>
+  <li><code>&lt;&lt;&lt;grid, block&gt;&gt;&gt;</code>：启动配置（对应 Triton 的 <code>kernel[grid](...)</code>）</li>
+  <li>返回类型必须是 <code>void</code></li>
+  <li>每个 thread 执行一遍 kernel 函数体——所以需要 <code>if (idx &lt; n)</code> 边界检查</li>
+</ul>
+
+<div class="callout">
+<b>Triton 对比：</b>Triton 中写 <code>mask = offsets &lt; n</code> 做边界检查，CUDA 中用 <code>if (idx &lt; n)</code>——本质相同，只是粒度不同（Triton 是 block 级向量化 mask，CUDA 是 thread 级标量 if）。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s5"><span class="step">§5</span>多维 Block 和 Grid</h2>
+
+<div class="card">
+<pre><span class="com">// 2D block (常用于矩阵操作)</span>
+<span class="type">dim3</span> block(<span class="num">16</span>, <span class="num">16</span>);    <span class="com">// 16×16 = 256 threads per block</span>
+<span class="type">dim3</span> grid(
+    (N + <span class="num">15</span>) / <span class="num">16</span>,     <span class="com">// X 方向有多少个 block</span>
+    (M + <span class="num">15</span>) / <span class="num">16</span>      <span class="com">// Y 方向有多少个 block</span>
+);
+<span class="fn">kernel</span>&lt;&lt;&lt;grid, block&gt;&gt;&gt;(...);
+
+<span class="com">// kernel 内部:</span>
+<span class="kw">int</span> col = blockIdx.x * blockDim.x + threadIdx.x;
+<span class="kw">int</span> row = blockIdx.y * blockDim.y + threadIdx.y;
+<span class="kw">if</span> (row &lt; M &amp;&amp; col &lt; N) {
+    C[row * N + col] = ...;
+}</pre>
+
+<div class="svg-wrap" style="margin-top:16px">
+<svg viewBox="0 0 700 400" width="700">
+  <!-- Grid label -->
+  <text x="20" y="22" fill="#6ee7b7" font-size="14" font-weight="700">2D Grid (gridDim = 3×2)</text>
+
+  <!-- Grid outline -->
+  <rect x="20" y="35" width="480" height="350" rx="10" fill="none" stroke="#6ee7b7" stroke-width="1.5" stroke-dasharray="5,3"/>
+
+  <!-- Block (0,0) -->
+  <rect x="35" y="50" width="140" height="155" rx="6" fill="#161a23" stroke="#7dd3fc"/>
+  <text x="45" y="68" fill="#7dd3fc" font-size="10">Block(0,0)</text>
+  <!-- 4x4 mini threads -->
+  <g fill="#1a1f2b" stroke="#a78bfa" stroke-width="0.5">
+    <rect x="45" y="78" width="28" height="22" rx="3"/>
+    <rect x="77" y="78" width="28" height="22" rx="3"/>
+    <rect x="109" y="78" width="28" height="22" rx="3"/>
+    <rect x="141" y="78" width="28" height="22" rx="3"/>
+    <rect x="45" y="104" width="28" height="22" rx="3"/>
+    <rect x="77" y="104" width="28" height="22" rx="3"/>
+    <rect x="109" y="104" width="28" height="22" rx="3"/>
+    <rect x="141" y="104" width="28" height="22" rx="3"/>
+    <rect x="45" y="130" width="28" height="22" rx="3"/>
+    <rect x="77" y="130" width="28" height="22" rx="3"/>
+    <rect x="109" y="130" width="28" height="22" rx="3"/>
+    <rect x="141" y="130" width="28" height="22" rx="3"/>
+    <rect x="45" y="156" width="28" height="22" rx="3"/>
+    <rect x="77" y="156" width="28" height="22" rx="3"/>
+    <rect x="109" y="156" width="28" height="22" rx="3"/>
+    <rect x="141" y="156" width="28" height="22" rx="3"/>
+  </g>
+  <text x="55" y="196" fill="#8b93a7" font-size="9">4×4 threads</text>
+
+  <!-- Block (1,0) -->
+  <rect x="190" y="50" width="140" height="155" rx="6" fill="#161a23" stroke="#7dd3fc"/>
+  <text x="200" y="68" fill="#7dd3fc" font-size="10">Block(1,0)</text>
+  <g fill="#1a1f2b" stroke="#a78bfa" stroke-width="0.5">
+    <rect x="200" y="78" width="28" height="22" rx="3"/>
+    <rect x="232" y="78" width="28" height="22" rx="3"/>
+    <rect x="264" y="78" width="28" height="22" rx="3"/>
+    <rect x="296" y="78" width="28" height="22" rx="3"/>
+    <rect x="200" y="104" width="28" height="22" rx="3"/>
+    <rect x="232" y="104" width="28" height="22" rx="3"/>
+    <rect x="264" y="104" width="28" height="22" rx="3"/>
+    <rect x="296" y="104" width="28" height="22" rx="3"/>
+    <rect x="200" y="130" width="28" height="22" rx="3"/>
+    <rect x="232" y="130" width="28" height="22" rx="3"/>
+    <rect x="264" y="130" width="28" height="22" rx="3"/>
+    <rect x="296" y="130" width="28" height="22" rx="3"/>
+    <rect x="200" y="156" width="28" height="22" rx="3"/>
+    <rect x="232" y="156" width="28" height="22" rx="3"/>
+    <rect x="264" y="156" width="28" height="22" rx="3"/>
+    <rect x="296" y="156" width="28" height="22" rx="3"/>
+  </g>
+
+  <!-- Block (2,0) -->
+  <rect x="345" y="50" width="140" height="155" rx="6" fill="#161a23" stroke="#7dd3fc"/>
+  <text x="355" y="68" fill="#7dd3fc" font-size="10">Block(2,0)</text>
+  <g fill="#1a1f2b" stroke="#a78bfa" stroke-width="0.5">
+    <rect x="355" y="78" width="28" height="22" rx="3"/>
+    <rect x="387" y="78" width="28" height="22" rx="3"/>
+    <rect x="419" y="78" width="28" height="22" rx="3"/>
+    <rect x="451" y="78" width="28" height="22" rx="3"/>
+    <rect x="355" y="104" width="28" height="22" rx="3"/>
+    <rect x="387" y="104" width="28" height="22" rx="3"/>
+    <rect x="419" y="104" width="28" height="22" rx="3"/>
+    <rect x="451" y="104" width="28" height="22" rx="3"/>
+    <rect x="355" y="130" width="28" height="22" rx="3"/>
+    <rect x="387" y="130" width="28" height="22" rx="3"/>
+    <rect x="419" y="130" width="28" height="22" rx="3"/>
+    <rect x="451" y="130" width="28" height="22" rx="3"/>
+    <rect x="355" y="156" width="28" height="22" rx="3"/>
+    <rect x="387" y="156" width="28" height="22" rx="3"/>
+    <rect x="419" y="156" width="28" height="22" rx="3"/>
+    <rect x="451" y="156" width="28" height="22" rx="3"/>
+  </g>
+
+  <!-- Block (0,1) -->
+  <rect x="35" y="220" width="140" height="155" rx="6" fill="#161a23" stroke="#7dd3fc"/>
+  <text x="45" y="238" fill="#7dd3fc" font-size="10">Block(0,1)</text>
+  <g fill="#1a1f2b" stroke="#a78bfa" stroke-width="0.5">
+    <rect x="45" y="248" width="28" height="22" rx="3"/>
+    <rect x="77" y="248" width="28" height="22" rx="3"/>
+    <rect x="109" y="248" width="28" height="22" rx="3"/>
+    <rect x="141" y="248" width="28" height="22" rx="3"/>
+    <rect x="45" y="274" width="28" height="22" rx="3"/>
+    <rect x="77" y="274" width="28" height="22" rx="3"/>
+    <rect x="109" y="274" width="28" height="22" rx="3"/>
+    <rect x="141" y="274" width="28" height="22" rx="3"/>
+    <rect x="45" y="300" width="28" height="22" rx="3"/>
+    <rect x="77" y="300" width="28" height="22" rx="3"/>
+    <rect x="109" y="300" width="28" height="22" rx="3"/>
+    <rect x="141" y="300" width="28" height="22" rx="3"/>
+    <rect x="45" y="326" width="28" height="22" rx="3"/>
+    <rect x="77" y="326" width="28" height="22" rx="3"/>
+    <rect x="109" y="326" width="28" height="22" rx="3"/>
+    <rect x="141" y="326" width="28" height="22" rx="3"/>
+  </g>
+
+  <!-- Block (1,1) highlight -->
+  <rect x="190" y="220" width="140" height="155" rx="6" fill="rgba(251,191,36,.05)" stroke="#fbbf24" stroke-width="2"/>
+  <text x="200" y="238" fill="#fbbf24" font-size="10" font-weight="600">Block(1,1)</text>
+  <g fill="#1a1f2b" stroke="#a78bfa" stroke-width="0.5">
+    <rect x="200" y="248" width="28" height="22" rx="3"/>
+    <rect x="232" y="248" width="28" height="22" rx="3"/>
+    <rect x="264" y="248" width="28" height="22" rx="3"/>
+    <rect x="296" y="248" width="28" height="22" rx="3"/>
+    <rect x="200" y="274" width="28" height="22" rx="3"/>
+    <rect x="232" y="274" width="28" height="22" rx="3"/>
+  </g>
+  <!-- Highlighted single thread -->
+  <rect x="264" y="274" width="28" height="22" rx="3" fill="rgba(251,191,36,.2)" stroke="#fbbf24" stroke-width="1.5"/>
+  <g fill="#1a1f2b" stroke="#a78bfa" stroke-width="0.5">
+    <rect x="296" y="274" width="28" height="22" rx="3"/>
+    <rect x="200" y="300" width="28" height="22" rx="3"/>
+    <rect x="232" y="300" width="28" height="22" rx="3"/>
+    <rect x="264" y="300" width="28" height="22" rx="3"/>
+    <rect x="296" y="300" width="28" height="22" rx="3"/>
+    <rect x="200" y="326" width="28" height="22" rx="3"/>
+    <rect x="232" y="326" width="28" height="22" rx="3"/>
+    <rect x="264" y="326" width="28" height="22" rx="3"/>
+    <rect x="296" y="326" width="28" height="22" rx="3"/>
+  </g>
+
+  <!-- Block (2,1) -->
+  <rect x="345" y="220" width="140" height="155" rx="6" fill="#161a23" stroke="#7dd3fc"/>
+  <text x="355" y="238" fill="#7dd3fc" font-size="10">Block(2,1)</text>
+  <g fill="#1a1f2b" stroke="#a78bfa" stroke-width="0.5">
+    <rect x="355" y="248" width="28" height="22" rx="3"/>
+    <rect x="387" y="248" width="28" height="22" rx="3"/>
+    <rect x="419" y="248" width="28" height="22" rx="3"/>
+    <rect x="451" y="248" width="28" height="22" rx="3"/>
+    <rect x="355" y="274" width="28" height="22" rx="3"/>
+    <rect x="387" y="274" width="28" height="22" rx="3"/>
+    <rect x="419" y="274" width="28" height="22" rx="3"/>
+    <rect x="451" y="274" width="28" height="22" rx="3"/>
+    <rect x="355" y="300" width="28" height="22" rx="3"/>
+    <rect x="387" y="300" width="28" height="22" rx="3"/>
+    <rect x="419" y="300" width="28" height="22" rx="3"/>
+    <rect x="451" y="300" width="28" height="22" rx="3"/>
+    <rect x="355" y="326" width="28" height="22" rx="3"/>
+    <rect x="387" y="326" width="28" height="22" rx="3"/>
+    <rect x="419" y="326" width="28" height="22" rx="3"/>
+    <rect x="451" y="326" width="28" height="22" rx="3"/>
+  </g>
+
+  <!-- Annotation for highlighted thread -->
+  <line x1="278" y1="296" x2="540" y2="320" stroke="#fbbf24" stroke-dasharray="3,2"/>
+  <rect x="520" y="290" width="165" height="80" rx="6" fill="rgba(251,191,36,.08)" stroke="#fbbf24"/>
+  <text x="535" y="312" fill="#fbbf24" font-size="10" font-family="SF Mono,monospace">blockIdx  = (1, 1)</text>
+  <text x="535" y="330" fill="#fbbf24" font-size="10" font-family="SF Mono,monospace">threadIdx = (2, 1)</text>
+  <text x="535" y="350" fill="#fbbf24" font-size="10" font-family="SF Mono,monospace">col = 1*4+2 = 6</text>
+  <text x="535" y="365" fill="#fbbf24" font-size="10" font-family="SF Mono,monospace">row = 1*4+1 = 5</text>
+
+  <!-- Axis labels -->
+  <text x="250" y="396" fill="#8b93a7" font-size="11" text-anchor="middle">blockIdx.x →</text>
+  <text x="510" y="210" fill="#8b93a7" font-size="11" transform="rotate(-90,510,210)">blockIdx.y →</text>
+</svg>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s6"><span class="step">§6</span>Warp — 你必须知道的隐藏层</h2>
+
+<div class="card">
+<div class="callout warn">
+<b>Triton 完全隐藏了这一层</b>，但在 CUDA 中它决定了性能。
+</div>
+
+<h3>基本事实</h3>
+<ul class="tight">
+  <li><b>32 threads = 1 warp</b></li>
+  <li>一个 warp 内的 32 个 thread <b>同步执行同一条指令</b>（SIMT — Single Instruction, Multiple Threads）</li>
+  <li>Block 被自动划分为 warps：256 threads = 8 warps</li>
+  <li>Warp 是 GPU 实际调度的最小单位</li>
+</ul>
+
+<div class="svg-wrap" style="margin-top:16px">
+<svg viewBox="0 0 700 170" width="700">
+  <!-- Block outline -->
+  <rect x="10" y="10" width="680" height="150" rx="8" fill="none" stroke="#7dd3fc" stroke-dasharray="4,2"/>
+  <text x="20" y="30" fill="#7dd3fc" font-size="12" font-weight="600">Block (256 threads)</text>
+
+  <!-- Warp 0 -->
+  <rect x="20" y="42" width="75" height="45" rx="5" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="32" y="60" fill="#a78bfa" font-size="10" font-weight="600">Warp 0</text>
+  <text x="32" y="76" fill="#8b93a7" font-size="9">T0 – T31</text>
+
+  <!-- Warp 1 -->
+  <rect x="103" y="42" width="75" height="45" rx="5" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="115" y="60" fill="#a78bfa" font-size="10" font-weight="600">Warp 1</text>
+  <text x="115" y="76" fill="#8b93a7" font-size="9">T32 – T63</text>
+
+  <!-- Warp 2 -->
+  <rect x="186" y="42" width="75" height="45" rx="5" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="198" y="60" fill="#a78bfa" font-size="10" font-weight="600">Warp 2</text>
+  <text x="198" y="76" fill="#8b93a7" font-size="9">T64 – T95</text>
+
+  <!-- Warp 3 -->
+  <rect x="269" y="42" width="75" height="45" rx="5" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="281" y="60" fill="#a78bfa" font-size="10" font-weight="600">Warp 3</text>
+  <text x="281" y="76" fill="#8b93a7" font-size="9">T96 – T127</text>
+
+  <!-- Warp 4 -->
+  <rect x="352" y="42" width="75" height="45" rx="5" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="364" y="60" fill="#a78bfa" font-size="10" font-weight="600">Warp 4</text>
+  <text x="364" y="76" fill="#8b93a7" font-size="9">T128–T159</text>
+
+  <!-- Warp 5 -->
+  <rect x="435" y="42" width="75" height="45" rx="5" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="447" y="60" fill="#a78bfa" font-size="10" font-weight="600">Warp 5</text>
+  <text x="447" y="76" fill="#8b93a7" font-size="9">T160–T191</text>
+
+  <!-- Warp 6 -->
+  <rect x="518" y="42" width="75" height="45" rx="5" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="530" y="60" fill="#a78bfa" font-size="10" font-weight="600">Warp 6</text>
+  <text x="530" y="76" fill="#8b93a7" font-size="9">T192–T223</text>
+
+  <!-- Warp 7 -->
+  <rect x="601" y="42" width="75" height="45" rx="5" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="613" y="60" fill="#a78bfa" font-size="10" font-weight="600">Warp 7</text>
+  <text x="613" y="76" fill="#8b93a7" font-size="9">T224–T255</text>
+
+  <!-- SIMT annotation -->
+  <rect x="20" y="100" width="656" height="50" rx="6" fill="rgba(167,139,250,.06)" stroke="#a78bfa" stroke-dasharray="3,2"/>
+  <text x="35" y="120" fill="#a78bfa" font-size="11">同一条指令 (SIMT)</text>
+  <text x="35" y="138" fill="#8b93a7" font-size="10">Warp 内 32 个 thread 同步执行同一条 instruction（lock-step）—— GPU 实际调度的最小单位</text>
+</svg>
+</div>
+
+<h3>性能关键推论</h3>
+<table>
+<thead><tr><th>现象</th><th>原因</th><th>后果</th></tr></thead>
+<tbody>
+<tr><td><b>分支发散</b> (Warp Divergence)</td><td>同一 warp 内 if-else → 两个分支都要执行</td><td>性能减半（串行化）</td></tr>
+<tr><td><b>内存合并</b> (Coalesced Access)</td><td>同一 warp 内 threads 访问连续地址</td><td>一次内存事务（高带宽利用率）</td></tr>
+<tr><td><b>天然同步</b></td><td>Warp 内 32 threads lock-step 执行</td><td>不需要 <code>__syncthreads()</code>，可用 <code>__shfl_sync</code> 原语</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>当你听到 "warp divergence" 或 "bank conflict" 时</b>，本质都是 warp 这一层的问题。Triton 编译器自动避免了大部分 warp 级问题——CUDA 里你要自己注意。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s7"><span class="step">§7</span>Grid-Stride Loop — 一个 thread 处理多个元素</h2>
+
+<div class="card">
+<div class="cmp">
+  <div>
+    <div class="lbl"><span class="l">不好</span> — 每个 thread 只处理一个元素，grid 要很大</div>
+<pre><span class="kw">__global__</span> <span class="type">void</span> <span class="fn">add_bad</span>(<span class="type">float</span>* a, <span class="type">float</span>* b,
+                       <span class="type">float</span>* c, <span class="type">int</span> n) {
+    <span class="kw">int</span> idx = blockIdx.x * blockDim.x
+            + threadIdx.x;
+    <span class="kw">if</span> (idx &lt; n)
+        c[idx] = a[idx] + b[idx];
+}</pre>
+  </div>
+  <div>
+    <div class="lbl"><span class="r">好</span> — Grid-stride loop，每个 thread 处理多个元素</div>
+<pre><span class="kw">__global__</span> <span class="type">void</span> <span class="fn">add_good</span>(<span class="type">float</span>* a, <span class="type">float</span>* b,
+                        <span class="type">float</span>* c, <span class="type">int</span> n) {
+    <span class="kw">int</span> idx = blockIdx.x * blockDim.x
+            + threadIdx.x;
+    <span class="kw">int</span> stride = blockDim.x * gridDim.x;
+    <span class="kw">for</span> (<span class="kw">int</span> i = idx; i &lt; n; i += stride) {
+        c[i] = a[i] + b[i];
+    }
+}</pre>
+  </div>
+</div>
+
+<div class="callout info">
+<b>Grid-stride loop 的好处：</b>grid 可以小于数据量，线程复用减少 launch overhead。适用于超大数据集。<br><br>
+<b>但在 GEMM 中我们通常不用这个</b>——每个 block 负责一个固定的输出 tile。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s8"><span class="step">§8</span>完整代码：从 CPU 到 GPU 的完整流程</h2>
+
+<div class="card">
+<pre><span class="com">#include &lt;cuda_runtime.h&gt;
+#include &lt;stdio.h&gt;</span>
+
+<span class="kw">__global__</span> <span class="type">void</span> <span class="fn">vector_add</span>(<span class="type">float</span>* a, <span class="type">float</span>* b, <span class="type">float</span>* c, <span class="type">int</span> n) {
+    <span class="kw">int</span> idx = blockIdx.x * blockDim.x + threadIdx.x;
+    <span class="kw">if</span> (idx &lt; n) c[idx] = a[idx] + b[idx];
+}
+
+<span class="type">int</span> <span class="fn">main</span>() {
+    <span class="kw">int</span> n = <span class="num">1</span> &lt;&lt; <span class="num">20</span>;  <span class="com">// 1M elements</span>
+    <span class="type">size_t</span> bytes = n * <span class="kw">sizeof</span>(<span class="type">float</span>);
+
+    <span class="com">// Host memory</span>
+    <span class="type">float</span> *h_a = (<span class="type">float</span>*)<span class="fn">malloc</span>(bytes);
+    <span class="type">float</span> *h_b = (<span class="type">float</span>*)<span class="fn">malloc</span>(bytes);
+    <span class="type">float</span> *h_c = (<span class="type">float</span>*)<span class="fn">malloc</span>(bytes);
+
+    <span class="com">// Init</span>
+    <span class="kw">for</span> (<span class="kw">int</span> i = <span class="num">0</span>; i &lt; n; i++) { h_a[i] = <span class="num">1.0f</span>; h_b[i] = <span class="num">2.0f</span>; }
+
+    <span class="com">// Device memory</span>
+    <span class="type">float</span> *d_a, *d_b, *d_c;
+    <span class="fn">cudaMalloc</span>(&amp;d_a, bytes);
+    <span class="fn">cudaMalloc</span>(&amp;d_b, bytes);
+    <span class="fn">cudaMalloc</span>(&amp;d_c, bytes);
+
+    <span class="com">// Copy H→D</span>
+    <span class="fn">cudaMemcpy</span>(d_a, h_a, bytes, cudaMemcpyHostToDevice);
+    <span class="fn">cudaMemcpy</span>(d_b, h_b, bytes, cudaMemcpyHostToDevice);
+
+    <span class="com">// Launch</span>
+    <span class="kw">int</span> block_size = <span class="num">256</span>;
+    <span class="kw">int</span> grid_size = (n + block_size - <span class="num">1</span>) / block_size;
+    <span class="fn">vector_add</span>&lt;&lt;&lt;grid_size, block_size&gt;&gt;&gt;(d_a, d_b, d_c, n);
+
+    <span class="com">// Copy D→H</span>
+    <span class="fn">cudaMemcpy</span>(h_c, d_c, bytes, cudaMemcpyDeviceToHost);
+
+    <span class="com">// Verify</span>
+    <span class="fn">printf</span>(<span class="str">"c[0] = %f (expected 3.0)\n"</span>, h_c[<span class="num">0</span>]);
+
+    <span class="com">// Cleanup</span>
+    <span class="fn">cudaFree</span>(d_a); <span class="fn">cudaFree</span>(d_b); <span class="fn">cudaFree</span>(d_c);
+    <span class="fn">free</span>(h_a); <span class="fn">free</span>(h_b); <span class="fn">free</span>(h_c);
+    <span class="kw">return</span> <span class="num">0</span>;
+}</pre>
+
+<div class="run">$ nvcc -o add add.cu &amp;&amp; ./add</div>
+
+<h3>执行流程</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 700 100" width="700">
+  <!-- Steps -->
+  <rect x="10" y="25" width="85" height="50" rx="6" fill="#1a1f2b" stroke="#7dd3fc"/>
+  <text x="22" y="48" fill="#7dd3fc" font-size="10" font-weight="600">① malloc</text>
+  <text x="22" y="63" fill="#8b93a7" font-size="9">Host + Device</text>
+
+  <polygon points="100,50 110,45 110,55" fill="#6ee7b7"/>
+
+  <rect x="115" y="25" width="85" height="50" rx="6" fill="#1a1f2b" stroke="#7dd3fc"/>
+  <text x="127" y="48" fill="#7dd3fc" font-size="10" font-weight="600">② memcpy</text>
+  <text x="127" y="63" fill="#8b93a7" font-size="9">H → D</text>
+
+  <polygon points="205,50 215,45 215,55" fill="#6ee7b7"/>
+
+  <rect x="220" y="25" width="95" height="50" rx="6" fill="rgba(110,231,183,.1)" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="232" y="48" fill="#6ee7b7" font-size="10" font-weight="700">③ kernel</text>
+  <text x="232" y="63" fill="#6ee7b7" font-size="9">GPU 并行执行</text>
+
+  <polygon points="320,50 330,45 330,55" fill="#6ee7b7"/>
+
+  <rect x="335" y="25" width="85" height="50" rx="6" fill="#1a1f2b" stroke="#7dd3fc"/>
+  <text x="347" y="48" fill="#7dd3fc" font-size="10" font-weight="600">④ memcpy</text>
+  <text x="347" y="63" fill="#8b93a7" font-size="9">D → H</text>
+
+  <polygon points="425,50 435,45 435,55" fill="#6ee7b7"/>
+
+  <rect x="440" y="25" width="85" height="50" rx="6" fill="#1a1f2b" stroke="#7dd3fc"/>
+  <text x="452" y="48" fill="#7dd3fc" font-size="10" font-weight="600">⑤ verify</text>
+  <text x="452" y="63" fill="#8b93a7" font-size="9">CPU 检查</text>
+
+  <polygon points="530,50 540,45 540,55" fill="#6ee7b7"/>
+
+  <rect x="545" y="25" width="85" height="50" rx="6" fill="#1a1f2b" stroke="#7dd3fc"/>
+  <text x="557" y="48" fill="#7dd3fc" font-size="10" font-weight="600">⑥ free</text>
+  <text x="557" y="63" fill="#8b93a7" font-size="9">释放内存</text>
+
+  <!-- Labels -->
+  <text x="10" y="92" fill="#8b93a7" font-size="9">CPU 端</text>
+  <text x="232" y="92" fill="#6ee7b7" font-size="9">GPU 端</text>
+</svg>
+</div>
+
+<h3>步骤对照表</h3>
+<table>
+<thead><tr><th>步骤</th><th>API</th><th>说明</th></tr></thead>
+<tbody>
+<tr><td>1. 分配 Host 内存</td><td><code>malloc</code></td><td>CPU 端数据</td></tr>
+<tr><td>2. 分配 Device 内存</td><td><code>cudaMalloc</code></td><td>GPU 显存</td></tr>
+<tr><td>3. 拷贝 H→D</td><td><code>cudaMemcpy(..., H2D)</code></td><td>通过 PCIe/NVLink</td></tr>
+<tr><td>4. 启动 kernel</td><td><code>kernel&lt;&lt;&lt;grid, block&gt;&gt;&gt;</code></td><td>异步执行</td></tr>
+<tr><td>5. 拷贝 D→H</td><td><code>cudaMemcpy(..., D2H)</code></td><td>隐式同步（等 kernel 完成）</td></tr>
+<tr><td>6. 释放</td><td><code>cudaFree / free</code></td><td>先 device 后 host</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="s9"><span class="step">§9</span>带走</h2>
+
+<div class="card">
+<table>
+<thead><tr><th>#</th><th>要点</th></tr></thead>
+<tbody>
+<tr><td><span style="color:var(--brand)">1</span></td><td>CUDA <b>Grid → Block → Thread</b> 三层，对应 Triton 的 Grid → Program</td></tr>
+<tr><td><span style="color:var(--brand)">2</span></td><td><code>blockIdx.x * blockDim.x + threadIdx.x</code> = 全局线程编号——CUDA 最核心的一行</td></tr>
+<tr><td><span style="color:var(--brand)">3</span></td><td>一个 Block = Triton 的一个 Program，但你要管理 Block 内部的 threads</td></tr>
+<tr><td><span style="color:var(--brand)">4</span></td><td><b>Warp (32 threads)</b> 是实际执行单位——同一 warp 的线程同步执行同一指令</td></tr>
+<tr><td><span style="color:var(--brand)">5</span></td><td><code>&lt;&lt;&lt;grid, block&gt;&gt;&gt;</code> 启动 kernel，grid 个 blocks × block 个 threads = 总并行度</td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+<b>下一章预告：</b>C1 · 内存层次 — Registers / Shared Memory / Global Memory 的读写速度差 100×，GEMM 优化的本质就是<b>减少对慢内存的访问</b>。
+</div>
+</div>
+
+<div class="foot">C0 · CUDA 编程模型 — CUDA GEMM 系列 1/15</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

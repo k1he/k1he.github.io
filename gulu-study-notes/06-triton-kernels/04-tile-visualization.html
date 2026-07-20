@@ -1,0 +1,589 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T3 · Tile 可视化 · 从索引到矩阵块</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px;max-width:760px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+
+/* ===== 1D Vector Diagram ===== */
+.vec-container{display:flex;align-items:center;gap:8px;margin:16px 0;flex-wrap:wrap}
+.vec-cell{width:38px;height:38px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:4px;font-size:12px;font-family:"SF Mono",monospace;background:var(--panel2);transition:all .2s}
+.vec-cell.hl-0{background:rgba(110,231,183,.25);border-color:var(--brand);color:var(--brand)}
+.vec-cell.hl-1{background:rgba(125,211,252,.25);border-color:var(--brand2);color:var(--brand2)}
+.vec-cell.hl-2{background:rgba(251,191,36,.25);border-color:var(--warn);color:var(--warn)}
+.vec-cell.hl-3{background:rgba(251,113,133,.25);border-color:var(--pink);color:var(--pink)}
+.vec-label{font-size:11px;color:var(--mute);margin-top:4px;text-align:center}
+
+/* ===== 2D Grid ===== */
+.grid-section{display:flex;gap:32px;align-items:flex-start;flex-wrap:wrap;margin:20px 0}
+.grid-panel{flex:1;min-width:320px}
+.matrix-grid{display:inline-grid;gap:2px;margin:12px 0}
+.matrix-grid.g8{grid-template-columns:repeat(8,1fr)}
+.matrix-grid.g7{grid-template-columns:repeat(7,1fr)}
+.m-cell{width:42px;height:42px;display:flex;align-items:center;justify-content:center;border:1px solid var(--line);border-radius:4px;font-size:11px;font-family:"SF Mono",monospace;background:var(--panel2);transition:all .25s ease;cursor:default}
+.m-cell.active-green{background:rgba(110,231,183,.3);border-color:var(--brand);color:var(--brand);font-weight:600;box-shadow:0 0 8px rgba(110,231,183,.2)}
+.m-cell.active-blue{background:rgba(125,211,252,.3);border-color:var(--brand2);color:var(--brand2);font-weight:600;box-shadow:0 0 8px rgba(125,211,252,.2)}
+.m-cell.active-yellow{background:rgba(251,191,36,.3);border-color:var(--warn);color:var(--warn);font-weight:600;box-shadow:0 0 8px rgba(251,191,36,.2)}
+.m-cell.active-pink{background:rgba(251,113,133,.3);border-color:var(--pink);color:var(--pink);font-weight:600;box-shadow:0 0 8px rgba(251,113,133,.2)}
+.m-cell.masked{background:rgba(248,113,113,.08);border-color:rgba(248,113,113,.3);color:var(--bad);opacity:.5}
+.m-cell.valid{background:rgba(110,231,183,.3);border-color:var(--brand);color:var(--brand);font-weight:600}
+
+/* ===== PID Buttons ===== */
+.pid-btns{display:flex;gap:10px;flex-wrap:wrap;margin:12px 0}
+.pid-btn{padding:8px 16px;border:2px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);font-family:"SF Mono",monospace;font-size:13px;cursor:pointer;transition:all .2s}
+.pid-btn:hover{border-color:var(--mute)}
+.pid-btn.sel-green{border-color:var(--brand);background:rgba(110,231,183,.12);color:var(--brand)}
+.pid-btn.sel-blue{border-color:var(--brand2);background:rgba(125,211,252,.12);color:var(--brand2)}
+.pid-btn.sel-yellow{border-color:var(--warn);background:rgba(251,191,36,.12);color:var(--warn)}
+.pid-btn.sel-pink{border-color:var(--pink);background:rgba(251,113,133,.12);color:var(--pink)}
+.info-panel{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin-top:12px;font-size:13px;min-height:100px}
+.info-panel .label{color:var(--mute);font-size:11px;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px}
+.info-panel .val{font-family:"SF Mono",monospace;font-size:12.5px;margin:4px 0}
+
+/* ===== GEMM Animation ===== */
+.gemm-container{display:flex;gap:20px;align-items:flex-start;flex-wrap:wrap;margin:20px 0}
+.gemm-matrix{display:inline-block}
+.gemm-matrix .title{font-size:13px;color:var(--mute);margin-bottom:6px;text-align:center;font-weight:600}
+.gemm-grid{display:inline-grid;grid-template-columns:repeat(8,1fr);gap:1px}
+.g-cell{width:32px;height:32px;display:flex;align-items:center;justify-content:center;border:1px solid rgba(38,43,56,.6);border-radius:3px;font-size:9px;font-family:"SF Mono",monospace;background:var(--panel2);transition:all .3s ease;color:var(--mute)}
+.g-cell.tile-a{background:rgba(167,139,250,.35);border-color:var(--purple);color:var(--purple)}
+.g-cell.tile-b{background:rgba(125,211,252,.3);border-color:var(--brand2);color:var(--brand2)}
+.g-cell.tile-c{background:rgba(110,231,183,.25);border-color:var(--brand);color:var(--brand)}
+.g-cell.tile-c-done{background:rgba(110,231,183,.45);border-color:var(--brand);color:var(--brand);font-weight:700}
+.gemm-controls{display:flex;gap:10px;align-items:center;margin:16px 0;flex-wrap:wrap}
+.gemm-btn{padding:8px 18px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);font-size:13px;cursor:pointer;transition:all .2s}
+.gemm-btn:hover{border-color:var(--brand);color:var(--brand)}
+.gemm-btn.active{border-color:var(--brand);background:rgba(110,231,183,.1);color:var(--brand)}
+.gemm-step-info{font-size:13px;color:var(--mute);margin-left:12px}
+.gemm-step-info strong{color:var(--ink)}
+
+/* ===== Misc ===== */
+.highlight-box{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px 20px;margin:16px 0}
+.formula{font-family:"SF Mono",monospace;font-size:13px;color:var(--brand2);margin:8px 0}
+.takeaway{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 24px;margin:12px 0}
+.takeaway li{margin:8px 0}
+.takeaway li strong{color:var(--brand)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>T3 · Tile 可视化 · 从索引到矩阵块 <span class="tag">Triton 系列 · 4/15</span></h1>
+<p class="sub">这节用具体数字让你"看到" tile 在矩阵上选中了哪些格子。学完后，tl.arange + stride 计算对你来说就是肌肉记忆。</p>
+
+<!-- ===== §1 ===== -->
+<h2><span class="step">§1</span>一维回顾：向量的 tile</h2>
+
+<p>还记得上一节的 vector_add 吗？一个长度 16 的向量，<code>BLOCK_SIZE=4</code>，共需 4 个 program：</p>
+
+<pre><span class="com"># pid=0 处理 [0,1,2,3], pid=1 处理 [4,5,6,7], ...</span>
+offs = pid * BLOCK_SIZE + tl.arange(<span class="num">0</span>, BLOCK_SIZE)
+<span class="com"># pid=2 → offs = 2*4 + [0,1,2,3] = [8, 9, 10, 11]</span></pre>
+
+<p>下面是视觉版——点击 pid 按钮看每个 program 选中哪些元素：</p>
+
+<div class="card">
+  <div class="pid-btns" id="vec-btns">
+    <button class="pid-btn" onclick="selectVecPid(0)">pid=0</button>
+    <button class="pid-btn" onclick="selectVecPid(1)">pid=1</button>
+    <button class="pid-btn" onclick="selectVecPid(2)">pid=2</button>
+    <button class="pid-btn" onclick="selectVecPid(3)">pid=3</button>
+  </div>
+  <div class="vec-container" id="vec-grid"></div>
+  <div id="vec-info" style="font-size:13px;color:var(--mute);margin-top:8px;font-family:'SF Mono',monospace"></div>
+</div>
+
+<div class="callout">一维很直观：<code>pid * BLOCK + arange(BLOCK)</code> 就完了。现在把这个思路扩展到二维。</div>
+
+<!-- ===== §2 ===== -->
+<h2><span class="step">§2</span>二维 Tile：矩阵的子块</h2>
+
+<p>一个 <strong>8×8</strong> 矩阵，<code>BLOCK_M=4, BLOCK_N=4</code>。需要多少个 program？</p>
+<p class="formula">grid = (cdiv(8,4), cdiv(8,4)) = (2, 2) → 4 个 program</p>
+<p>每个 program 用 <code>(pid_m, pid_n)</code> 二元组标识，负责矩阵的一个 4×4 子块。</p>
+
+<div class="card">
+  <div class="pid-btns" id="grid-btns">
+    <button class="pid-btn" onclick="selectGridPid(0,0)">pid=(0,0)</button>
+    <button class="pid-btn" onclick="selectGridPid(0,1)">pid=(0,1)</button>
+    <button class="pid-btn" onclick="selectGridPid(1,0)">pid=(1,0)</button>
+    <button class="pid-btn" onclick="selectGridPid(1,1)">pid=(1,1)</button>
+  </div>
+  <div class="grid-section">
+    <div class="grid-panel">
+      <div class="matrix-grid g8" id="matrix-8x8"></div>
+    </div>
+    <div class="grid-panel">
+      <div class="info-panel" id="grid-info">
+        <div style="color:var(--mute)">点击左侧按钮查看对应 tile 的索引计算</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ===== §3 ===== -->
+<h2><span class="step">§3</span>2D 指针计算 — 关键推导</h2>
+
+<p>Triton 访问矩阵元素的核心公式：</p>
+
+<div class="highlight-box">
+  <p class="formula">ptrs = base_ptr + offs_m[:, None] * stride_m + offs_n[None, :] * stride_n</p>
+</div>
+
+<p>用具体数字来看。矩阵 8×8，row-major 存储 → <code>stride_m = 8</code>（跨一行需要跳 8 个元素），<code>stride_n = 1</code>（同一行相邻元素）。</p>
+
+<h3>以 pid=(0, 1) 为例</h3>
+
+<pre><span class="com"># 计算偏移</span>
+offs_m = <span class="num">0</span> * <span class="num">4</span> + [<span class="num">0</span>,<span class="num">1</span>,<span class="num">2</span>,<span class="num">3</span>] = [<span class="num">0</span>, <span class="num">1</span>, <span class="num">2</span>, <span class="num">3</span>]    <span class="com"># 行 0~3</span>
+offs_n = <span class="num">1</span> * <span class="num">4</span> + [<span class="num">0</span>,<span class="num">1</span>,<span class="num">2</span>,<span class="num">3</span>] = [<span class="num">4</span>, <span class="num">5</span>, <span class="num">6</span>, <span class="num">7</span>]    <span class="com"># 列 4~7</span></pre>
+
+<pre><span class="com"># 广播：列向量 × stride_m</span>
+offs_m[:, None] * <span class="num">8</span> = [[<span class="num"> 0</span>],     <span class="com"># shape: (4, 1)</span>
+                        [<span class="num"> 8</span>],
+                        [<span class="num">16</span>],
+                        [<span class="num">24</span>]]
+
+<span class="com"># 广播：行向量 × stride_n</span>
+offs_n[None, :] * <span class="num">1</span> = [[<span class="num">4</span>, <span class="num">5</span>, <span class="num">6</span>, <span class="num">7</span>]]   <span class="com"># shape: (1, 4)</span></pre>
+
+<pre><span class="com"># 两者相加（广播）→ 2D 偏移矩阵 (4×4)</span>
+ptr_offsets = [[ <span class="num">0</span>+<span class="num">4</span>,  <span class="num">0</span>+<span class="num">5</span>,  <span class="num">0</span>+<span class="num">6</span>,  <span class="num">0</span>+<span class="num">7</span>],     [[ <span class="num">4</span>,  <span class="num">5</span>,  <span class="num">6</span>,  <span class="num">7</span>],
+              [ <span class="num">8</span>+<span class="num">4</span>,  <span class="num">8</span>+<span class="num">5</span>,  <span class="num">8</span>+<span class="num">6</span>,  <span class="num">8</span>+<span class="num">7</span>],  =   [<span class="num">12</span>, <span class="num">13</span>, <span class="num">14</span>, <span class="num">15</span>],
+              [<span class="num">16</span>+<span class="num">4</span>, <span class="num">16</span>+<span class="num">5</span>, <span class="num">16</span>+<span class="num">6</span>, <span class="num">16</span>+<span class="num">7</span>],      [<span class="num">20</span>, <span class="num">21</span>, <span class="num">22</span>, <span class="num">23</span>],
+              [<span class="num">24</span>+<span class="num">4</span>, <span class="num">24</span>+<span class="num">5</span>, <span class="num">24</span>+<span class="num">6</span>, <span class="num">24</span>+<span class="num">7</span>]]      [<span class="num">28</span>, <span class="num">29</span>, <span class="num">30</span>, <span class="num">31</span>]]</pre>
+
+<div class="callout info">验证：<code>ptr_offsets[i][j] = row * 8 + col</code>。比如 <code>[2][1] = 16+5 = 21</code>，对应矩阵第 2 行第 5 列，正是 <code>2*8 + 5 = 21</code>。完美！</div>
+
+<div class="callout">这就是 Triton 访问 2D 数据的秘诀：用 <code>[:, None]</code> 和 <code>[None, :]</code> 做广播，把两个 1D 向量组合成 2D 的偏移矩阵。记住这个模式——后面所有 2D kernel 都用它。</div>
+
+<!-- ===== §4 ===== -->
+<h2><span class="step">§4</span>非整除情况：mask 的作用</h2>
+
+<p>如果矩阵不是 BLOCK 的整数倍怎么办？考虑一个 <strong>7×7</strong> 矩阵，<code>BLOCK=4</code>：</p>
+
+<p class="formula">grid = (cdiv(7,4), cdiv(7,4)) = (2, 2) → 4 个 program</p>
+
+<p><code>pid=(1,1)</code> 尝试覆盖行 [4,5,6,<strong style="color:var(--bad)">7</strong>]、列 [4,5,6,<strong style="color:var(--bad)">7</strong>]——但行 7 和列 7 不存在！这就需要 mask：</p>
+
+<pre>offs_m = pid_m * BLOCK_M + tl.arange(<span class="num">0</span>, BLOCK_M)  <span class="com"># [4, 5, 6, 7]</span>
+offs_n = pid_n * BLOCK_N + tl.arange(<span class="num">0</span>, BLOCK_N)  <span class="com"># [4, 5, 6, 7]</span>
+mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
+<span class="com"># mask = [[T, T, T, F],   ← col 7 无效</span>
+<span class="com">#         [T, T, T, F],</span>
+<span class="com">#         [T, T, T, F],</span>
+<span class="com">#         [F, F, F, F]]   ← row 7 全部无效</span></pre>
+
+<div class="card">
+  <p style="color:var(--mute);font-size:13px;margin:0 0 8px">点击按钮观察 mask 的效果（绿色=有效，暗红=被 mask 掉）：</p>
+  <div class="pid-btns" id="mask-btns">
+    <button class="pid-btn" onclick="selectMaskPid(0,0)">pid=(0,0)</button>
+    <button class="pid-btn" onclick="selectMaskPid(0,1)">pid=(0,1)</button>
+    <button class="pid-btn" onclick="selectMaskPid(1,0)">pid=(1,0)</button>
+    <button class="pid-btn" onclick="selectMaskPid(1,1)">pid=(1,1)</button>
+  </div>
+  <div class="grid-section">
+    <div class="grid-panel">
+      <div class="matrix-grid g7" id="matrix-7x7"></div>
+    </div>
+    <div class="grid-panel">
+      <div class="info-panel" id="mask-info">
+        <div style="color:var(--mute)">点击按钮查看 mask 计算过程</div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div class="callout warn"><code>tl.load(ptrs, mask=mask, other=0.0)</code>——被 mask 掉的位置返回 <code>other</code> 值（通常为 0），不会触发越界内存访问。这是 Triton 的安全网。</div>
+
+<!-- ===== §5 ===== -->
+<h2><span class="step">§5</span>GEMM 中的 Tile 滑动</h2>
+
+<p>矩阵乘法 <code>C = A @ B</code>，其中 A[8×8], B[8×8], C[8×8]。</p>
+<p>一个 program 负责计算 C 的一个 tile（比如 <code>C[0:4, 0:4]</code>）。它沿着 K 维做循环：</p>
+
+<ul class="tight">
+  <li><strong>Step 0：</strong>加载 A[0:4, <span style="color:var(--purple)">0:4</span>] 和 B[<span style="color:var(--brand2)">0:4</span>, 0:4] → 矩阵乘 → 累加到 acc</li>
+  <li><strong>Step 1：</strong>加载 A[0:4, <span style="color:var(--purple)">4:8</span>] 和 B[<span style="color:var(--brand2)">4:8</span>, 0:4] → 矩阵乘 → 累加到 acc</li>
+  <li>循环结束 → <code>C[0:4, 0:4] = acc</code>，一个 tile 计算完毕！</li>
+</ul>
+
+<div class="card">
+  <div class="gemm-controls">
+    <button class="gemm-btn" id="gemm-prev" onclick="gemmStep(-1)">← 上一步</button>
+    <button class="gemm-btn" id="gemm-next" onclick="gemmStep(1)">下一步 →</button>
+    <button class="gemm-btn" id="gemm-auto" onclick="gemmAutoPlay()">自动播放</button>
+    <button class="gemm-btn" onclick="gemmReset()">重置</button>
+    <span class="gemm-step-info" id="gemm-status">准备就绪 — 点击"下一步"开始</span>
+  </div>
+  <div class="gemm-container">
+    <div class="gemm-matrix">
+      <div class="title">A [8×8]</div>
+      <div class="gemm-grid" id="gemm-a"></div>
+    </div>
+    <div class="gemm-matrix">
+      <div class="title">B [8×8]</div>
+      <div class="gemm-grid" id="gemm-b"></div>
+    </div>
+    <div class="gemm-matrix">
+      <div class="title">C [8×8]（累加结果）</div>
+      <div class="gemm-grid" id="gemm-c"></div>
+    </div>
+  </div>
+</div>
+
+<div class="callout">一个 program 负责 C 的一个 tile。它沿着 K 维做循环，每步读 A 的一个横条和 B 的一个竖条，乘完累加。循环结束，C 的这个 tile 就算完了。</div>
+
+<!-- ===== §6 ===== -->
+<h2><span class="step">§6</span>小结 + 代码模板</h2>
+
+<p>所有 2D tile 访问的通用模板——你会在 GEMM、softmax、attention 里反复见到它：</p>
+
+<pre><span class="com"># 定位当前 program 的 tile</span>
+pid_m = tl.program_id(<span class="num">0</span>)
+pid_n = tl.program_id(<span class="num">1</span>)
+
+<span class="com"># 计算行列偏移</span>
+offs_m = pid_m * BLOCK_M + tl.arange(<span class="num">0</span>, BLOCK_M)
+offs_n = pid_n * BLOCK_N + tl.arange(<span class="num">0</span>, BLOCK_N)
+
+<span class="com"># 组合成 2D 指针偏移（关键！广播！）</span>
+ptrs = base_ptr + offs_m[:, None] * stride_m + offs_n[None, :] * stride_n
+
+<span class="com"># 构造 mask（处理非整除边界）</span>
+mask = (offs_m[:, None] < M) & (offs_n[None, :] < N)
+
+<span class="com"># 读取 tile</span>
+tile = tl.load(ptrs, mask=mask, other=<span class="num">0.0</span>)</pre>
+
+<div class="callout info">这个模板你会在 GEMM、softmax、attention 里反复见到——记住它。背下来之后写 Triton kernel 的速度会快 3 倍。</div>
+
+<!-- ===== §7 ===== -->
+<h2><span class="step">§7</span>带走</h2>
+
+<div class="takeaway">
+<ol>
+  <li><strong>tile = 矩阵的一个子块</strong>，由 <code>offs_m</code> 和 <code>offs_n</code> 定位</li>
+  <li><strong><code>[:, None]</code> + <code>[None, :]</code> 广播</strong> = 组合出 2D 指针矩阵</li>
+  <li><strong>非整除时用 mask</strong> 截掉越界的行/列，<code>other=0.0</code> 保底</li>
+  <li><strong>GEMM 的核心</strong>就是沿 K 维滑动 tile，每步做一次 dot product 并累加</li>
+</ol>
+</div>
+
+<p class="foot">T3 · Tile 可视化 — Triton 系列 4/15</p>
+</div>
+
+<!-- ============================= JAVASCRIPT ============================= -->
+<script>
+// ===================== §1: 1D Vector =====================
+(function(){
+  var grid = document.getElementById('vec-grid');
+  for(var i=0;i<16;i++){
+    var d = document.createElement('div');
+    d.className = 'vec-cell';
+    d.textContent = i;
+    d.id = 'vc-'+i;
+    grid.appendChild(d);
+  }
+})();
+
+var vecColors = ['hl-0','hl-1','hl-2','hl-3'];
+var vecBtnColors = ['sel-green','sel-blue','sel-yellow','sel-pink'];
+
+function selectVecPid(pid){
+  // clear
+  for(var i=0;i<16;i++) document.getElementById('vc-'+i).className='vec-cell';
+  var btns = document.getElementById('vec-btns').children;
+  for(var i=0;i<btns.length;i++) btns[i].className='pid-btn';
+  // highlight
+  var start = pid*4;
+  for(var i=start;i<start+4;i++) document.getElementById('vc-'+i).className='vec-cell '+vecColors[pid];
+  btns[pid].className = 'pid-btn '+vecBtnColors[pid];
+  // info
+  var vals = [start, start+1, start+2, start+3];
+  document.getElementById('vec-info').innerHTML =
+    'offs = '+pid+' * 4 + [0,1,2,3] = ['+vals.join(', ')+']';
+}
+
+// ===================== §2: 8x8 Grid =====================
+(function(){
+  var grid = document.getElementById('matrix-8x8');
+  for(var r=0;r<8;r++){
+    for(var c=0;c<8;c++){
+      var d = document.createElement('div');
+      d.className = 'm-cell';
+      d.textContent = r*8+c;
+      d.id = 'mc-'+r+'-'+c;
+      grid.appendChild(d);
+    }
+  }
+})();
+
+var gridColorMap = {
+  '0,0':'active-green','0,1':'active-blue',
+  '1,0':'active-yellow','1,1':'active-pink'
+};
+var gridBtnColorMap = {
+  '0,0':'sel-green','0,1':'sel-blue',
+  '1,0':'sel-yellow','1,1':'sel-pink'
+};
+
+function selectGridPid(pm,pn){
+  // clear cells
+  for(var r=0;r<8;r++) for(var c=0;c<8;c++)
+    document.getElementById('mc-'+r+'-'+c).className='m-cell';
+  // clear btns
+  var btns = document.getElementById('grid-btns').children;
+  for(var i=0;i<btns.length;i++) btns[i].className='pid-btn';
+  // compute
+  var key = pm+','+pn;
+  var color = gridColorMap[key];
+  var offs_m = [], offs_n = [];
+  for(var i=0;i<4;i++){
+    offs_m.push(pm*4+i);
+    offs_n.push(pn*4+i);
+  }
+  // highlight cells
+  for(var i=0;i<4;i++){
+    for(var j=0;j<4;j++){
+      document.getElementById('mc-'+offs_m[i]+'-'+offs_n[j]).className = 'm-cell '+color;
+    }
+  }
+  // highlight btn
+  var btnIdx = pm*2+pn;
+  btns[btnIdx].className = 'pid-btn '+gridBtnColorMap[key];
+  // info
+  var selected = [];
+  for(var i=0;i<4;i++) for(var j=0;j<4;j++) selected.push(offs_m[i]*8+offs_n[j]);
+  var html = '<div class="label">索引计算</div>';
+  html += '<div class="val">offs_m = '+pm+' * 4 + [0,1,2,3] = ['+offs_m.join(', ')+']</div>';
+  html += '<div class="val">offs_n = '+pn+' * 4 + [0,1,2,3] = ['+offs_n.join(', ')+']</div>';
+  html += '<div class="label" style="margin-top:10px">选中的 16 个元素（线性索引）</div>';
+  // format as 4x4
+  html += '<div class="val">';
+  for(var i=0;i<4;i++){
+    html += '[';
+    for(var j=0;j<4;j++){
+      html += String(selected[i*4+j]).padStart(2,' ');
+      if(j<3) html += ', ';
+    }
+    html += ']';
+    if(i<3) html += '<br>';
+  }
+  html += '</div>';
+  html += '<div class="label" style="margin-top:10px">对应矩阵位置</div>';
+  html += '<div class="val">行 '+offs_m[0]+'~'+offs_m[3]+'，列 '+offs_n[0]+'~'+offs_n[3]+'</div>';
+  document.getElementById('grid-info').innerHTML = html;
+}
+
+// ===================== §4: 7x7 Mask Grid =====================
+(function(){
+  var grid = document.getElementById('matrix-7x7');
+  for(var r=0;r<7;r++){
+    for(var c=0;c<7;c++){
+      var d = document.createElement('div');
+      d.className = 'm-cell';
+      d.textContent = r*7+c;
+      d.id = 'mk-'+r+'-'+c;
+      grid.appendChild(d);
+    }
+  }
+})();
+
+function selectMaskPid(pm,pn){
+  // clear
+  for(var r=0;r<7;r++) for(var c=0;c<7;c++)
+    document.getElementById('mk-'+r+'-'+c).className='m-cell';
+  var btns = document.getElementById('mask-btns').children;
+  for(var i=0;i<btns.length;i++) btns[i].className='pid-btn';
+  // compute
+  var offs_m = [], offs_n = [];
+  for(var i=0;i<4;i++){
+    offs_m.push(pm*4+i);
+    offs_n.push(pn*4+i);
+  }
+  // highlight with mask logic
+  var maskGrid = [];
+  for(var i=0;i<4;i++){
+    var row = [];
+    for(var j=0;j<4;j++){
+      var r = offs_m[i], c = offs_n[j];
+      var valid = r < 7 && c < 7;
+      row.push(valid);
+      if(r < 7 && c < 7){
+        document.getElementById('mk-'+r+'-'+c).className = 'm-cell valid';
+      }
+    }
+    maskGrid.push(row);
+  }
+  // Show "ghost" cells for out-of-bounds (only show in info)
+  var btnIdx = pm*2+pn;
+  var key = pm+','+pn;
+  btns[btnIdx].className = 'pid-btn '+gridBtnColorMap[key];
+  // info
+  var html = '<div class="label">偏移计算</div>';
+  html += '<div class="val">offs_m = '+pm+' * 4 + [0,1,2,3] = ['+offs_m.join(', ')+']</div>';
+  html += '<div class="val">offs_n = '+pn+' * 4 + [0,1,2,3] = ['+offs_n.join(', ')+']</div>';
+  html += '<div class="label" style="margin-top:10px">Mask 矩阵 (M=7, N=7)</div>';
+  html += '<div class="val" style="line-height:1.9">';
+  for(var i=0;i<4;i++){
+    html += '[';
+    for(var j=0;j<4;j++){
+      var v = maskGrid[i][j];
+      html += v ? '<span style="color:var(--brand)">T</span>' : '<span style="color:var(--bad)">F</span>';
+      if(j<3) html += ', ';
+    }
+    html += ']';
+    if(i<3) html += '<br>';
+  }
+  html += '</div>';
+  // count valid
+  var validCount = 0;
+  for(var i=0;i<4;i++) for(var j=0;j<4;j++) if(maskGrid[i][j]) validCount++;
+  html += '<div class="label" style="margin-top:10px">有效元素</div>';
+  html += '<div class="val">'+validCount+' / 16 个位置有效';
+  if(validCount < 16) html += '  （'+( 16-validCount)+' 个被 mask 掉，填充 other=0.0）';
+  html += '</div>';
+  document.getElementById('mask-info').innerHTML = html;
+}
+
+// ===================== §5: GEMM Animation =====================
+var gemmState = -1; // -1: initial, 0: step0, 1: step1, 2: done
+var gemmAutoInterval = null;
+
+(function(){
+  // Build grids
+  var names = ['gemm-a','gemm-b','gemm-c'];
+  for(var g=0;g<3;g++){
+    var grid = document.getElementById(names[g]);
+    for(var r=0;r<8;r++){
+      for(var c=0;c<8;c++){
+        var d = document.createElement('div');
+        d.className = 'g-cell';
+        d.id = names[g]+'-'+r+'-'+c;
+        grid.appendChild(d);
+      }
+    }
+  }
+  renderGemm();
+})();
+
+function clearGemmHighlights(){
+  var names = ['gemm-a','gemm-b','gemm-c'];
+  for(var g=0;g<3;g++){
+    for(var r=0;r<8;r++){
+      for(var c=0;c<8;c++){
+        document.getElementById(names[g]+'-'+r+'-'+c).className = 'g-cell';
+      }
+    }
+  }
+}
+
+function renderGemm(){
+  clearGemmHighlights();
+  var status = document.getElementById('gemm-status');
+
+  if(gemmState === -1){
+    status.innerHTML = '准备就绪 — 点击"下一步"开始';
+    return;
+  }
+
+  // Always show C target tile
+  if(gemmState >= 0){
+    for(var r=0;r<4;r++){
+      for(var c=0;c<4;c++){
+        var el = document.getElementById('gemm-c-'+r+'-'+c);
+        el.className = gemmState === 2 ? 'g-cell tile-c-done' : 'g-cell tile-c';
+      }
+    }
+  }
+
+  if(gemmState === 0){
+    // A tile: rows 0-3, cols 0-3
+    for(var r=0;r<4;r++) for(var c=0;c<4;c++)
+      document.getElementById('gemm-a-'+r+'-'+c).className = 'g-cell tile-a';
+    // B tile: rows 0-3, cols 0-3
+    for(var r=0;r<4;r++) for(var c=0;c<4;c++)
+      document.getElementById('gemm-b-'+r+'-'+c).className = 'g-cell tile-b';
+    status.innerHTML = '<strong>Step 0 / K-loop</strong>：加载 A[0:4, <span style="color:var(--purple)">0:4</span>] × B[<span style="color:var(--brand2)">0:4</span>, 0:4] → 累加到 C[0:4, 0:4]';
+  }
+  else if(gemmState === 1){
+    // A tile: rows 0-3, cols 4-7
+    for(var r=0;r<4;r++) for(var c=4;c<8;c++)
+      document.getElementById('gemm-a-'+r+'-'+c).className = 'g-cell tile-a';
+    // B tile: rows 4-7, cols 0-3
+    for(var r=4;r<8;r++) for(var c=0;c<4;c++)
+      document.getElementById('gemm-b-'+r+'-'+c).className = 'g-cell tile-b';
+    status.innerHTML = '<strong>Step 1 / K-loop</strong>：加载 A[0:4, <span style="color:var(--purple)">4:8</span>] × B[<span style="color:var(--brand2)">4:8</span>, 0:4] → 累加到 C[0:4, 0:4]';
+  }
+  else if(gemmState === 2){
+    status.innerHTML = '<strong>完成！</strong> C[0:4, 0:4] 的所有元素已计算完毕。K-loop 遍历了 2 步（K=8, BLOCK_K=4）。';
+  }
+}
+
+function gemmStep(dir){
+  gemmState = Math.max(-1, Math.min(2, gemmState + dir));
+  renderGemm();
+}
+
+function gemmReset(){
+  if(gemmAutoInterval){ clearInterval(gemmAutoInterval); gemmAutoInterval=null; }
+  document.getElementById('gemm-auto').className = 'gemm-btn';
+  gemmState = -1;
+  renderGemm();
+}
+
+function gemmAutoPlay(){
+  if(gemmAutoInterval){
+    clearInterval(gemmAutoInterval);
+    gemmAutoInterval = null;
+    document.getElementById('gemm-auto').className = 'gemm-btn';
+    return;
+  }
+  document.getElementById('gemm-auto').className = 'gemm-btn active';
+  gemmState = -1;
+  renderGemm();
+  gemmAutoInterval = setInterval(function(){
+    gemmState++;
+    if(gemmState > 2){
+      clearInterval(gemmAutoInterval);
+      gemmAutoInterval = null;
+      document.getElementById('gemm-auto').className = 'gemm-btn';
+      gemmState = 2;
+    }
+    renderGemm();
+  }, 1500);
+}
+</script>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

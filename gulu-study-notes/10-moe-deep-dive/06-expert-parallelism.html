@@ -1,0 +1,386 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Expert Parallelism (EP) 源码深读 — 咕噜的学习笔记</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--purple);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--purple);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--purple)}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--purple);color:var(--purple)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Expert Parallelism (EP) 源码深读 <span class="tag">MoE · 06/07</span></h1>
+<p class="sub">将 Expert 分布到多 GPU — 从 TokenDispatcher 接口到 DeepEP 通信实现</p>
+
+<div class="toc">
+  <a href="#what-is-ep">EP 概念</a>
+  <a href="#dispatcher-interface">Dispatcher 接口</a>
+  <a href="#standard">StandardDispatcher</a>
+  <a href="#deepep">DeepEP 两种模式</a>
+  <a href="#create-logic">创建逻辑</a>
+  <a href="#eplb">EPLB 负载均衡</a>
+  <a href="#remap">Expert ID 重映射</a>
+</div>
+
+<!-- Section: What is EP -->
+<h2 id="what-is-ep"><span class="step">01</span>什么是 Expert Parallelism</h2>
+
+<p>Expert Parallelism (EP) 是 MoE 模型的核心分布式策略：将不同的 Expert 分配到不同的 GPU 上。</p>
+
+<div class="card">
+<h3>与 TP 的对比</h3>
+<div class="grid cols-2">
+<div>
+<h4>Tensor Parallelism (TP)</h4>
+<p>每个 GPU 持有<strong>所有 Expert</strong>，但每个 Expert 的权重被切分（沿 intermediate 维度）。</p>
+<pre><code><span class="com"># TP: 切分每个 expert 内部</span>
+GPU0: Expert[0..N] 的前半权重
+GPU1: Expert[0..N] 的后半权重
+<span class="com"># 通信: AllReduce (输出维度)</span></code></pre>
+</div>
+<div>
+<h4>Expert Parallelism (EP)</h4>
+<p>每个 GPU 只持有<strong>一部分 Expert</strong>，Expert 完整不切分。Token 需要路由到正确的 GPU。</p>
+<pre><code><span class="com"># EP: 切分 expert 的分配</span>
+GPU0: Expert[0..31]   (完整权重)
+GPU1: Expert[32..63]  (完整权重)
+...
+<span class="com"># 通信: All-to-All (token 路由)</span></code></pre>
+</div>
+</div>
+</div>
+
+<div class="callout info">
+<strong>为什么用 EP？</strong> 当 Expert 数量很大时（如 DeepSeek-V3 的 256 个），TP 模式下每个 GPU 都要保存所有 Expert 的（切片）权重，内存占用高。EP 将 Expert 分散到不同 GPU，每个 GPU 只需持有 <code>num_experts / ep_size</code> 个 Expert，大幅降低单卡内存需求。
+</div>
+
+<!-- Section: Dispatcher Interface -->
+<h2 id="dispatcher-interface"><span class="step">02</span>TokenDispatcher 接口</h2>
+
+<p>所有 dispatcher 实现统一的 <code>TokenDispatcher</code> 抽象接口：</p>
+
+<div class="card">
+<pre><code><span class="kw">class</span> <span class="fn">TokenDispatcher</span>(ABC):
+    <span class="str">"""Token dispatch 抽象基类，定义 dispatch/combine 两阶段接口。"""</span>
+
+    @abstractmethod
+    <span class="kw">def</span> <span class="fn">dispatch</span>(
+        self,
+        hidden_states: torch.Tensor,       <span class="com"># [num_tokens, hidden_size]</span>
+        router_logits: torch.Tensor,       <span class="com"># [num_tokens, num_experts]</span>
+        topk_ids: torch.Tensor,            <span class="com"># [num_tokens, top_k]</span>
+        topk_weights: torch.Tensor,        <span class="com"># [num_tokens, top_k]</span>
+        ...
+    ) -> <span class="fn">DispatchOutput</span>:
+        <span class="str">"""将 token 路由到对应 expert (可能涉及跨 GPU 通信)"""</span>
+        ...
+
+    @abstractmethod
+    <span class="kw">def</span> <span class="fn">combine</span>(
+        self,
+        moe_output: torch.Tensor,          <span class="com"># expert 计算后的输出</span>
+        dispatch_output: <span class="fn">DispatchOutput</span>,  <span class="com"># dispatch 阶段的元信息</span>
+        ...
+    ) -> torch.Tensor:
+        <span class="str">"""收集各 expert 输出并组合回原 token 顺序"""</span>
+        ...
+
+<span class="kw">class</span> <span class="fn">DispatchOutput</span>(NamedTuple):
+    dispatched_input: torch.Tensor   <span class="com"># 重排后的输入</span>
+    topk_ids: torch.Tensor           <span class="com"># 重映射后的 expert IDs (local)</span>
+    topk_weights: torch.Tensor       <span class="com"># 路由权重</span>
+    recv_counts: Optional[torch.Tensor]  <span class="com"># EP 通信元数据</span>
+    ...</code></pre>
+</div>
+
+<!-- Section: Standard -->
+<h2 id="standard"><span class="step">03</span>StandardDispatcher: 单 GPU 路径</h2>
+
+<p>当 <code>ep_size=1</code> 时使用，无需任何跨 GPU 通信：</p>
+
+<div class="card">
+<pre><code><span class="kw">class</span> <span class="fn">StandardDispatcher</span>(TokenDispatcher):
+    <span class="str">"""单 GPU dispatcher — 不做任何通信，直接透传。"""</span>
+
+    <span class="kw">def</span> <span class="fn">dispatch</span>(self, hidden_states, topk_ids, topk_weights, ...):
+        <span class="com"># 单 GPU: 所有 expert 都在本地，无需路由</span>
+        <span class="kw">return</span> DispatchOutput(
+            dispatched_input=hidden_states,
+            topk_ids=topk_ids,           <span class="com"># 直接用原始 expert IDs</span>
+            topk_weights=topk_weights,
+            recv_counts=<span class="kw">None</span>,
+        )
+
+    <span class="kw">def</span> <span class="fn">combine</span>(self, moe_output, dispatch_output, ...):
+        <span class="com"># 直接返回，无需回传</span>
+        <span class="kw">return</span> moe_output</code></pre>
+</div>
+
+<div class="callout">
+<strong>适用场景：</strong> 调试阶段、Expert 数量少（如 8 个）且单卡内存放得下、或纯 TP 模式。
+</div>
+
+<!-- Section: DeepEP -->
+<h2 id="deepep"><span class="step">04</span>DeepEP: 两种通信模式</h2>
+
+<p>DeepEP 是 DeepSeek 开源的高性能 Expert Parallelism 通信库，提供两种模式满足不同场景：</p>
+
+<div class="grid cols-2">
+<div class="card">
+<h4>Normal 模式 (高吞吐)</h4>
+<p>基于 NCCL 风格的异步 All-to-All，适合 prefill 等大 batch 场景。</p>
+<pre><code><span class="kw">class</span> <span class="fn">DeepEPDispatcherNormal</span>:
+    <span class="kw">def</span> <span class="fn">dispatch</span>(self, ...):
+        <span class="com"># 1. 计算每个 GPU 要发/收</span>
+        <span class="com">#    多少 token</span>
+        send_counts = <span class="fn">compute_counts</span>(
+            topk_ids, self.ep_size,
+            self.num_local_experts
+        )
+
+        <span class="com"># 2. 异步 All-to-All</span>
+        recv_buf, handle = (
+            <span class="fn">deepep.async_dispatch</span>(
+                hidden_states,
+                send_counts,
+                self.ep_group,
+            )
+        )
+
+        <span class="com"># 3. 等待完成</span>
+        recv_buf = handle.wait()
+        <span class="kw">return</span> DispatchOutput(
+            dispatched_input=recv_buf,
+            ...
+        )</code></pre>
+<p><strong>特点：</strong> 大 batch 下通信可与计算 overlap，吞吐高；延迟相对较高。</p>
+</div>
+<div class="card">
+<h4>Low-Latency 模式 (低延迟)</h4>
+<p>使用 SM-managed RDMA，绕过 NCCL，适合 decode 等小 batch 场景。</p>
+<pre><code><span class="kw">class</span> <span class="fn">DeepEPDispatcherLowLatency</span>:
+    <span class="kw">def</span> <span class="fn">dispatch</span>(self, ...):
+        <span class="com"># 1. 预分配对称内存 (symmetric mem)</span>
+        <span class="com"># 2. SM 直接发起 RDMA 写入</span>
+        recv_buf = <span class="fn">deepep.ll_dispatch</span>(
+            hidden_states,
+            topk_ids,
+            self.symmetric_mem,
+            self.ep_group,
+            num_tokens_per_expert=
+                self.max_tokens_per_expert,
+        )
+
+        <span class="com"># 无需等待 —— SM 同步完成</span>
+        <span class="kw">return</span> DispatchOutput(
+            dispatched_input=recv_buf,
+            ...
+        )</code></pre>
+<p><strong>特点：</strong> 小 batch 时延迟极低（μs 级）；需要预分配 symmetric memory。</p>
+</div>
+</div>
+
+<div class="callout warn">
+<strong>Symmetric Memory 要求：</strong> Low-Latency 模式需要在初始化时分配跨 GPU 的对称内存区域（所有 GPU 映射到同一地址空间）。这需要特殊的 CUDA IPC 支持，且内存大小必须预先确定（由 <code>max_tokens_per_expert</code> 决定）。
+</div>
+
+<!-- Section: Create Logic -->
+<h2 id="create-logic"><span class="step">05</span>Dispatcher 创建逻辑</h2>
+
+<p><code>create_moe_dispatcher</code> 的完整决策树：</p>
+
+<div class="card">
+<pre><code><span class="kw">def</span> <span class="fn">create_moe_dispatcher</span>(
+    a2a_backend: <span class="fn">str</span>,
+    ep_size: <span class="fn">int</span>,
+    num_experts: <span class="fn">int</span>,
+    num_local_experts: <span class="fn">int</span>,
+    topk: <span class="fn">int</span>,
+    hidden_size: <span class="fn">int</span>,
+    server_args,
+) -> TokenDispatcher:
+
+    <span class="com"># ═══ 决策树 ═══</span>
+    <span class="kw">if</span> ep_size == <span class="num">1</span>:
+        <span class="com"># 单 GPU / 纯 TP 模式</span>
+        <span class="kw">return</span> <span class="fn">StandardDispatcher</span>(
+            num_experts=num_experts,
+            topk=topk,
+        )
+
+    <span class="com"># EP 模式: 根据 a2a_backend 选择实现</span>
+    <span class="kw">if</span> a2a_backend == <span class="str">"deepep_normal"</span>:
+        <span class="kw">return</span> <span class="fn">DeepEPDispatcherNormal</span>(
+            ep_size=ep_size,
+            num_local_experts=num_local_experts,
+            hidden_size=hidden_size,
+            ep_group=get_ep_group(),
+        )
+    <span class="kw">elif</span> a2a_backend == <span class="str">"deepep_low_latency"</span>:
+        <span class="kw">return</span> <span class="fn">DeepEPDispatcherLowLatency</span>(
+            ep_size=ep_size,
+            num_local_experts=num_local_experts,
+            hidden_size=hidden_size,
+            symmetric_mem_size=server_args.deepep_sym_mem_size,
+            max_tokens_per_expert=server_args.max_tokens_per_expert,
+        )
+    <span class="kw">elif</span> a2a_backend == <span class="str">"flashinfer"</span>:
+        <span class="kw">return</span> <span class="fn">FlashinferDispatcher</span>(...)
+    <span class="kw">else</span>:
+        <span class="kw">raise</span> ValueError(f<span class="str">"Unknown: {a2a_backend}"</span>)</code></pre>
+</div>
+
+<div class="callout info">
+<strong>a2a_backend 选择建议：</strong> Prefill 用 <code>deepep_normal</code>（大 batch 高吞吐），Decode 用 <code>deepep_low_latency</code>（小 batch 低延迟）。SGLang 支持在 prefill 和 decode 阶段使用不同的 dispatcher。
+</div>
+
+<!-- Section: EPLB -->
+<h2 id="eplb"><span class="step">06</span>EPLB: Expert 动态负载均衡</h2>
+
+<p>MoE 的一个核心问题是 <strong>负载不均衡</strong>：某些 hot expert 被频繁路由，而 cold expert 几乎不被使用。EPLB 通过动态调整 Expert 的物理分布来缓解这一问题。</p>
+
+<div class="card">
+<h3>EPLB 核心思路</h3>
+<pre><code><span class="com"># EPLB = Expert-Level Load Balancing</span>
+<span class="com"># 核心思想: 热门 expert 复制到多个 GPU，冷门 expert 合并</span>
+
+<span class="com"># 1. 统计每个 expert 的负载</span>
+expert_load = <span class="fn">collect_load_statistics</span>(topk_ids_history)
+<span class="com"># expert_load: [num_experts] — 每个 expert 收到的 token 数</span>
+
+<span class="com"># 2. 决定哪些 expert 需要复制</span>
+<span class="com"># 热门 expert 复制到多个 GPU</span>
+replication_plan = <span class="fn">compute_replication</span>(
+    expert_load,
+    num_physical_slots=num_local_experts * ep_size,
+    max_replicas=max_replicas_per_expert,
+)
+<span class="com"># replication_plan: {expert_id: num_replicas}</span>
+
+<span class="com"># 3. 更新 logical → physical 映射表</span>
+logical_to_physical = <span class="fn">build_mapping</span>(replication_plan)
+<span class="com"># logical_to_physical: [num_experts] → [physical_expert_id, gpu_id]</span></code></pre>
+</div>
+
+<div class="grid cols-2">
+<div class="card">
+<h4>无 EPLB（静态分配）</h4>
+<pre><code>GPU0: [E0, E1, E2, E3]  ← E0 过载
+GPU1: [E4, E5, E6, E7]  ← E7 空闲
+<span class="com"># GPU0 成为瓶颈</span></code></pre>
+</div>
+<div class="card">
+<h4>有 EPLB（动态复制）</h4>
+<pre><code>GPU0: [E0, E1, E2, E0'] ← E0 复制
+GPU1: [E4, E5, E0'',E7] ← E0 再复制
+<span class="com"># E0 负载分散到 3 个副本</span>
+<span class="com"># E3, E6 被迁移或合并</span></code></pre>
+</div>
+</div>
+
+<!-- Section: Remap -->
+<h2 id="remap"><span class="step">07</span>Expert ID 重映射: logical → physical</h2>
+
+<p>当 EPLB 启用后，Router 输出的是 <strong>逻辑 Expert ID</strong>，需要映射为 <strong>物理 Expert ID</strong>（考虑复制）：</p>
+
+<div class="card">
+<pre><code><span class="kw">def</span> <span class="fn">topk_ids_logical_to_physical</span>(
+    topk_ids: torch.Tensor,          <span class="com"># [num_tokens, top_k] logical IDs</span>
+    logical_to_physical: torch.Tensor,<span class="com"># [num_logical_experts, max_replicas]</span>
+    rand_seeds: Optional[torch.Tensor] = <span class="kw">None</span>,
+) -> torch.Tensor:
+    <span class="str">"""
+    将逻辑 expert ID 转换为物理 expert ID。
+    如果一个逻辑 expert 有多个物理副本，随机选择一个。
+    """</span>
+    <span class="com"># 例: logical expert 5 有 3 个副本</span>
+    <span class="com"># logical_to_physical[5] = [5, 37, 62]  (物理 slot IDs)</span>
+
+    <span class="com"># 随机选一个副本（负载均衡）</span>
+    num_replicas = (logical_to_physical >= <span class="num">0</span>).sum(dim=-<span class="num">1</span>)
+    replica_idx = rand_seeds % num_replicas[topk_ids]
+
+    <span class="com"># 查表得到物理 ID</span>
+    physical_ids = logical_to_physical[topk_ids, replica_idx]
+    <span class="kw">return</span> physical_ids
+
+<span class="com"># 使用位置: dispatch 之前</span>
+<span class="com"># topk_ids = topk_ids_logical_to_physical(topk_ids, mapping)</span>
+<span class="com"># 之后 dispatch 使用物理 ID 确定 token 发往哪个 GPU</span></code></pre>
+</div>
+
+<div class="callout">
+<strong>重映射时机：</strong> 在 Router 输出 topk_ids 之后、dispatch 之前执行。这样 Dispatcher 只需要按物理 ID 做 all-to-all，不需要知道 EPLB 的存在。设计上实现了<strong>关注点分离</strong>。
+</div>
+
+<div class="card">
+<h3>完整数据流</h3>
+<pre><code><span class="com"># 完整 EP + EPLB 数据流</span>
+
+<span class="com"># 1. Router 输出逻辑 expert IDs</span>
+topk_ids_logical = router(hidden_states)  <span class="com"># [tokens, top_k]</span>
+
+<span class="com"># 2. EPLB 重映射为物理 IDs</span>
+topk_ids_physical = <span class="fn">topk_ids_logical_to_physical</span>(
+    topk_ids_logical, mapping_table
+)
+
+<span class="com"># 3. Dispatch: 按物理 ID 将 token 发到目标 GPU</span>
+dispatch_out = dispatcher.dispatch(
+    hidden_states, topk_ids_physical, topk_weights
+)
+
+<span class="com"># 4. Local compute: 每个 GPU 只计算本地 expert</span>
+moe_output = run_moe_core(dispatch_out)
+
+<span class="com"># 5. Combine: 将结果收回原 GPU</span>
+final = dispatcher.combine(moe_output, dispatch_out)</code></pre>
+</div>
+
+<!-- Navigation -->
+<div class="nav">
+  <a href="05-triton-kernel.html">← 05 Triton Kernel 深读</a>
+  <a href="07-production-tuning.html">07 生产调优 →</a>
+</div>
+
+<p class="foot">咕噜的学习笔记 · MoE Deep Dive · Page 06/07</p>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

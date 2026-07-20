@@ -1,0 +1,408 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Roofline 模型 · LLM decode 为什么是 memory-bound</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.slider{width:100%}
+.slider-row{display:flex;align-items:center;gap:12px;margin:8px 0}
+.slider-row label{width:120px;color:var(--mute);font-size:12.5px;font-family:"SF Mono",monospace}
+.slider-row .val{width:80px;color:var(--brand);font-family:"SF Mono",monospace;font-size:13px}
+.stat{display:inline-block;background:#1a1f2b;border:1px solid var(--line);padding:8px 14px;border-radius:8px;margin:4px 6px 4px 0;font-family:"SF Mono",monospace}
+.stat .k{color:var(--mute);font-size:11px;display:block}
+.stat .v{color:var(--brand);font-size:16px}
+.stat .v.bad{color:var(--bad)}
+.stat .v.ok{color:var(--brand)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Roofline 模型 · LLM decode 为什么注定 memory-bound <span class="tag">第零章 · 02/05</span></h1>
+<div class="sub">把"算术强度"这个概念讲到你能手算——拖动滑块直接看到瓶颈在哪里转移，一次理解为什么 batch size 能神奇地提速。</div>
+
+<div class="toc">
+  <a href="#ai">§1 算术强度定义</a>
+  <a href="#roof">§2 Roofline 图</a>
+  <a href="#live">§3 交互滑块</a>
+  <a href="#llm">§4 推 decode</a>
+  <a href="#batch">§5 batch 为什么提速</a>
+  <a href="#takeaway">§6 结论</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="ai"><span class="step">§1</span>算术强度 (Arithmetic Intensity) 到底是什么</h2>
+
+<div class="card">
+<p>就一个公式：</p>
+<pre><span class="num">AI  =  FLOPs / Bytes</span>   <span class="com"># 每搬 1 byte 数据，做了多少次乘加</span></pre>
+
+<h3>两个极端例子</h3>
+<div class="cols-2 grid">
+<div class="card" style="margin:0">
+  <h4 style="color:var(--bad);margin-top:0">例 1 · 向量加法</h4>
+<pre>c[i] = a[i] + b[i]
+<span class="com"># 读 2 个 float = 8 byte</span>
+<span class="com"># 做 1 次加法 = 1 FLOP</span>
+AI = 1 / 8 = <b class="num">0.125</b></pre>
+  <div style="color:var(--bad)">极低 · 极端 memory-bound</div>
+</div>
+<div class="card" style="margin:0">
+  <h4 style="color:var(--brand);margin-top:0">例 2 · 方阵乘 N×N</h4>
+<pre>C = A × B, 三者都是 N×N
+<span class="com"># 读 3·N²·4 byte</span>
+<span class="com"># 做 2·N³ FLOPs</span>
+AI = 2N³ / 12N² = <b class="num">N/6</b></pre>
+  <div style="color:var(--brand)">N=1024 时 AI ≈ 170 · 基本打满算力</div>
+</div>
+</div>
+
+<div class="callout info">
+<b>核心洞察</b>：AI 只看"搬的数据"和"在它上面做的运算"的比值。所以<b>同样是矩阵乘，如果读完就丢、不复用，AI 再大也会变小</b>——FlashAttention 的精髓就是<b>改变 AI</b>，把 softmax 压在 Shared Memory 里做、不回写 HBM。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="roof"><span class="step">§2</span>Roofline 图 · 一张图讲清 GPU 有没有被吃满</h2>
+
+<div class="card">
+<p>把 X 轴画成"算术强度 AI"，Y 轴画成"实际达到的 TFLOPS"，GPU 给你的<b>上限</b>就长成一个"房顶":</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 780 420" width="780">
+  <!-- 坐标系 -->
+  <g stroke="#262b38" stroke-width="1" fill="none">
+    <line x1="80" y1="360" x2="720" y2="360"/>
+    <line x1="80" y1="40"  x2="80"  y2="360"/>
+    <!-- grid -->
+    <g stroke="#1f2430" stroke-dasharray="2 3">
+      <line x1="80" y1="300" x2="720" y2="300"/>
+      <line x1="80" y1="240" x2="720" y2="240"/>
+      <line x1="80" y1="180" x2="720" y2="180"/>
+      <line x1="80" y1="120" x2="720" y2="120"/>
+      <line x1="80" y1="60"  x2="720" y2="60"/>
+    </g>
+  </g>
+  <!-- 轴标签 -->
+  <text x="400" y="395" text-anchor="middle" fill="#8b93a7" font-size="13">算术强度 AI (FLOPs/byte) — 对数坐标</text>
+  <text x="35" y="200" transform="rotate(-90 35 200)" text-anchor="middle" fill="#8b93a7" font-size="13">可达 TFLOPS — 对数坐标</text>
+
+  <!-- X 轴刻度 -->
+  <g fill="#8b93a7" font-family="SF Mono" font-size="11" text-anchor="middle">
+    <text x="140" y="378">0.1</text>
+    <text x="280" y="378">1</text>
+    <text x="420" y="378">10</text>
+    <text x="560" y="378">100</text>
+    <text x="700" y="378">1000</text>
+  </g>
+  <!-- Y 轴刻度 -->
+  <g fill="#8b93a7" font-family="SF Mono" font-size="11" text-anchor="end">
+    <text x="74" y="63">989</text>
+    <text x="74" y="123">316</text>
+    <text x="74" y="183">100</text>
+    <text x="74" y="243">31.6</text>
+    <text x="74" y="303">10</text>
+    <text x="74" y="363">3.16</text>
+  </g>
+
+  <!-- 斜线：带宽顶 -->
+  <line x1="80" y1="400" x2="540" y2="60" stroke="#f87171" stroke-width="3"/>
+  <text x="150" y="240" fill="#f87171" font-size="12" transform="rotate(-38 150 240)">斜线 = HBM 带宽顶 (3.35 TB/s)</text>
+
+  <!-- 水平顶：算力顶 -->
+  <line x1="540" y1="60" x2="720" y2="60" stroke="#6ee7b7" stroke-width="3"/>
+  <text x="620" y="48" fill="#6ee7b7" font-size="12" text-anchor="middle">平顶 = 算力顶 989 TFLOPS</text>
+
+  <!-- 拐点 -->
+  <circle cx="540" cy="60" r="5" fill="#fbbf24"/>
+  <text x="540" y="42" fill="#fbbf24" font-size="12" text-anchor="middle">拐点 AI ≈ 295</text>
+
+  <!-- decode 点 -->
+  <circle cx="280" cy="338" r="7" fill="#f87171"/>
+  <text x="280" y="330" fill="#f87171" font-size="12" text-anchor="middle">decode (AI≈1)</text>
+
+  <!-- prefill 点 -->
+  <circle cx="620" cy="60" r="7" fill="#6ee7b7"/>
+  <text x="620" y="80" fill="#6ee7b7" font-size="12" text-anchor="middle">prefill (AI>100)</text>
+
+  <!-- 区域文字 -->
+  <text x="230" y="110" fill="#f87171" font-size="14" opacity=".7">memory-bound 区</text>
+  <text x="610" y="340" fill="#6ee7b7" font-size="14" opacity=".7">compute-bound 区</text>
+</svg>
+</div>
+
+<h3>三个关键读法</h3>
+<ul class="tight">
+  <li><b>斜线部分</b>：AI 低于 295 时，能达到的 TFLOPS = AI × 带宽——<span style="color:var(--bad)">完全由带宽决定</span></li>
+  <li><b>平顶部分</b>：AI 超过 295 后，带宽不再是瓶颈，算力顶住——<span style="color:var(--brand)">完全由算力决定</span></li>
+  <li><b>拐点 295</b>：这是 H100 FP16 特有的数字（不同卡不同：A100 ≈ 208，RTX 4090 ≈ 164）</li>
+</ul>
+
+<div class="callout">
+<b>工程上这叫"找 roofline 位置"</b>——任何 kernel profile 完，都是一个 (AI, 实际 TFLOPS) 点。点贴近斜线 → 你该优化带宽；点贴近平顶 → 你该优化算法/分 tile。贴不到任何一条线 → 你的 kernel 写得有 bug。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="live"><span class="step">§3</span>交互滑块 · 亲手拖一拖</h2>
+
+<div class="card">
+<p>拖动下面的滑块改变算术强度，看点在 roofline 上移动，以及"你能达到的 TFLOPS"实时变化：</p>
+
+<div class="slider-row">
+  <label>算术强度 AI</label>
+  <input id="aiSlider" class="slider" type="range" min="-2" max="3.5" step="0.05" value="0"/>
+  <span class="val" id="aiVal">1.0</span>
+</div>
+<div class="slider-row">
+  <label>卡型</label>
+  <select id="gpuSel" class="btn">
+    <option value="h100">H100 (FP16)</option>
+    <option value="a100">A100 (FP16)</option>
+    <option value="4090">RTX 4090 (FP16)</option>
+  </select>
+</div>
+
+<div style="margin:10px 0">
+  <span class="stat"><span class="k">算力上限</span><span class="v" id="peakFlops">989 TF</span></span>
+  <span class="stat"><span class="k">带宽上限</span><span class="v" id="peakBw">3.35 TB/s</span></span>
+  <span class="stat"><span class="k">拐点 AI</span><span class="v" id="ridge">295</span></span>
+  <span class="stat"><span class="k">你的 TFLOPS</span><span class="v" id="yourTf">—</span></span>
+  <span class="stat"><span class="k">GPU 利用率</span><span class="v" id="util">—</span></span>
+  <span class="stat"><span class="k">瓶颈</span><span class="v" id="bound">—</span></span>
+</div>
+
+<div class="svg-wrap">
+<svg id="rf" viewBox="0 0 780 360" width="780">
+  <g stroke="#262b38" stroke-width="1" fill="none">
+    <line x1="80" y1="320" x2="720" y2="320"/>
+    <line x1="80" y1="20"  x2="80"  y2="320"/>
+  </g>
+  <g fill="#8b93a7" font-family="SF Mono" font-size="10.5" text-anchor="middle">
+    <text x="140" y="338">0.1</text><text x="280" y="338">1</text>
+    <text x="420" y="338">10</text><text x="560" y="338">100</text><text x="700" y="338">1000</text>
+  </g>
+  <g fill="#8b93a7" font-family="SF Mono" font-size="10.5" text-anchor="end">
+    <text x="74" y="25">peak</text><text x="74" y="105">/3</text>
+    <text x="74" y="185">/10</text><text x="74" y="265">/30</text>
+  </g>
+  <path id="roofPath" d="" stroke="#fbbf24" stroke-width="3" fill="none"/>
+  <circle id="dot" cx="280" cy="300" r="8" fill="#6ee7b7"/>
+  <line id="vLine" x1="280" y1="320" x2="280" y2="300" stroke="#6ee7b7" stroke-dasharray="3 3"/>
+  <line id="hLine" x1="80"  y1="300" x2="280" y2="300" stroke="#6ee7b7" stroke-dasharray="3 3"/>
+</svg>
+</div>
+
+<script>
+const GPUS = {
+  h100: {peak:989, bw:3.35},
+  a100: {peak:312, bw:1.94},
+  4090: {peak:165, bw:1.01},
+};
+const ai = document.getElementById('aiSlider');
+const aiVal = document.getElementById('aiVal');
+const gpuSel = document.getElementById('gpuSel');
+const peakFlops = document.getElementById('peakFlops');
+const peakBw = document.getElementById('peakBw');
+const ridge = document.getElementById('ridge');
+const yourTf = document.getElementById('yourTf');
+const util = document.getElementById('util');
+const bound = document.getElementById('bound');
+const roofPath = document.getElementById('roofPath');
+const dot = document.getElementById('dot');
+const vLine = document.getElementById('vLine');
+const hLine = document.getElementById('hLine');
+
+// 坐标映射：X 对数 [-2,3.5] -> [80,720]; Y 对数 0..peak -> [320,20]
+function x(logAi){ return 80 + (logAi+2)/5.5*640; }
+function yFromTf(tf, peak){
+  // peak at y=20; ratio=tf/peak in log scale
+  if(tf<=0.001) return 320;
+  const r = Math.log10(tf/peak); // -3..0
+  return 320 + Math.max(-3, Math.min(0, r))/3 * 300 * -1;
+}
+
+function redraw(){
+  const g = GPUS[gpuSel.value];
+  const logAI = parseFloat(ai.value);
+  const aiNum = Math.pow(10, logAI);
+  aiVal.textContent = aiNum >= 10 ? aiNum.toFixed(0) : aiNum.toFixed(2);
+
+  const rg = g.peak / (g.bw*2); // bw is TB/s=1e12 B/s; peak is TF=1e12 FLOPS; ridge=peak/bw in FLOPs/byte
+  // ridge point in (AI, TF) coordinate: (rg, peak)
+  peakFlops.textContent = g.peak + ' TF';
+  peakBw.textContent = g.bw.toFixed(2) + ' TB/s';
+  ridge.textContent = rg.toFixed(0);
+
+  // roofline path
+  const logRidge = Math.log10(rg);
+  const x1 = x(-2), y1 = yFromTf(Math.pow(10,-2)*g.bw*1000 /*?*/, g.peak);
+  // Simpler: bandwidth-bound line: TF = AI * BW (TB/s * FLOPs/byte = TFLOPS  since TB=1e12 byte)
+  function tfLine(logAi){
+    const a = Math.pow(10, logAi);
+    const bwTf = a * g.bw; // TF
+    return Math.min(bwTf, g.peak);
+  }
+  let d = '';
+  for(let lx=-2; lx<=3.5; lx+=0.05){
+    const tf = tfLine(lx);
+    const px = x(lx), py = yFromTf(tf, g.peak);
+    d += (d?' L ':'M ') + px.toFixed(1) + ' ' + py.toFixed(1);
+  }
+  roofPath.setAttribute('d', d);
+
+  // your point
+  const myTf = Math.min(aiNum * g.bw, g.peak);
+  const px = x(logAI), py = yFromTf(myTf, g.peak);
+  dot.setAttribute('cx', px); dot.setAttribute('cy', py);
+  vLine.setAttribute('x1', px); vLine.setAttribute('x2', px); vLine.setAttribute('y2', py);
+  hLine.setAttribute('x2', px); hLine.setAttribute('y1', py); hLine.setAttribute('y2', py);
+
+  yourTf.textContent = myTf < 1 ? myTf.toFixed(2)+' TF' : myTf.toFixed(0)+' TF';
+  const u = myTf / g.peak * 100;
+  util.textContent = u.toFixed(1) + '%';
+  util.className = 'v ' + (u>80?'ok': u<20?'bad':'');
+  const isMem = aiNum < rg;
+  bound.textContent = isMem ? 'memory' : 'compute';
+  bound.className = 'v ' + (isMem?'bad':'ok');
+}
+ai.addEventListener('input', redraw);
+gpuSel.addEventListener('change', redraw);
+redraw();
+</script>
+
+<div class="callout warn">
+<b>建议你试 3 组数</b>：
+<br>① AI=1（decode 典型）→ GPU 利用率个位数
+<br>② AI=10（batch=16 的 decode）→ 飞跃一次
+<br>③ AI=200（prefill 典型）→ 直接打满
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="llm"><span class="step">§4</span>亲手推 · 为什么 decode 的 AI ≈ 1</h2>
+
+<div class="card">
+<p>取 Qwen3-8B 规模（d=4096、L=32 层、FFN 倍率 3）、BF16、batch=1 decode：</p>
+
+<h3>Step 1 · 这一步要读什么</h3>
+<pre>一层 Transformer 的权重 ≈
+    QKV_proj   : 3·d·d        = 48M params
+    Out_proj   : d·d           = 16M
+    FFN (gate/up/down) : 3·d·(3d) = 144M
+                                 ─────
+                                 208M params × 2 byte = <b class="num">416 MB / layer</b>
+32 层 ×        = <b class="num">13.3 GB / token</b>   <span class="com"># 每生成 1 个 token 要读完全部权重</span>
+</pre>
+
+<h3>Step 2 · 这一步算了多少</h3>
+<pre>一层的乘加数 ≈ 2 · 208M ≈ 416M FLOPs
+32 层        ≈ 13.3G FLOPs
+  <span class="com"># Attention 部分与 seq 长度相关，此处忽略 seq 不长的情况</span></pre>
+
+<h3>Step 3 · 算 AI</h3>
+<pre>AI = 13.3e9 / 13.3e9 = <b class="num">~1 FLOP/byte</b></pre>
+
+<div class="callout bad">
+这就是为什么 batch=1 的 LLM decode <b>永远</b>跑不满 GPU，无论你卡多强：<b>每搬 13 GB，只算 13 G FLOPs</b>。H100 算力 989 TFLOPS 在这一帧里只能发挥到 3.35 TFLOPS，<b>利用率 0.34%</b>。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="batch"><span class="step">§5</span>batch 为什么能神奇地提速 · AI 的放大器</h2>
+
+<div class="card">
+<p>关键洞察：<b>一组权重搬进来，可以同时服务 B 个请求的 decode</b>——因为每个请求都要乘同一组权重。所以：</p>
+
+<pre>batch=B decode:
+  搬的 byte   = 13.3 GB   <span class="com"># 权重只搬一次</span>
+  算的 FLOPs  = 13.3 G × B <span class="com"># 每个请求各算一次</span>
+  AI          = <b class="num">B</b></pre>
+
+<table>
+<thead><tr><th>batch</th><th>AI</th><th>可达 TFLOPS</th><th>单 token 延迟</th><th>吞吐 (tok/s)</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>1</td><td>3.35</td><td>4 ms</td><td>250</td></tr>
+<tr><td>4</td><td>4</td><td>13.4</td><td>4 ms</td><td>1000</td></tr>
+<tr><td>16</td><td>16</td><td>53.6</td><td>4 ms</td><td>4000</td></tr>
+<tr><td>64</td><td>64</td><td>214</td><td>4 ms</td><td>16000</td></tr>
+<tr><td style="color:var(--brand)">256</td><td style="color:var(--brand)">256</td><td style="color:var(--brand)">858 (近打满)</td><td style="color:var(--brand)">4 ms</td><td style="color:var(--brand)">64000</td></tr>
+<tr><td style="color:var(--bad)">1024</td><td style="color:var(--bad)">1024</td><td style="color:var(--bad)">989 (饱和)</td><td style="color:var(--bad)">15 ms</td><td style="color:var(--bad)">68000</td></tr>
+</tbody>
+</table>
+
+<h3>两个关键观察</h3>
+<ol class="tight">
+  <li><b>batch 从 1 涨到 256，单 token 延迟几乎不变</b>——因为瓶颈是带宽，权重总得搬，算力本来就富余</li>
+  <li><b>超过 batch 256，延迟开始线性涨</b>——算力真打满了，再多也只能排队</li>
+</ol>
+
+<div class="callout">
+<b>这就是 mini-sglang 的 "continuous batching" 想解决的事</b>：尽可能把当前正在 decode 的请求塞到 batch 里凑数，让 AI 逼近 GPU 的拐点。而<b>为什么不能无脑塞</b>？——KV Cache 显存有限（几个 GB 就没了），能并发的 batch 是被 KV 而不是算力卡住的。后面章节的 PrefillAdder、reserved_size 博弈，本质都在算这笔账。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§6</span>带走这三条，配套后续章节食用</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① AI = FLOPs/Bytes</div><div>超过拐点 → GPU 才能真正"忙起来"</div>
+  <div class="k">② decode 原生 AI=1</div><div>永远 memory-bound · 优化只能从"提高 AI"入手</div>
+  <div class="k">③ batch 是免费午餐</div><div>B 个请求共用一次权重搬运 · AI 直接乘 B · 延迟几乎不变</div>
+</div>
+
+<div class="callout info">
+<b>下一章</b>：把目光从硬件转向 Transformer 本身——Attention 那个 <code>softmax(QKᵀ/√d)V</code> 到底在干啥？为什么是三个矩阵不是两个？为什么要除以 √d？ → <a href="03-attention.html" style="color:var(--brand)">00c-attention-from-scratch.html</a>
+</div>
+</div>
+
+<div class="foot">
+第零章 · 02 / 05 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

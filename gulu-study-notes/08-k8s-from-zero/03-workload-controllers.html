@@ -1,0 +1,819 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>工作负载控制器 · Deployment / StatefulSet / DaemonSet / Job</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>工作负载控制器 <span class="tag">第一层 · 03/15</span></h1>
+<div class="sub">Deployment / StatefulSet / DaemonSet / Job——四种控制器各解决什么问题、何时该选哪个、推理场景下怎么用。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么不直接管理 Pod</a>
+  <a href="#deployment">§1 Deployment</a>
+  <a href="#statefulset">§2 StatefulSet</a>
+  <a href="#daemonset">§3 DaemonSet</a>
+  <a href="#job">§4 Job / CronJob</a>
+  <a href="#decision">§5 选择决策树</a>
+  <a href="#takeaway">§6 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么不直接管理 Pod</h2>
+
+<div class="card">
+<p>上一章学了 Pod 的生命周期——你可以直接 <code>kubectl apply</code> 一个裸 Pod。但生产环境里<b>没有人</b>这么做。原因：</p>
+<ul class="tight">
+  <li><b>Pod 死了没人补</b>：裸 Pod 被 OOM Kill、被驱逐、节点挂了，就永远消失了——没有控制器帮你创建新的</li>
+  <li><b>扩缩无从谈起</b>：想从 1 个推理实例扩到 8 个，你得手动写 8 份几乎一样的 YAML</li>
+  <li><b>更新是全量中断</b>：要升级镜像版本，你得先删旧 Pod 再建新 Pod，中间服务不可用</li>
+  <li><b>回滚无迹可寻</b>：新版本出 bug 了，你连上一个版本的 spec 都找不到</li>
+</ul>
+
+<div class="callout info">
+<b>控制器 = 高级 reconcile 循环</b>。第一章讲的 Controller Manager 里跑了一堆内置 controller，每种控制器负责一类工作负载的"期望状态 → 实际状态"对齐。你声明"我要 3 个推理 Pod"，controller 持续保证 3 个在跑。
+</div>
+
+<h3>控制器的共同模式</h3>
+<pre><span style="color:#a78bfa">while</span> true:
+    desired = 从 etcd 读取用户声明的期望状态
+    actual  = 从 etcd 读取当前实际状态
+    <span style="color:#a78bfa">if</span> actual &lt; desired: 创建新 Pod
+    <span style="color:#a78bfa">if</span> actual &gt; desired: 删除多余 Pod
+    <span style="color:#a78bfa">if</span> Pod template 变了: 按策略滚动替换
+    wait for next event
+</pre>
+
+<p>K8S 提供了四种内置工作负载控制器，覆盖所有场景：</p>
+<table>
+<thead><tr><th>控制器</th><th>解决什么问题</th><th>典型推理场景</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>Deployment</b></td><td>无状态应用的多副本管理 + 滚动更新</td><td>SGLang / vLLM 无状态推理实例</td></tr>
+<tr><td style="color:#fbbf24"><b>StatefulSet</b></td><td>有状态应用的稳定标识 + 有序管理</td><td>PD 分离的 Decode Worker、模型分片服务</td></tr>
+<tr><td style="color:#a78bfa"><b>DaemonSet</b></td><td>每个节点跑一个 Pod</td><td>GPU 监控 agent、device-plugin、日志收集</td></tr>
+<tr><td style="color:#fb7185"><b>Job / CronJob</b></td><td>一次性 / 定时批任务</td><td>批量离线推理、模型评估、数据预处理</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>核心观念</b>：你管的是控制器（Deployment / StatefulSet），不是 Pod。Pod 是控制器创建的"执行单元"，随时可以被销毁和重建。不要 <code>kubectl delete pod</code> 去"重启"服务——用 <code>kubectl rollout restart</code> 让控制器帮你做。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="deployment"><span class="step">§1</span>Deployment · 无状态应用的标准答案</h2>
+
+<div class="card">
+<p><code>Deployment</code> 是最常用的工作负载控制器，适用于<b>任意副本都等价、可以随时创建销毁</b>的无状态服务。推理服务 90% 的场景用它。</p>
+
+<h3>Deployment → ReplicaSet → Pod 的层级关系</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 230" width="900">
+  <!-- Deployment -->
+  <rect x="320" y="10" width="260" height="50" rx="10" fill="#1f2937" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="450" y="35" text-anchor="middle" fill="#6ee7b7" font-size="14" font-weight="700">Deployment</text>
+  <text x="450" y="50" text-anchor="middle" fill="#8b93a7" font-size="10">声明期望状态 + 管理更新策略</text>
+
+  <!-- 连线 -->
+  <line x1="380" y1="60" x2="250" y2="90" stroke="#fbbf24" stroke-width="1.5"/>
+  <line x1="520" y1="60" x2="650" y2="90" stroke="#8b93a7" stroke-width="1.2" stroke-dasharray="4 3"/>
+
+  <!-- ReplicaSet (current) -->
+  <rect x="140" y="90" width="220" height="45" rx="8" fill="#1f2937" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="250" y="112" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">ReplicaSet (revision 3) - 当前</text>
+  <text x="250" y="127" text-anchor="middle" fill="#8b93a7" font-size="10">replicas: 3</text>
+
+  <!-- ReplicaSet (old) -->
+  <rect x="540" y="90" width="220" height="45" rx="8" fill="#1f2937" stroke="#8b93a7" stroke-dasharray="4 3"/>
+  <text x="650" y="112" text-anchor="middle" fill="#8b93a7" font-size="12">ReplicaSet (revision 2) - 历史</text>
+  <text x="650" y="127" text-anchor="middle" fill="#8b93a7" font-size="10">replicas: 0（保留用于回滚）</text>
+
+  <!-- Pods -->
+  <line x1="190" y1="135" x2="150" y2="165" stroke="#fbbf24" stroke-width="1"/>
+  <line x1="250" y1="135" x2="250" y2="165" stroke="#fbbf24" stroke-width="1"/>
+  <line x1="310" y1="135" x2="350" y2="165" stroke="#fbbf24" stroke-width="1"/>
+
+  <rect x="110" y="165" width="80" height="35" rx="6" fill="#fbbf24" opacity=".2" stroke="#fbbf24"/>
+  <text x="150" y="187" text-anchor="middle" fill="#fbbf24" font-size="11">Pod-a1b</text>
+
+  <rect x="210" y="165" width="80" height="35" rx="6" fill="#fbbf24" opacity=".2" stroke="#fbbf24"/>
+  <text x="250" y="187" text-anchor="middle" fill="#fbbf24" font-size="11">Pod-c3d</text>
+
+  <rect x="310" y="165" width="80" height="35" rx="6" fill="#fbbf24" opacity=".2" stroke="#fbbf24"/>
+  <text x="350" y="187" text-anchor="middle" fill="#fbbf24" font-size="11">Pod-e5f</text>
+
+  <!-- 说明 -->
+  <text x="110" y="220" fill="#8b93a7" font-size="11">Deployment 不直接管 Pod，而是通过 ReplicaSet 间接管理。每次更新 template 会创建新 RS，旧 RS 保留支持回滚。</text>
+</svg>
+</div>
+
+<h3>为什么中间要多一层 ReplicaSet？</h3>
+<ul class="tight">
+  <li><b>版本追踪</b>：每个 ReplicaSet 对应一个 Pod template 版本（revision），滚动更新 = 新 RS 扩容 + 旧 RS 缩容</li>
+  <li><b>回滚能力</b>：旧 ReplicaSet 保留着（replicas=0），回滚只需把旧 RS 扩回来</li>
+  <li><b>职责清晰</b>：ReplicaSet 只管"维持 N 个 Pod"，Deployment 管"版本演进策略"</li>
+</ul>
+
+<div class="callout warn">
+<b>注意</b>：只有 <code>spec.template</code> 的变更才会触发滚动更新并创建新 ReplicaSet。改 <code>replicas</code> 只是在当前 RS 上 scale，不会产生新版本。
+</div>
+
+<h3>滚动更新策略（maxSurge / maxUnavailable）</h3>
+<pre><span style="color:#6ee7b7">apiVersion</span>: apps/v1
+<span style="color:#6ee7b7">kind</span>: Deployment
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: sglang-inference
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">replicas</span>: 4                          <span style="color:#8b93a7"># 期望 4 个推理实例</span>
+  <span style="color:#6ee7b7">revisionHistoryLimit</span>: 5              <span style="color:#8b93a7"># 保留最近 5 个历史 RS（用于回滚）</span>
+  <span style="color:#6ee7b7">strategy</span>:
+    <span style="color:#6ee7b7">type</span>: RollingUpdate
+    <span style="color:#6ee7b7">rollingUpdate</span>:
+      <span style="color:#6ee7b7">maxSurge</span>: 1                     <span style="color:#8b93a7"># 更新时最多多出 1 个 Pod（总数最多 5）</span>
+      <span style="color:#6ee7b7">maxUnavailable</span>: 0               <span style="color:#8b93a7"># 更新时不允许少于 4 个可用（零宕机）</span>
+  <span style="color:#6ee7b7">selector</span>:
+    <span style="color:#6ee7b7">matchLabels</span>:
+      app: sglang-inference
+  <span style="color:#6ee7b7">template</span>:
+    <span style="color:#6ee7b7">metadata</span>:
+      <span style="color:#6ee7b7">labels</span>:
+        app: sglang-inference
+    <span style="color:#6ee7b7">spec</span>:
+      <span style="color:#6ee7b7">containers</span>:
+      - <span style="color:#6ee7b7">name</span>: sglang
+        <span style="color:#6ee7b7">image</span>: lmsys/sglang:v0.4.5-cu124  <span style="color:#8b93a7"># 更新此字段触发滚动更新</span>
+        <span style="color:#6ee7b7">ports</span>:
+        - <span style="color:#6ee7b7">containerPort</span>: 30000
+        <span style="color:#6ee7b7">resources</span>:
+          <span style="color:#6ee7b7">limits</span>:
+            nvidia.com/gpu: "1"        <span style="color:#8b93a7"># 每副本 1 块 GPU</span>
+          <span style="color:#6ee7b7">requests</span>:
+            cpu: "4"
+            memory: "32Gi"
+        <span style="color:#6ee7b7">startupProbe</span>:                  <span style="color:#8b93a7"># 模型加载可能 60-120s</span>
+          <span style="color:#6ee7b7">httpGet</span>:
+            path: /health
+            port: 30000
+          <span style="color:#6ee7b7">periodSeconds</span>: 5
+          <span style="color:#6ee7b7">failureThreshold</span>: 30         <span style="color:#8b93a7"># 最多等 150s</span>
+        <span style="color:#6ee7b7">readinessProbe</span>:
+          <span style="color:#6ee7b7">httpGet</span>:
+            path: /health_generate
+            port: 30000
+          <span style="color:#6ee7b7">periodSeconds</span>: 5
+        <span style="color:#6ee7b7">lifecycle</span>:
+          <span style="color:#6ee7b7">preStop</span>:
+            <span style="color:#6ee7b7">exec</span>:
+              <span style="color:#6ee7b7">command</span>: ["/bin/sh", "-c", "sleep 5"]
+      <span style="color:#6ee7b7">terminationGracePeriodSeconds</span>: 90
+</pre>
+
+<h4>maxSurge 和 maxUnavailable 的组合效果</h4>
+<table>
+<thead><tr><th>组合</th><th>效果</th><th>适用场景</th></tr></thead>
+<tbody>
+<tr><td><code>maxSurge=1, maxUnavailable=0</code></td><td>先建新再删旧，始终不低于期望数</td><td>GPU 推理服务（<b>推荐</b>）——不能容忍容量下降</td></tr>
+<tr><td><code>maxSurge=0, maxUnavailable=1</code></td><td>先删旧再建新，节省资源</td><td>GPU 紧张时可接受短暂容量下降</td></tr>
+<tr><td><code>maxSurge=25%, maxUnavailable=25%</code></td><td>默认值，同时有新旧 Pod 在替换</td><td>普通 Web 服务，快速更新</td></tr>
+</tbody>
+</table>
+
+<h4>滚动更新过程可视化</h4>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 300" width="900">
+  <!-- 标题 -->
+  <text x="20" y="20" fill="#6ee7b7" font-size="13" font-weight="700">replicas=4, maxSurge=1, maxUnavailable=0 的滚动更新过程</text>
+
+  <!-- 时间轴 -->
+  <line x1="80" y1="45" x2="80" y2="270" stroke="#262b38" stroke-width="2"/>
+  <text x="20" y="50" fill="#8b93a7" font-size="10">时间</text>
+
+  <!-- Step 1: 更新前 -->
+  <text x="100" y="65" fill="#8b93a7" font-size="11">t0  更新前</text>
+  <rect x="260" y="52" width="55" height="22" rx="4" fill="#a78bfa" opacity=".3" stroke="#a78bfa"/><text x="272" y="67" fill="#a78bfa" font-size="9">v1</text>
+  <rect x="325" y="52" width="55" height="22" rx="4" fill="#a78bfa" opacity=".3" stroke="#a78bfa"/><text x="337" y="67" fill="#a78bfa" font-size="9">v1</text>
+  <rect x="390" y="52" width="55" height="22" rx="4" fill="#a78bfa" opacity=".3" stroke="#a78bfa"/><text x="402" y="67" fill="#a78bfa" font-size="9">v1</text>
+  <rect x="455" y="52" width="55" height="22" rx="4" fill="#a78bfa" opacity=".3" stroke="#a78bfa"/><text x="467" y="67" fill="#a78bfa" font-size="9">v1</text>
+  <text x="540" y="67" fill="#8b93a7" font-size="10">available=4</text>
+
+  <!-- Step 2: 创建第 5 个 (surge) -->
+  <text x="100" y="110" fill="#8b93a7" font-size="11">t1  创建新 Pod (surge)</text>
+  <rect x="260" y="97" width="55" height="22" rx="4" fill="#a78bfa" opacity=".3" stroke="#a78bfa"/><text x="272" y="112" fill="#a78bfa" font-size="9">v1</text>
+  <rect x="325" y="97" width="55" height="22" rx="4" fill="#a78bfa" opacity=".3" stroke="#a78bfa"/><text x="337" y="112" fill="#a78bfa" font-size="9">v1</text>
+  <rect x="390" y="97" width="55" height="22" rx="4" fill="#a78bfa" opacity=".3" stroke="#a78bfa"/><text x="402" y="112" fill="#a78bfa" font-size="9">v1</text>
+  <rect x="455" y="97" width="55" height="22" rx="4" fill="#a78bfa" opacity=".3" stroke="#a78bfa"/><text x="467" y="112" fill="#a78bfa" font-size="9">v1</text>
+  <rect x="520" y="97" width="55" height="22" rx="4" fill="#6ee7b7" opacity=".3" stroke="#6ee7b7"/><text x="532" y="112" fill="#6ee7b7" font-size="9">v2</text>
+  <text x="600" y="112" fill="#8b93a7" font-size="10">total=5</text>
+
+  <!-- Step 3: 新 Pod ready, 删旧 -->
+  <text x="100" y="155" fill="#8b93a7" font-size="11">t2  v2 ready, 删 1 个 v1</text>
+  <rect x="260" y="142" width="55" height="22" rx="4" fill="#8b93a7" opacity=".15" stroke="#8b93a7" stroke-dasharray="3 2"/><text x="272" y="157" fill="#8b93a7" font-size="9">v1 X</text>
+  <rect x="325" y="142" width="55" height="22" rx="4" fill="#a78bfa" opacity=".3" stroke="#a78bfa"/><text x="337" y="157" fill="#a78bfa" font-size="9">v1</text>
+  <rect x="390" y="142" width="55" height="22" rx="4" fill="#a78bfa" opacity=".3" stroke="#a78bfa"/><text x="402" y="157" fill="#a78bfa" font-size="9">v1</text>
+  <rect x="455" y="142" width="55" height="22" rx="4" fill="#a78bfa" opacity=".3" stroke="#a78bfa"/><text x="467" y="157" fill="#a78bfa" font-size="9">v1</text>
+  <rect x="520" y="142" width="55" height="22" rx="4" fill="#6ee7b7" opacity=".3" stroke="#6ee7b7"/><text x="532" y="157" fill="#6ee7b7" font-size="9">v2</text>
+  <text x="600" y="157" fill="#8b93a7" font-size="10">available=4</text>
+
+  <!-- Step 4: 继续 -->
+  <text x="100" y="200" fill="#8b93a7" font-size="11">t3  重复: 建新 → ready → 删旧</text>
+  <rect x="260" y="187" width="55" height="22" rx="4" fill="#8b93a7" opacity=".15" stroke="#8b93a7" stroke-dasharray="3 2"/><text x="272" y="202" fill="#8b93a7" font-size="9">v1 X</text>
+  <rect x="325" y="187" width="55" height="22" rx="4" fill="#8b93a7" opacity=".15" stroke="#8b93a7" stroke-dasharray="3 2"/><text x="337" y="202" fill="#8b93a7" font-size="9">v1 X</text>
+  <rect x="390" y="187" width="55" height="22" rx="4" fill="#a78bfa" opacity=".3" stroke="#a78bfa"/><text x="402" y="202" fill="#a78bfa" font-size="9">v1</text>
+  <rect x="455" y="187" width="55" height="22" rx="4" fill="#6ee7b7" opacity=".3" stroke="#6ee7b7"/><text x="467" y="202" fill="#6ee7b7" font-size="9">v2</text>
+  <rect x="520" y="187" width="55" height="22" rx="4" fill="#6ee7b7" opacity=".3" stroke="#6ee7b7"/><text x="532" y="202" fill="#6ee7b7" font-size="9">v2</text>
+  <rect x="585" y="187" width="55" height="22" rx="4" fill="#6ee7b7" opacity=".3" stroke="#6ee7b7"/><text x="597" y="202" fill="#6ee7b7" font-size="9">v2</text>
+  <text x="665" y="202" fill="#8b93a7" font-size="10">available=4</text>
+
+  <!-- Step 5: 完成 -->
+  <text x="100" y="245" fill="#8b93a7" font-size="11">t4  完成</text>
+  <rect x="260" y="232" width="55" height="22" rx="4" fill="#6ee7b7" opacity=".3" stroke="#6ee7b7"/><text x="272" y="247" fill="#6ee7b7" font-size="9">v2</text>
+  <rect x="325" y="232" width="55" height="22" rx="4" fill="#6ee7b7" opacity=".3" stroke="#6ee7b7"/><text x="337" y="247" fill="#6ee7b7" font-size="9">v2</text>
+  <rect x="390" y="232" width="55" height="22" rx="4" fill="#6ee7b7" opacity=".3" stroke="#6ee7b7"/><text x="402" y="247" fill="#6ee7b7" font-size="9">v2</text>
+  <rect x="455" y="232" width="55" height="22" rx="4" fill="#6ee7b7" opacity=".3" stroke="#6ee7b7"/><text x="467" y="247" fill="#6ee7b7" font-size="9">v2</text>
+  <text x="540" y="247" fill="#6ee7b7" font-size="10">done!</text>
+
+  <!-- 注释 -->
+  <text x="100" y="280" fill="#fbbf24" font-size="11">整个过程可用 Pod 数始终 >= 4（maxUnavailable=0 保证），每一步都等 readinessProbe 通过后才继续。</text>
+</svg>
+</div>
+
+<h3>回滚机制（revision history）</h3>
+<pre><span style="color:#8b93a7"># 查看历史版本</span>
+$ kubectl rollout history deployment/sglang-inference
+REVISION  CHANGE-CAUSE
+1         初始部署 sglang:v0.4.3
+2         升级到 sglang:v0.4.4
+3         升级到 sglang:v0.4.5（当前）
+
+<span style="color:#8b93a7"># 回滚到上一个版本</span>
+$ kubectl rollout undo deployment/sglang-inference
+
+<span style="color:#8b93a7"># 回滚到指定版本</span>
+$ kubectl rollout undo deployment/sglang-inference --to-revision=1
+
+<span style="color:#8b93a7"># 查看当前滚动状态</span>
+$ kubectl rollout status deployment/sglang-inference
+</pre>
+
+<div class="callout info">
+<b>回滚的本质</b>：Deployment 把旧 ReplicaSet 的 replicas 从 0 扩回去，把当前 RS 缩到 0。这也是为什么 <code>revisionHistoryLimit</code> 不能设为 0——设为 0 意味着删除所有旧 RS，无法回滚。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+推理服务的滚动更新比普通 Web 服务慢得多：每个新 Pod 要拉镜像（~15GB）+ 加载模型权重到 GPU（60-120s）。建议 <code>maxSurge=1, maxUnavailable=0</code>，搭配 <code>minReadySeconds: 30</code>（新 Pod ready 后再观察 30s 才继续替换下一个），避免新版本有 bug 时一口气替换完才发现。
+</div>
+
+<div class="callout bad">
+<b>常见错误</b>：推理 Deployment 用了默认的 <code>maxSurge=25%</code>。4 副本 × 25% = 多创建 1 个 Pod，但 GPU 节点只剩 0 块空闲 GPU → 新 Pod Pending → 旧 Pod 已经开始被删（maxUnavailable=25% = 可以少 1 个）→ 服务容量从 4 降到 3 却没有新 Pod 补上。<b>GPU 场景务必显式配置 maxSurge 和 maxUnavailable</b>。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="statefulset"><span class="step">§2</span>StatefulSet · 有状态应用</h2>
+
+<div class="card">
+<p><code>StatefulSet</code> 为每个 Pod 提供<b>稳定的网络标识</b>和<b>持久化存储</b>。Pod 不再是"等价可替换的"——每个有唯一身份。</p>
+
+<h3>与 Deployment 的核心区别</h3>
+<table>
+<thead><tr><th>特性</th><th>Deployment</th><th>StatefulSet</th></tr></thead>
+<tbody>
+<tr><td>Pod 名称</td><td>随机后缀 <code>sglang-7f8b4c-x9k2p</code></td><td>有序编号 <code>sglang-0, sglang-1, sglang-2</code></td></tr>
+<tr><td>网络标识</td><td>无稳定 DNS，通过 Service VIP 访问</td><td>每个 Pod 有固定 DNS：<code>pod-name.headless-svc</code></td></tr>
+<tr><td>存储</td><td>多副本共享或无持久存储</td><td>每个 Pod 有独立 PVC（<code>volumeClaimTemplates</code>）</td></tr>
+<tr><td>启停顺序</td><td>并行随机</td><td>有序：启动 0→1→2，缩容 2→1→0</td></tr>
+<tr><td>更新</td><td>按 maxSurge 并行</td><td>逐个替换（从最大序号开始）</td></tr>
+<tr><td>Pod 重建后</td><td>新名字、可能新节点</td><td>同名、绑定同一 PVC</td></tr>
+</tbody>
+</table>
+
+<h3>稳定网络标识（ordinal index + headless service）</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 200" width="900">
+  <!-- Headless Service -->
+  <rect x="250" y="10" width="400" height="40" rx="8" fill="#1f2937" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="450" y="35" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="600">Headless Service: sglang-decode-hl (clusterIP: None)</text>
+
+  <!-- 连线 -->
+  <line x1="350" y1="50" x2="170" y2="85" stroke="#7dd3fc" stroke-width="1"/>
+  <line x1="450" y1="50" x2="450" y2="85" stroke="#7dd3fc" stroke-width="1"/>
+  <line x1="550" y1="50" x2="730" y2="85" stroke="#7dd3fc" stroke-width="1"/>
+
+  <!-- Pod 0 -->
+  <rect x="90" y="85" width="160" height="70" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="170" y="107" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">sglang-decode-0</text>
+  <text x="170" y="125" text-anchor="middle" fill="#8b93a7" font-size="9.5">sglang-decode-0</text>
+  <text x="170" y="140" text-anchor="middle" fill="#8b93a7" font-size="9.5">.sglang-decode-hl.ns.svc</text>
+
+  <!-- Pod 1 -->
+  <rect x="370" y="85" width="160" height="70" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="450" y="107" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">sglang-decode-1</text>
+  <text x="450" y="125" text-anchor="middle" fill="#8b93a7" font-size="9.5">sglang-decode-1</text>
+  <text x="450" y="140" text-anchor="middle" fill="#8b93a7" font-size="9.5">.sglang-decode-hl.ns.svc</text>
+
+  <!-- Pod 2 -->
+  <rect x="650" y="85" width="160" height="70" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="730" y="107" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">sglang-decode-2</text>
+  <text x="730" y="125" text-anchor="middle" fill="#8b93a7" font-size="9.5">sglang-decode-2</text>
+  <text x="730" y="140" text-anchor="middle" fill="#8b93a7" font-size="9.5">.sglang-decode-hl.ns.svc</text>
+
+  <!-- PVC 标注 -->
+  <rect x="115" y="158" width="110" height="20" rx="4" fill="#a78bfa" opacity=".15" stroke="#a78bfa"/>
+  <text x="170" y="172" text-anchor="middle" fill="#a78bfa" font-size="9">PVC: kv-cache-0</text>
+
+  <rect x="395" y="158" width="110" height="20" rx="4" fill="#a78bfa" opacity=".15" stroke="#a78bfa"/>
+  <text x="450" y="172" text-anchor="middle" fill="#a78bfa" font-size="9">PVC: kv-cache-1</text>
+
+  <rect x="675" y="158" width="110" height="20" rx="4" fill="#a78bfa" opacity=".15" stroke="#a78bfa"/>
+  <text x="730" y="172" text-anchor="middle" fill="#a78bfa" font-size="9">PVC: kv-cache-2</text>
+
+  <!-- 说明 -->
+  <text x="90" y="195" fill="#8b93a7" font-size="11">每个 Pod 有固定 ordinal（0, 1, 2）、固定 DNS、独立 PVC。Pod 重建后名字和 PVC 不变。</text>
+</svg>
+</div>
+
+<h3>有序启停</h3>
+<ul class="tight">
+  <li><b>默认 OrderedReady</b>：Pod-0 Ready 后才创建 Pod-1 → Pod-1 Ready 后才创建 Pod-2</li>
+  <li><b>缩容反序</b>：先删 Pod-N → 再删 Pod-N-1（保证 0 号是最后被删的）</li>
+  <li><b>Parallel 模式</b>：设置 <code>podManagementPolicy: Parallel</code> 可并行启停，适合无顺序依赖的场景</li>
+</ul>
+
+<h3>volumeClaimTemplates · 每个 Pod 独立 PVC</h3>
+<pre><span style="color:#6ee7b7">apiVersion</span>: v1
+<span style="color:#6ee7b7">kind</span>: Service
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: sglang-decode-hl           <span style="color:#8b93a7"># Headless Service</span>
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">clusterIP</span>: None                  <span style="color:#8b93a7"># 关键! 无 VIP, DNS 直接解析到 Pod IP</span>
+  <span style="color:#6ee7b7">selector</span>:
+    app: sglang-decode
+  <span style="color:#6ee7b7">ports</span>:
+  - <span style="color:#6ee7b7">port</span>: 30000
+---
+<span style="color:#6ee7b7">apiVersion</span>: apps/v1
+<span style="color:#6ee7b7">kind</span>: StatefulSet
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: sglang-decode
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">serviceName</span>: sglang-decode-hl     <span style="color:#8b93a7"># 绑定 Headless Service</span>
+  <span style="color:#6ee7b7">replicas</span>: 4
+  <span style="color:#6ee7b7">podManagementPolicy</span>: Parallel    <span style="color:#8b93a7"># 并行启动, 不需要等上一个 Ready</span>
+  <span style="color:#6ee7b7">selector</span>:
+    <span style="color:#6ee7b7">matchLabels</span>:
+      app: sglang-decode
+  <span style="color:#6ee7b7">template</span>:
+    <span style="color:#6ee7b7">metadata</span>:
+      <span style="color:#6ee7b7">labels</span>:
+        app: sglang-decode
+    <span style="color:#6ee7b7">spec</span>:
+      <span style="color:#6ee7b7">containers</span>:
+      - <span style="color:#6ee7b7">name</span>: decode-worker
+        <span style="color:#6ee7b7">image</span>: lmsys/sglang:v0.4.5-cu124
+        <span style="color:#6ee7b7">env</span>:
+        - <span style="color:#6ee7b7">name</span>: WORKER_ID              <span style="color:#8b93a7"># 通过 Pod ordinal 获取身份</span>
+          <span style="color:#6ee7b7">valueFrom</span>:
+            <span style="color:#6ee7b7">fieldRef</span>:
+              <span style="color:#6ee7b7">fieldPath</span>: metadata.labels['apps.kubernetes.io/pod-index']
+        <span style="color:#6ee7b7">volumeMounts</span>:
+        - <span style="color:#6ee7b7">name</span>: kv-cache
+          <span style="color:#6ee7b7">mountPath</span>: /data/kv-cache   <span style="color:#8b93a7"># 每个 worker 独立的 KV Cache 目录</span>
+        <span style="color:#6ee7b7">resources</span>:
+          <span style="color:#6ee7b7">limits</span>:
+            nvidia.com/gpu: "1"
+  <span style="color:#6ee7b7">volumeClaimTemplates</span>:             <span style="color:#8b93a7"># 每个 Pod 自动创建独立 PVC</span>
+  - <span style="color:#6ee7b7">metadata</span>:
+      <span style="color:#6ee7b7">name</span>: kv-cache
+    <span style="color:#6ee7b7">spec</span>:
+      <span style="color:#6ee7b7">accessModes</span>: ["ReadWriteOnce"]
+      <span style="color:#6ee7b7">storageClassName</span>: local-nvme
+      <span style="color:#6ee7b7">resources</span>:
+        <span style="color:#6ee7b7">requests</span>:
+          <span style="color:#6ee7b7">storage</span>: 200Gi             <span style="color:#8b93a7"># KV Cache 可能很大</span>
+</pre>
+
+<div class="callout info">
+<b>volumeClaimTemplates 的命名规则</b>：自动为每个 Pod 创建 PVC，命名为 <code>{template-name}-{statefulset-name}-{ordinal}</code>。例如 <code>kv-cache-sglang-decode-0</code>、<code>kv-cache-sglang-decode-1</code>。缩容时 PVC 不自动删除，扩容时自动绑定已有 PVC——数据不丢。
+</div>
+
+<h3>什么时候推理服务需要 StatefulSet？</h3>
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+<p style="margin:0"><b>PD 分离（Prefill-Decode disaggregation）场景</b>是 StatefulSet 的典型用例：</p>
+<ul class="tight" style="margin-top:8px">
+  <li>Prefill 节点要通过固定地址路由 KV Cache 到 "Decode-2" → 需要<b>稳定 DNS</b></li>
+  <li>每个 Decode worker 的本地 NVMe 有独立 KV Cache 持久化 → 需要<b>独立 PVC</b></li>
+  <li>重启后必须恢复到同一 identity 才能接回自己的 KV Cache → 需要<b>固定 ordinal</b></li>
+  <li>多机 Tensor Parallel 中每个 worker 需要知道"我是 rank-N, 加载 shard-N" → 需要<b>固定身份</b></li>
+</ul>
+<p style="margin-top:10px">如果你的推理服务每个副本独立加载完整模型、互不通信——<b>用 Deployment</b>，更简单更灵活。</p>
+</div>
+
+<div class="callout bad">
+<b>常见错误</b>：滥用 StatefulSet。如果你的推理副本完全等价、没有持久状态、不需要互相寻址——用 StatefulSet 只会让运维更复杂：更新是逐个串行的（比 Deployment 慢 N 倍）、缩容遗留 PVC 占磁盘、Pod 绑定了特定存储后调度灵活性下降。
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：StatefulSet 更新策略与金丝雀发布</button>
+<div class="expand-content">
+<table>
+<thead><tr><th>策略</th><th>行为</th><th>典型用法</th></tr></thead>
+<tbody>
+<tr><td><code>RollingUpdate</code>（默认）</td><td>从最大序号开始逆序替换，每个 Ready 后继续</td><td>正常升级</td></tr>
+<tr><td><code>RollingUpdate + partition</code></td><td>只更新序号 >= partition 的 Pod</td><td>金丝雀：先更新 Pod-3 验证，再设 partition=0 更新全部</td></tr>
+<tr><td><code>OnDelete</code></td><td>不自动更新，手动删 Pod 后才用新模板重建</td><td>需要精确控制每个实例何时更新</td></tr>
+</tbody>
+</table>
+<pre><span style="color:#8b93a7"># 金丝雀发布：只更新 Pod-3（序号 >= 3），Pod-0/1/2 保持旧版</span>
+<span style="color:#6ee7b7">updateStrategy</span>:
+  <span style="color:#6ee7b7">type</span>: RollingUpdate
+  <span style="color:#6ee7b7">rollingUpdate</span>:
+    <span style="color:#6ee7b7">partition</span>: 3
+
+<span style="color:#8b93a7"># 验证通过后，设 partition=0 → 全部更新</span>
+$ kubectl patch statefulset sglang-decode -p '{"spec":{"updateStrategy":{"rollingUpdate":{"partition":0}}}}'
+</pre>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="daemonset"><span class="step">§3</span>DaemonSet · 每节点一个</h2>
+
+<div class="card">
+<p><code>DaemonSet</code> 确保<b>每个匹配的 Node 上恰好运行一个 Pod</b>。新节点加入自动部署，节点移除自动清理。</p>
+
+<h3>典型场景</h3>
+<table>
+<thead><tr><th>用途</th><th>例子</th><th>为什么必须每节点一个</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>GPU Device Plugin</b></td><td><code>nvidia-device-plugin</code></td><td>注册本节点 GPU 到 kubelet，让 scheduler 能分配</td></tr>
+<tr><td style="color:#fbbf24"><b>监控 Agent</b></td><td>node-exporter, dcgm-exporter</td><td>采集本机 CPU/Mem/GPU 温度/功耗/显存指标</td></tr>
+<tr><td style="color:#a78bfa"><b>日志收集</b></td><td>Fluent Bit, Filebeat</td><td>读取本机 <code>/var/log/containers/</code> 所有容器日志</td></tr>
+<tr><td style="color:#fb7185"><b>网络插件</b></td><td>Calico node, Cilium agent</td><td>配置本节点 Pod 网络规则和路由</td></tr>
+<tr><td style="color:#7dd3fc"><b>存储 CSI</b></td><td>local-path-provisioner</td><td>管理本节点磁盘作为持久卷</td></tr>
+</tbody>
+</table>
+
+<h3>YAML 示例：GPU 监控 DaemonSet</h3>
+<pre><span style="color:#6ee7b7">apiVersion</span>: apps/v1
+<span style="color:#6ee7b7">kind</span>: DaemonSet
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: dcgm-exporter
+  <span style="color:#6ee7b7">namespace</span>: monitoring
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">selector</span>:
+    <span style="color:#6ee7b7">matchLabels</span>:
+      app: dcgm-exporter
+  <span style="color:#6ee7b7">updateStrategy</span>:
+    <span style="color:#6ee7b7">type</span>: RollingUpdate               <span style="color:#8b93a7"># 逐节点滚动更新</span>
+    <span style="color:#6ee7b7">rollingUpdate</span>:
+      <span style="color:#6ee7b7">maxUnavailable</span>: 1                <span style="color:#8b93a7"># 每次最多 1 个节点的 Pod 在更新</span>
+  <span style="color:#6ee7b7">template</span>:
+    <span style="color:#6ee7b7">metadata</span>:
+      <span style="color:#6ee7b7">labels</span>:
+        app: dcgm-exporter
+    <span style="color:#6ee7b7">spec</span>:
+      <span style="color:#6ee7b7">nodeSelector</span>:
+        nvidia.com/gpu.present: "true"  <span style="color:#8b93a7"># 只在有 GPU 的节点部署</span>
+      <span style="color:#6ee7b7">tolerations</span>:
+      - <span style="color:#6ee7b7">key</span>: nvidia.com/gpu             <span style="color:#8b93a7"># 容忍 GPU taint</span>
+        <span style="color:#6ee7b7">operator</span>: Exists
+        <span style="color:#6ee7b7">effect</span>: NoSchedule
+      <span style="color:#6ee7b7">containers</span>:
+      - <span style="color:#6ee7b7">name</span>: dcgm-exporter
+        <span style="color:#6ee7b7">image</span>: nvcr.io/nvidia/k8s/dcgm-exporter:3.3.0
+        <span style="color:#6ee7b7">ports</span>:
+        - <span style="color:#6ee7b7">containerPort</span>: 9400
+          <span style="color:#6ee7b7">name</span>: metrics
+        <span style="color:#6ee7b7">securityContext</span>:
+          <span style="color:#6ee7b7">privileged</span>: true               <span style="color:#8b93a7"># 需要访问 GPU 驱动</span>
+        <span style="color:#6ee7b7">volumeMounts</span>:
+        - <span style="color:#6ee7b7">name</span>: dev
+          <span style="color:#6ee7b7">mountPath</span>: /dev
+      <span style="color:#6ee7b7">volumes</span>:
+      - <span style="color:#6ee7b7">name</span>: dev
+        <span style="color:#6ee7b7">hostPath</span>:
+          <span style="color:#6ee7b7">path</span>: /dev
+</pre>
+
+<h3>updateStrategy（RollingUpdate vs OnDelete）</h3>
+<table>
+<thead><tr><th>策略</th><th>行为</th><th>适用场景</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>RollingUpdate</b>（默认）</td><td>自动逐节点删旧建新，<code>maxUnavailable</code> 控制并行度</td><td>大多数场景——监控、日志收集器升级</td></tr>
+<tr><td style="color:#fbbf24"><b>OnDelete</b></td><td>不自动更新，手动删 Pod 才会用新模板重建</td><td>device-plugin 等关键组件——更新会短暂导致 GPU 不可用，需配合 drain 节点逐个操作</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>maxUnavailable 的含义不同</b>：DaemonSet 每节点只有 1 个 Pod，所以 <code>maxUnavailable=1</code> 表示"同时只有 1 个节点在更新"。想加速可设为 <code>maxUnavailable=3</code>（3 个节点并行更新）或 <code>"20%"</code>。
+</div>
+
+<div class="callout bad">
+<b>常见错误</b>：忘记给 DaemonSet 加 <code>tolerations</code>。GPU 节点通常有 taint（如 <code>nvidia.com/gpu=present:NoSchedule</code>），DaemonSet 的 Pod 也要配对应 toleration 才能调度上去。否则你会看到部分 GPU 节点没有监控 Pod。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+GPU 推理集群中，<code>nvidia-device-plugin</code> DaemonSet 是基础设施的关键。如果它挂了：<br>
+① 新 Pod 无法调度到该节点——GPU 资源"消失"（<code>nvidia.com/gpu</code> Allocatable 变 0）<br>
+② 已运行的 Pod 不受影响——设备绑定已完成<br>
+排障第一步：<code>kubectl get pods -n kube-system -l name=nvidia-device-plugin -o wide</code> 检查对应节点的 Pod 状态。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="job"><span class="step">§4</span>Job / CronJob · 一次性和定时任务</h2>
+
+<div class="card">
+<p><code>Job</code> 确保一个或多个 Pod <b>成功运行至完成</b>。Pod 完成后不会被重建——这是与 Deployment 的根本区别。</p>
+
+<h3>核心参数</h3>
+<table>
+<thead><tr><th>参数</th><th>含义</th><th>默认值</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><code>completions</code></td><td>需要成功完成的 Pod 总数</td><td>1</td></tr>
+<tr><td style="color:#fbbf24"><code>parallelism</code></td><td>同时运行的最大 Pod 数</td><td>1</td></tr>
+<tr><td style="color:#f87171"><code>backoffLimit</code></td><td>累计失败 Pod 数上限（超过则 Job Failed）</td><td>6</td></tr>
+<tr><td style="color:#a78bfa"><code>activeDeadlineSeconds</code></td><td>Job 整体超时（超过则强制终止所有 Pod）</td><td>无限制</td></tr>
+<tr><td style="color:#7dd3fc"><code>ttlSecondsAfterFinished</code></td><td>完成后自动清理 Job 对象的时间</td><td>不清理</td></tr>
+</tbody>
+</table>
+
+<h3>completions / parallelism 组合模式</h3>
+<table>
+<thead><tr><th>completions</th><th>parallelism</th><th>模式</th><th>场景</th></tr></thead>
+<tbody>
+<tr><td>1</td><td>1</td><td>单任务串行</td><td>一次性数据迁移、模型格式转换</td></tr>
+<tr><td>N</td><td>M (M&lt;N)</td><td>固定完成数并行</td><td>批量推理（50 分片 8 并行）</td></tr>
+<tr><td>空</td><td>M</td><td>工作队列模式</td><td>从 Redis/Kafka 消费任务直到队列空</td></tr>
+</tbody>
+</table>
+
+<h3>批量离线推理 Job 示例</h3>
+<pre><span style="color:#6ee7b7">apiVersion</span>: batch/v1
+<span style="color:#6ee7b7">kind</span>: Job
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: batch-inference-qwen3-72b
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">completionMode</span>: Indexed            <span style="color:#8b93a7"># 每个 Pod 获得唯一 JOB_COMPLETION_INDEX</span>
+  <span style="color:#6ee7b7">completions</span>: 50                    <span style="color:#8b93a7"># 50 个数据分片需处理</span>
+  <span style="color:#6ee7b7">parallelism</span>: 8                     <span style="color:#8b93a7"># 同时跑 8 个（受 GPU 数量限制）</span>
+  <span style="color:#6ee7b7">backoffLimit</span>: 10                   <span style="color:#8b93a7"># 允许累计 10 次 Pod 失败</span>
+  <span style="color:#6ee7b7">activeDeadlineSeconds</span>: 7200        <span style="color:#8b93a7"># 整个 Job 2 小时超时</span>
+  <span style="color:#6ee7b7">ttlSecondsAfterFinished</span>: 3600      <span style="color:#8b93a7"># 完成 1 小时后自动清理</span>
+  <span style="color:#6ee7b7">template</span>:
+    <span style="color:#6ee7b7">spec</span>:
+      <span style="color:#6ee7b7">restartPolicy</span>: OnFailure         <span style="color:#8b93a7"># Job Pod 必须是 OnFailure 或 Never</span>
+      <span style="color:#6ee7b7">containers</span>:
+      - <span style="color:#6ee7b7">name</span>: inference
+        <span style="color:#6ee7b7">image</span>: my-registry/batch-inference:v1.2
+        <span style="color:#6ee7b7">command</span>: ["python", "run_batch.py"]
+        <span style="color:#6ee7b7">args</span>:
+        - "--shard-index=$(JOB_COMPLETION_INDEX)"  <span style="color:#8b93a7"># 用索引确定处理哪个分片</span>
+        - "--total-shards=50"
+        - "--model=qwen3-72b"
+        - "--input=cos://bucket/prompts/"
+        - "--output=cos://bucket/results/"
+        <span style="color:#6ee7b7">resources</span>:
+          <span style="color:#6ee7b7">limits</span>:
+            nvidia.com/gpu: "1"
+          <span style="color:#6ee7b7">requests</span>:
+            cpu: "4"
+            memory: "32Gi"
+</pre>
+
+<div class="callout info">
+<b>Indexed Job</b>（K8S 1.24+）：设置 <code>completionMode: Indexed</code> 后，每个 Pod 被分配唯一索引（0 到 completions-1），通过环境变量 <code>JOB_COMPLETION_INDEX</code> 获取。天然适合"数据分片并行处理"——不需要额外消息队列，Job 自带去重保证（同一 index 只会成功一次）。
+</div>
+
+<h3>CronJob · 定时触发 Job</h3>
+<pre><span style="color:#6ee7b7">apiVersion</span>: batch/v1
+<span style="color:#6ee7b7">kind</span>: CronJob
+<span style="color:#6ee7b7">metadata</span>:
+  <span style="color:#6ee7b7">name</span>: nightly-model-eval
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#6ee7b7">schedule</span>: "0 2 * * *"              <span style="color:#8b93a7"># 每天凌晨 2 点执行</span>
+  <span style="color:#6ee7b7">concurrencyPolicy</span>: Forbid          <span style="color:#8b93a7"># 上一次没跑完就跳过本次</span>
+  <span style="color:#6ee7b7">successfulJobsHistoryLimit</span>: 3      <span style="color:#8b93a7"># 保留最近 3 次成功 Job</span>
+  <span style="color:#6ee7b7">failedJobsHistoryLimit</span>: 3          <span style="color:#8b93a7"># 保留最近 3 次失败 Job</span>
+  <span style="color:#6ee7b7">jobTemplate</span>:
+    <span style="color:#6ee7b7">spec</span>:
+      <span style="color:#6ee7b7">template</span>:
+        <span style="color:#6ee7b7">spec</span>:
+          <span style="color:#6ee7b7">restartPolicy</span>: OnFailure
+          <span style="color:#6ee7b7">containers</span>:
+          - <span style="color:#6ee7b7">name</span>: eval
+            <span style="color:#6ee7b7">image</span>: my-registry/model-eval:v2.0
+            <span style="color:#6ee7b7">command</span>: ["python", "eval_benchmark.py"]
+            <span style="color:#6ee7b7">args</span>: ["--model=qwen3-72b", "--benchmarks=mmlu,gsm8k"]
+            <span style="color:#6ee7b7">resources</span>:
+              <span style="color:#6ee7b7">limits</span>:
+                nvidia.com/gpu: "1"
+</pre>
+
+<h4>concurrencyPolicy 选项</h4>
+<table>
+<thead><tr><th>值</th><th>行为</th><th>适用场景</th></tr></thead>
+<tbody>
+<tr><td><code>Allow</code>（默认）</td><td>允许并发——上一次没完也启动新的</td><td>互不影响的任务</td></tr>
+<tr><td><code>Forbid</code></td><td>跳过——上一次还在跑就不启动</td><td>评测任务（不想重复占 GPU）</td></tr>
+<tr><td><code>Replace</code></td><td>取消上一次未完成的，启动新的</td><td>数据始终以最新为准的场景</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>backoffLimit 的坑</b>：<code>backoffLimit</code> 是整个 Job 的<b>累计</b>失败 Pod 数上限，不是单 Pod 重试次数。如果 <code>completions=50, backoffLimit=6</code>，任意 6 个 Pod 失败（可能是不同 shard）就会导致整个 Job Failed。大批量任务建议设为 <code>backoffLimit = completions × 0.2</code>（容忍 20% 失败率）。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+批量离线推理的典型模式：将评测数据集切成 N 个 shard，<code>parallelism</code> 设为可用 GPU 数。每个 Pod 通过 <code>JOB_COMPLETION_INDEX</code> 知道处理哪个 shard。这比手动起 N 个脚本强在：失败自动重试、超时自动终止、完成自动清理、进度一目了然（<code>kubectl get job</code> 看 completions 计数）。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="decision"><span class="step">§5</span>选择决策树</h2>
+
+<div class="card">
+<p>面对一个工作负载，用哪种控制器？跟着这棵决策树走：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 540" width="900">
+  <!-- 根节点 -->
+  <rect x="310" y="15" width="280" height="44" rx="10" fill="#1f2937" stroke="#7dd3fc" stroke-width="2"/>
+  <text x="450" y="42" text-anchor="middle" fill="#7dd3fc" font-size="13" font-weight="700">你的工作负载需要什么？</text>
+
+  <!-- 第一层问题 -->
+  <line x1="370" y1="59" x2="160" y2="105" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="240" y="78" fill="#fbbf24" font-size="10">跑完就结束</text>
+  <line x1="450" y1="59" x2="450" y2="105" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="460" y="78" fill="#6ee7b7" font-size="10">持续运行</text>
+  <line x1="530" y1="59" x2="740" y2="105" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="640" y="78" fill="#a78bfa" font-size="10">每节点一个</text>
+
+  <!-- 左分支：批处理 -->
+  <rect x="60" y="105" width="200" height="40" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="160" y="130" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">需要定时重复吗？</text>
+
+  <line x1="110" y1="145" x2="90" y2="195" stroke="#fbbf24" stroke-width="1.2"/>
+  <text x="70" y="175" fill="#8b93a7" font-size="10">否</text>
+  <line x1="210" y1="145" x2="230" y2="195" stroke="#fbbf24" stroke-width="1.2"/>
+  <text x="232" y="175" fill="#8b93a7" font-size="10">是</text>
+
+  <!-- Job -->
+  <rect x="30" y="195" width="120" height="50" rx="10" fill="#fbbf24" opacity=".15" stroke="#fbbf24" stroke-width="2"/>
+  <text x="90" y="218" text-anchor="middle" fill="#fbbf24" font-size="14" font-weight="700">Job</text>
+  <text x="90" y="236" text-anchor="middle" fill="#8b93a7" font-size="9.5">批量推理 / 转换</text>
+
+  <!-- CronJob -->
+  <rect x="170" y="195" width="120" height="50" rx="10" fill="#fbbf24" opacity=".15" stroke="#fbbf24" stroke-width="2"/>
+  <text x="230" y="218" text-anchor="middle" fill="#fbbf24" font-size="14" font-weight="700">CronJob</text>
+  <text x="230" y="236" text-anchor="middle" fill="#8b93a7" font-size="9.5">定时评测 / 清理</text>
+
+  <!-- 中间分支：持续运行 -->
+  <rect x="350" y="105" width="200" height="40" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="450" y="130" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">Pod 之间等价吗？</text>
+
+  <line x1="400" y1="145" x2="380" y2="195" stroke="#6ee7b7" stroke-width="1.2"/>
+  <text x="366" y="175" fill="#8b93a7" font-size="10">是</text>
+  <line x1="500" y1="145" x2="530" y2="195" stroke="#fb7185" stroke-width="1.2"/>
+  <text x="534" y="175" fill="#8b93a7" font-size="10">否</text>
+
+  <!-- Deployment -->
+  <rect x="320" y="195" width="130" height="50" rx="10" fill="#6ee7b7" opacity=".15" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="385" y="218" text-anchor="middle" fill="#6ee7b7" font-size="14" font-weight="700">Deployment</text>
+  <text x="385" y="236" text-anchor="middle" fill="#8b93a7" font-size="9.5">标准推理服务</text>
+
+  <!-- 右：需要身份？ -->
+  <rect x="470" y="195" width="180" height="40" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="560" y="220" text-anchor="middle" fill="#fb7185" font-size="11" font-weight="600">需要固定身份/持久存储？</text>
+
+  <line x1="560" y1="235" x2="560" y2="280" stroke="#fb7185" stroke-width="1.2"/>
+  <text x="570" y="265" fill="#8b93a7" font-size="10">是</text>
+
+  <!-- StatefulSet -->
+  <rect x="495" y="280" width="130" height="50" rx="10" fill="#fb7185" opacity=".15" stroke="#fb7185" stroke-width="2"/>
+  <text x="560" y="303" text-anchor="middle" fill="#fb7185" font-size="14" font-weight="700">StatefulSet</text>
+  <text x="560" y="321" text-anchor="middle" fill="#8b93a7" font-size="9.5">PD 分离 / 模型分片</text>
+
+  <!-- 右分支：DaemonSet -->
+  <rect x="640" y="105" width="200" height="40" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="740" y="130" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="600">系统基础设施？</text>
+
+  <line x1="740" y1="145" x2="740" y2="195" stroke="#a78bfa" stroke-width="1.2"/>
+  <text x="750" y="175" fill="#8b93a7" font-size="10">是</text>
+
+  <!-- DaemonSet -->
+  <rect x="675" y="195" width="130" height="50" rx="10" fill="#a78bfa" opacity=".15" stroke="#a78bfa" stroke-width="2"/>
+  <text x="740" y="218" text-anchor="middle" fill="#a78bfa" font-size="14" font-weight="700">DaemonSet</text>
+  <text x="740" y="236" text-anchor="middle" fill="#8b93a7" font-size="9.5">监控 / 日志 / 驱动</text>
+
+  <!-- 底部推理场景映射 -->
+  <rect x="50" y="370" width="800" height="155" rx="10" fill="#1f2937" stroke="#262b38"/>
+  <text x="70" y="395" fill="#7dd3fc" font-size="13" font-weight="700">推理场景速查表</text>
+
+  <rect x="70" y="408" width="12" height="12" rx="2" fill="#6ee7b7" opacity=".4"/>
+  <text x="92" y="419" fill="#6ee7b7" font-size="11.5" font-weight="600">Deployment</text>
+  <text x="200" y="419" fill="#8b93a7" font-size="11">SGLang / vLLM / TGI 标准在线推理、API Gateway、Router</text>
+
+  <rect x="70" y="434" width="12" height="12" rx="2" fill="#fb7185" opacity=".4"/>
+  <text x="92" y="445" fill="#fb7185" font-size="11.5" font-weight="600">StatefulSet</text>
+  <text x="200" y="445" fill="#8b93a7" font-size="11">PD 分离 Decode Worker、跨节点 TP 推理组（固定 rank）、带 KV Cache 持久化的实例</text>
+
+  <rect x="70" y="460" width="12" height="12" rx="2" fill="#a78bfa" opacity=".4"/>
+  <text x="92" y="471" fill="#a78bfa" font-size="11.5" font-weight="600">DaemonSet</text>
+  <text x="200" y="471" fill="#8b93a7" font-size="11">nvidia-device-plugin、DCGM GPU exporter、Fluent Bit 日志、CSI driver</text>
+
+  <rect x="70" y="486" width="12" height="12" rx="2" fill="#fbbf24" opacity=".4"/>
+  <text x="92" y="497" fill="#fbbf24" font-size="11.5" font-weight="600">Job</text>
+  <text x="200" y="497" fill="#8b93a7" font-size="11">LLM 批量评测（MMLU/GSM8K）、离线 embedding 生成、模型量化/格式转换</text>
+
+  <rect x="70" y="512" width="12" height="12" rx="2" fill="#fbbf24" opacity=".4"/>
+  <text x="92" y="523" fill="#fbbf24" font-size="11.5" font-weight="600">CronJob</text>
+  <text x="200" y="523" fill="#8b93a7" font-size="11">每日自动化评测回归、定时模型健康检查、周期性 KV Cache / 临时文件清理</text>
+</svg>
+</div>
+
+<div class="callout">
+<b>经验法则</b>：90% 的推理在线服务用 <b>Deployment</b> 就够了。只有当 Pod 之间不等价（需要固定身份、持久卷、有序管理）时，才升级到 StatefulSet。不要为了"感觉更高级"选 StatefulSet——它的运维复杂度显著更高。犹豫不决时先选 Deployment。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§6</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① 不管裸 Pod</div><div>永远通过控制器管理工作负载——自愈、扩缩、滚动更新、回滚全靠它</div>
+  <div class="k">② Deployment</div><div>无状态首选 · Deployment → ReplicaSet → Pod 三层 · 版本管理 + 秒级回滚</div>
+  <div class="k">③ 滚动更新</div><div>maxSurge 控"最多多几个" · maxUnavailable 控"最多少几个" · GPU 场景推荐 1/0</div>
+  <div class="k">④ StatefulSet</div><div>稳定 Pod 名 + DNS + PVC · 有序启停 · PD 分离 / 模型分片场景使用</div>
+  <div class="k">⑤ DaemonSet</div><div>每节点一个 Pod · 监控 / 日志 / device-plugin 的标配 · 别忘 toleration</div>
+  <div class="k">⑥ Job / CronJob</div><div>跑完即止 · completions + parallelism 组合出串行 / 并行 / 队列三种模式</div>
+  <div class="k">⑦ 选择标准</div><div>无状态 → Deployment · 有身份 → StatefulSet · 每节点 → DaemonSet · 一次性 → Job</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——控制器把 Pod 跑起来了，但集群内外如何访问它们？Service 的四种类型（ClusterIP / NodePort / LoadBalancer / Headless）、kube-proxy 的流量转发机制、Ingress 与 Gateway API 的对比。→ <a href="04-service-and-networking.html" style="color:var(--brand)">04-service-and-networking.html</a>
+</div>
+</div>
+
+<div class="foot">
+第一层 · 03 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

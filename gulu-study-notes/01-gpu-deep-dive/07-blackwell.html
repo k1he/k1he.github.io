@@ -1,0 +1,189 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Blackwell 架构详解 · 第一章 07/08</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218;}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}.sub{color:var(--mute);margin-bottom:30px;font-size:15px}h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}.grid{display:grid;gap:16px}.cols-2{grid-template-columns:1fr 1fr}.cols-3{grid-template-columns:repeat(3,1fr)}@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}.svg-wrap svg{max-width:100%;height:auto}.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}.toc a:hover{border-color:var(--brand);color:var(--brand)}table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13px}th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mute);font-weight:500;background:#151a25}.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}.nav{display:flex;justify-content:space-between;margin:40px 0 0;padding-top:20px;border-top:1px solid var(--line);font-size:13px}.nav a{color:var(--brand2);text-decoration:none}.nav a:hover{color:var(--brand)}.num-big{font-size:22px;color:var(--brand);font-family:"SF Mono",monospace;font-weight:600}.chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);color:var(--brand2);padding:2px 8px;border-radius:6px;font-size:11.5px;font-family:"SF Mono",monospace;margin:2px}
+</style>
+</head>
+<body><div class="wrap">
+<h1>Blackwell 架构详解 · 从单卡到 AI Factory <span class="tag">第一章 · 07/08</span></h1>
+<div class="sub">Blackwell 的关键词不是“更快一点”，而是“把一整柜 GPU 当成一颗巨型加速器”。B200/GB200 把双 die 封装、FP4 Transformer Engine、更大的 HBM3e/L2、更强 NVLink/NVL72 推到中心位置。本篇强调公开资料下的架构直觉：它为什么为万亿参数推理而生。</div>
+
+<div class="toc">
+  <a href="#snapshot">§1 Blackwell 快照</a>
+  <a href="#dual">§2 双 die + NV-HBI</a>
+  <a href="#fp4">§3 FP4 与第二代 TE</a>
+  <a href="#memory">§4 HBM3e/L2</a>
+  <a href="#nvlink">§5 NVLink 5 / NVL72</a>
+  <a href="#reliability">§6 可靠性与安全</a>
+  <a href="#llm">§7 LLM 推理影响</a>
+  <a href="#takeaway">§8 带走的八句话</a>
+</div>
+
+<h2 id="snapshot"><span class="step">§1</span>Blackwell 快照：B200/GB200 解决什么问题</h2>
+<div class="card">
+<table>
+<thead><tr><th>项目</th><th>公开资料量级</th><th>架构意义</th></tr></thead>
+<tbody>
+<tr><td>晶体管</td><td>约 208B</td><td>通过双 reticle-class die 继续扩大计算规模</td></tr>
+<tr><td>封装</td><td>两个 GPU die 通过高速 die-to-die 互联</td><td>突破单 die 面积/良率限制</td></tr>
+<tr><td>HBM</td><td>B200 约 192GB HBM3e，约 8TB/s</td><td>更大模型和更长 KV Cache</td></tr>
+<tr><td>L2</td><td>约 192MB 级别</td><td>热权重/KV/activation 更容易命中片上</td></tr>
+<tr><td>Tensor Core</td><td>第五代，支持 FP4/FP6/FP8</td><td>推理吞吐/能效进一步提升</td></tr>
+<tr><td>NVLink</td><td>第五代，单 GPU 双向约 1.8TB/s</td><td>从 8 卡节点走向 72 GPU NVL rack</td></tr>
+<tr><td>系统形态</td><td>GB200 Grace Blackwell、GB200 NVL72</td><td>CPU+GPU+NVSwitch 一体化 AI Factory</td></tr>
+</tbody>
+</table>
+<div class="callout warn"><b>读 Blackwell 的正确姿势</b>：不要只看单卡 TFLOPS。真正的跃迁是：低精度把字节数压下去，HBM/L2 把本地数据喂上去，NVLink/NVL72 把多卡通信开销压下去。</div>
+</div>
+
+<h2 id="dual"><span class="step">§2</span>双 die + NV-HBI：一颗 GPU 里其实有“两座城市”</h2>
+<div class="card">
+<p>单颗 GPU die 不能无限变大：reticle limit、良率、功耗、布线都会卡住。Blackwell 采用两个大 die 通过高速芯片间互联连接，对软件暴露为一个统一 GPU（具体产品形态由平台决定）。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 420" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="480" y="28" fill="#6ee7b7" text-anchor="middle" font-size="16">Blackwell dual-die GPU · 逻辑示意</text>
+<rect x="80" y="85" width="330" height="230" rx="14" fill="#0f1218" stroke="#7dd3fc"/>
+<text x="245" y="112" fill="#7dd3fc" text-anchor="middle">Compute Die A</text>
+<rect x="115" y="140" width="120" height="55" fill="#1f3328" stroke="#6ee7b7" rx="6"/><text x="175" y="172" fill="#6ee7b7" text-anchor="middle">SM + TC</text>
+<rect x="255" y="140" width="120" height="55" fill="#1f3328" stroke="#6ee7b7" rx="6"/><text x="315" y="172" fill="#6ee7b7" text-anchor="middle">SM + TC</text>
+<rect x="115" y="220" width="260" height="45" fill="#2b2135" stroke="#a78bfa" rx="6"/><text x="245" y="248" fill="#a78bfa" text-anchor="middle">L2 slice / fabric</text>
+<rect x="550" y="85" width="330" height="230" rx="14" fill="#0f1218" stroke="#7dd3fc"/>
+<text x="715" y="112" fill="#7dd3fc" text-anchor="middle">Compute Die B</text>
+<rect x="585" y="140" width="120" height="55" fill="#1f3328" stroke="#6ee7b7" rx="6"/><text x="645" y="172" fill="#6ee7b7" text-anchor="middle">SM + TC</text>
+<rect x="725" y="140" width="120" height="55" fill="#1f3328" stroke="#6ee7b7" rx="6"/><text x="785" y="172" fill="#6ee7b7" text-anchor="middle">SM + TC</text>
+<rect x="585" y="220" width="260" height="45" fill="#2b2135" stroke="#a78bfa" rx="6"/><text x="715" y="248" fill="#a78bfa" text-anchor="middle">L2 slice / fabric</text>
+<rect x="420" y="165" width="120" height="70" rx="8" fill="#352b18" stroke="#fbbf24"/>
+<text x="480" y="194" fill="#fbbf24" text-anchor="middle">NV-HBI</text><text x="480" y="216" fill="#cbd5e1" text-anchor="middle">die-to-die</text>
+<g stroke="#fbbf24" stroke-width="3"><line x1="410" y1="200" x2="420" y2="200"/><line x1="540" y1="200" x2="550" y2="200"/></g>
+<rect x="120" y="340" width="720" height="45" rx="8" fill="#39252b" stroke="#fb7185"/><text x="480" y="368" fill="#fb7185" text-anchor="middle">HBM3e stacks around package · capacity/bandwidth feeding both dies</text>
+</svg>
+</div>
+
+<h3>这对程序员意味着什么</h3>
+<ul class="tight">
+<li>理想情况下仍把它当一张 GPU 用，CUDA runtime 抽象掉 die 边界。</li>
+<li>实际性能仍受内部 fabric、L2 slice、本地 HBM 访问模式影响——高性能库会做拓扑感知优化。</li>
+<li>单卡变大后，multi-GPU 的切分粒度也改变：一个 “GPU” 已经是封装内多 die 协作。</li>
+</ul>
+</div>
+
+<h2 id="fp4"><span class="step">§3</span>FP4 与第二代 Transformer Engine：为了推理的“字节战争”</h2>
+<div class="card">
+<p>Hopper 的 FP8 已经把 16-bit 减半。Blackwell 进一步引入 FP4/FP6，并强化 Transformer Engine。核心逻辑：</p>
+<pre>显存占用：FP16 2B → FP8 1B → FP4 0.5B
+HBM 流量：理论上同步下降
+Tensor Core 吞吐：低精度模式更高
+但数值风险：scale、outlier、校准、累加精度变得更重要</pre>
+
+<table>
+<thead><tr><th>格式</th><th>每值字节</th><th>优势</th><th>代价</th><th>推理场景</th></tr></thead>
+<tbody>
+<tr><td>BF16/FP16</td><td>2B</td><td>稳定、生态成熟</td><td>带宽/容量压力大</td><td>质量优先、敏感层</td></tr>
+<tr><td>FP8</td><td>1B</td><td>质量/效率折中</td><td>需要 scale</td><td>主流高吞吐推理/训练</td></tr>
+<tr><td>FP6</td><td>0.75B</td><td>介于 FP8 与 FP4</td><td>生态更早期</td><td>特定模型压缩</td></tr>
+<tr><td>FP4</td><td>0.5B</td><td>容量和带宽极致节省</td><td>量化误差/scale 更敏感</td><td>大模型推理、MoE 权重</td></tr>
+</tbody>
+</table>
+
+<div class="callout info"><b>FP4 不是“所有东西都 4 bit”</b>：通常是权重/activation 某些路径低精度，accumulator、normalization、logits、部分敏感层保留更高精度。真正可用的 FP4 推理依赖框架、kernel、校准策略三者配合。</div>
+</div>
+
+<h2 id="memory"><span class="step">§4</span>HBM3e + 大 L2：更长上下文和更大 batch 的底座</h2>
+<div class="card">
+<p>B200 级别公开规格给到约 192GB HBM3e 和 8TB/s 带宽。这对 LLM 推理非常直接：</p>
+<ul class="tight">
+<li><b>更大权重</b>：单卡能放更大模型 shard，TP 度数可降低。</li>
+<li><b>更长 KV Cache</b>：长上下文和更高并发时不那么容易 OOM。</li>
+<li><b>更高 decode 吞吐</b>：decode 常 memory-bound，HBM 带宽直接影响 tokens/s。</li>
+<li><b>更大 L2</b>：权重 tile、KV hot pages、routing metadata 更容易片上命中。</li>
+</ul>
+
+<h3>KV Cache 算例</h3>
+<pre>假设模型每 token KV = 128KB（上一章算例）
+192GB HBM 理论可容纳 token 数 = 192GB / 128KB ≈ 1,572,864 tokens
+扣除权重、workspace、碎片后仍能显著提升长上下文/并发空间。
+
+如果 FP8 KV：每 token KV 约减半 → 容量翻倍
+如果 FP4 KV：理论再减半 → 但精度/算法风险更高</pre>
+</div>
+
+<h2 id="nvlink"><span class="step">§5</span>NVLink 5 / NVL72：把 72 个 GPU 变成一个机柜级加速器</h2>
+<div class="card">
+<p>Blackwell 的系统野心体现在 GB200 NVL72：72 个 Blackwell GPU + Grace CPU + NVSwitch 构成一个高带宽 rack。对超大模型推理来说，关键不是“能连起来”，而是：</p>
+<ul class="tight"><li>all-reduce 延迟/带宽是否能支撑高 TP。</li><li>expert parallel / tensor parallel / pipeline parallel 的拓扑映射是否足够高效。</li><li>跨 GPU KV/activation/权重交换是否不把 decode 拖死。</li></ul>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 420" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="480" y="28" fill="#6ee7b7" text-anchor="middle" font-size="16">从 HGX 8-GPU 到 NVL72 rack</text>
+<g transform="translate(60,80)">
+  <text x="180" y="0" fill="#7dd3fc" text-anchor="middle">HGX H100/H200 · 8 GPU</text>
+  <rect x="0" y="25" width="360" height="220" rx="10" fill="#0f1218" stroke="#262b38"/>
+  <g fill="#1f3328" stroke="#6ee7b7"><rect x="45" y="55" width="55" height="40" rx="4"/><rect x="155" y="55" width="55" height="40" rx="4"/><rect x="265" y="55" width="55" height="40" rx="4"/><rect x="45" y="170" width="55" height="40" rx="4"/><rect x="155" y="170" width="55" height="40" rx="4"/><rect x="265" y="170" width="55" height="40" rx="4"/></g>
+  <rect x="120" y="115" width="120" height="45" rx="6" fill="#2b2135" stroke="#a78bfa"/><text x="180" y="142" fill="#a78bfa" text-anchor="middle">NVSwitch</text>
+  <text x="180" y="275" fill="#8b93a7" text-anchor="middle">节点级全互联</text>
+</g>
+<g transform="translate(540,80)">
+  <text x="180" y="0" fill="#fbbf24" text-anchor="middle">GB200 NVL72 · rack-scale</text>
+  <rect x="0" y="25" width="360" height="220" rx="10" fill="#0f1218" stroke="#262b38"/>
+  <g fill="#1f3328" stroke="#6ee7b7">
+    <rect x="30" y="50" width="35" height="28" rx="3"/><rect x="75" y="50" width="35" height="28" rx="3"/><rect x="120" y="50" width="35" height="28" rx="3"/><rect x="165" y="50" width="35" height="28" rx="3"/><rect x="210" y="50" width="35" height="28" rx="3"/><rect x="255" y="50" width="35" height="28" rx="3"/><rect x="300" y="50" width="35" height="28" rx="3"/>
+    <rect x="30" y="190" width="35" height="28" rx="3"/><rect x="75" y="190" width="35" height="28" rx="3"/><rect x="120" y="190" width="35" height="28" rx="3"/><rect x="165" y="190" width="35" height="28" rx="3"/><rect x="210" y="190" width="35" height="28" rx="3"/><rect x="255" y="190" width="35" height="28" rx="3"/><rect x="300" y="190" width="35" height="28" rx="3"/>
+  </g>
+  <rect x="70" y="105" width="220" height="65" rx="6" fill="#352b18" stroke="#fbbf24"/><text x="180" y="132" fill="#fbbf24" text-anchor="middle">NVLink Switch fabric</text><text x="180" y="153" fill="#cbd5e1" text-anchor="middle">72 GPU 高带宽域</text>
+  <text x="180" y="275" fill="#8b93a7" text-anchor="middle">机柜级统一加速域</text>
+</g>
+</svg>
+</div>
+</div>
+
+<h2 id="reliability"><span class="step">§6</span>可靠性、安全、解压：数据中心不是跑 benchmark</h2>
+<div class="card">
+<p>Blackwell 面向的是 AI factory：长时间运行、多租户、大模型服务。公开资料强调了多项系统能力：</p>
+<table>
+<thead><tr><th>能力</th><th>直觉</th><th>为什么服务端关心</th></tr></thead>
+<tbody>
+<tr><td>RAS/可靠性增强</td><td>错误检测、隔离、恢复能力</td><td>千卡级集群任一组件故障都会影响训练/推理任务</td></tr>
+<tr><td>机密计算</td><td>保护模型权重和用户数据</td><td>企业私有模型、敏感数据推理</td></tr>
+<tr><td>解压/数据处理引擎</td><td>减轻 CPU/GPU 数据预处理压力</td><td>训练数据管道、压缩权重/数据流</td></tr>
+<tr><td>Grace CPU 协同</td><td>CPU/GPU 超级芯片形态</td><td>减少主机瓶颈，提高整机能效</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="llm"><span class="step">§7</span>对 LLM 推理系统的影响：少卡、更长上下文、更高机柜吞吐</h2>
+<div class="card">
+<table>
+<thead><tr><th>系统问题</th><th>Blackwell 带来的变化</th><th>推理框架需要跟进什么</th></tr></thead>
+<tbody>
+<tr><td>单卡放不下模型</td><td>192GB HBM + FP4/FP8 降权重体积</td><td>量化格式、权重 loader、kernel 支持</td></tr>
+<tr><td>decode memory-bound</td><td>HBM 8TB/s + 更大 L2 + 低精度 KV</td><td>KV layout、paged attention、KV quant</td></tr>
+<tr><td>TP 通信重</td><td>NVLink 5 / NVL72 提高跨 GPU 带宽</td><td>NCCL 拓扑、TP/EP/PP 切分策略</td></tr>
+<tr><td>MoE expert 分散</td><td>rack-scale fabric 有利于 expert parallel</td><td>router、dispatch/combine kernel、负载均衡</td></tr>
+<tr><td>服务成本高</td><td>FP4/FP8 提升 tokens/Watt</td><td>质量评测、fallback、混合精度策略</td></tr>
+</tbody>
+</table>
+<div class="callout warn"><b>迁移不是自动收益</b>：如果框架仍按 H100 的 kernel、layout、batch 策略跑，可能吃不到 FP4、L2、NVLink 5 的收益。新硬件收益需要新 kernel + 新调度 + 新量化策略。</div>
+</div>
+
+<h2 id="takeaway"><span class="step">§8</span>带走的八句话</h2>
+<div class="card"><div class="callout"><ol>
+<li><b>Blackwell 的重点是规模化</b>：单 GPU 更大，机柜级互联也更强。</li>
+<li><b>双 die 是突破单 die 极限的工程解</b>，但也要求内部 fabric 足够快。</li>
+<li><b>FP4/FP6/FP8 是字节战争</b>：为了降低权重和 KV 的 HBM 流量。</li>
+<li><b>第二代 Transformer Engine 管的是 scale 和混合精度策略</b>，不是简单 cast。</li>
+<li><b>HBM3e 192GB/8TB/s 对 decode 很关键</b>，因为 decode 常被带宽卡住。</li>
+<li><b>大 L2 提高热数据命中</b>，对权重 tile、KV hot page、metadata 都有价值。</li>
+<li><b>NVL72 把优化目标从“单节点”扩展到“机柜”</b>，TP/EP/PP 都要拓扑感知。</li>
+<li><b>硬件越强，软件越不能偷懒</b>：kernel、量化、调度、通信栈必须同步升级。</li>
+</ol></div></div>
+
+<div class="nav"><a href="06-hopper.html">← 上一章：Hopper 架构详解</a><a href="08-interconnect.html">下一章：多卡互联 NVLink/NVSwitch →</a></div>
+<div class="foot">第一章 · GPU 硬件深度 · 07/08</div>
+</div>  <script src="../course-nav.js"></script>
+</body></html>

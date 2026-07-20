@@ -1,0 +1,798 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>资源模型 · requests / limits / QoS / OOM</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>资源模型 <span class="tag">第二层 · 07/15</span></h1>
+<div class="sub">requests / limits / QoS / OOM——搞清楚推理 Pod 为什么总被杀、GPU 为什么不能超分、以及如何正确设置资源让 scheduler 和 kubelet 都满意。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么推理 Pod 老是被 OOM Kill</a>
+  <a href="#req-lim">§1 requests 与 limits</a>
+  <a href="#qos">§2 三种 QoS 等级</a>
+  <a href="#gpu">§3 Extended Resources（GPU）</a>
+  <a href="#limitrange">§4 LimitRange</a>
+  <a href="#quota">§5 ResourceQuota</a>
+  <a href="#best-practice">§6 资源设置最佳实践</a>
+  <a href="#takeaway">§7 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么推理 Pod 老是被 OOM Kill</h2>
+
+<div class="card">
+<p>你一定见过这些场景：</p>
+<ul class="tight">
+  <li>推理服务跑了几个小时突然被杀——<code>kubectl describe pod</code> 显示 <code>OOMKilled</code>，但 <code>nvidia-smi</code> 看 GPU 显存并没有超</li>
+  <li>明明节点有 256GB 内存，你的 Pod 只用了 50GB 就被杀——因为你设了 <code>limits.memory: 48Gi</code></li>
+  <li>Pod 一直 <code>Pending</code>，describe 显示 <code>Insufficient memory</code>——但 <code>kubectl top node</code> 显示节点只用了 60%</li>
+  <li>两个推理 Pod 同时跑，节点内存不够时，QoS 等级低的那个先被杀</li>
+</ul>
+<div class="callout bad">
+<b>核心问题</b>：K8S 的资源管理有两个完全不同的维度——<b>调度时</b>和<b>运行时</b>。scheduler 看 requests 决定 Pod 放哪，kubelet 看 limits 决定何时杀 Pod。搞混这两个，就是 OOM Kill 和 Pending 的根源。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+一个典型的 LLM 推理服务（如 Qwen3-72B，8×A100-80G）：GPU 显存 640GB 由 vLLM/SGLang 精确管理不会超，但<b>Host 内存</b>才是 OOM 的元凶——KV Cache 管理结构、tokenizer 词表、请求 batch buffer、NCCL 通信 buffer 全在 Host 内存里。实际占用可能从启动时的 30GB 涨到高并发时的 55GB。如果 limits.memory 只设了 48Gi，高并发时就会被 OOM Kill。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="req-lim"><span class="step">§1</span>requests 和 limits 的本质区别</h2>
+
+<div class="card">
+<h3>一句话：requests = 调度保证，limits = 运行天花板</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 920 320" width="920">
+  <!-- 左侧：Scheduler 视角 -->
+  <rect x="20" y="20" width="420" height="280" rx="14" fill="#1a2332" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="40" y="50" fill="#a78bfa" font-size="15" font-weight="700">Scheduler 看 requests</text>
+  <text x="40" y="72" fill="#8b93a7" font-size="11.5">"这个 Pod 需要保证至少多少资源？"</text>
+
+  <!-- Node 容量示意 -->
+  <rect x="50" y="95" width="360" height="40" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="65" y="120" fill="#6ee7b7" font-size="12">Node Allocatable: 64Gi Memory</text>
+
+  <!-- 已分配 -->
+  <rect x="50" y="145" width="210" height="35" rx="6" fill="#6ee7b7" opacity=".2" stroke="#6ee7b7"/>
+  <text x="65" y="168" fill="#6ee7b7" font-size="11">已分配 requests 总和: 40Gi</text>
+
+  <!-- 新 Pod requests -->
+  <rect x="270" y="145" width="140" height="35" rx="6" fill="#fbbf24" opacity=".2" stroke="#fbbf24"/>
+  <text x="285" y="168" fill="#fbbf24" font-size="11">新 Pod: 30Gi</text>
+
+  <!-- 判断 -->
+  <text x="50" y="210" fill="#f87171" font-size="12" font-weight="600">40 + 30 = 70 > 64 → Pending!</text>
+  <text x="50" y="235" fill="#8b93a7" font-size="11">Scheduler 只看 requests 总和 vs Allocatable</text>
+  <text x="50" y="255" fill="#8b93a7" font-size="11">不管节点实际用了多少（actual ≠ allocated）</text>
+  <text x="50" y="280" fill="#fbbf24" font-size="11">→ 这就是为什么 top 显示 60%，Pod 却 Pending</text>
+
+  <!-- 右侧：Kubelet 视角 -->
+  <rect x="480" y="20" width="420" height="280" rx="14" fill="#1a1f14" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="500" y="50" fill="#6ee7b7" font-size="15" font-weight="700">Kubelet 看 limits</text>
+  <text x="500" y="72" fill="#8b93a7" font-size="11.5">"这个容器最多能用多少？超了就动手。"</text>
+
+  <!-- cgroup 示意 -->
+  <rect x="510" y="95" width="370" height="80" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="530" y="118" fill="#fb7185" font-size="12" font-weight="600">cgroup v2 限制</text>
+  <text x="530" y="140" fill="#8b93a7" font-size="11">memory.max = limits.memory（超了 → OOM Kill）</text>
+  <text x="530" y="158" fill="#8b93a7" font-size="11">cpu.max = limits.cpu × CFS period（超了 → throttle）</text>
+
+  <!-- 实际使用 -->
+  <rect x="510" y="190" width="250" height="35" rx="6" fill="#6ee7b7" opacity=".15" stroke="#6ee7b7"/>
+  <text x="525" y="212" fill="#6ee7b7" font-size="11">容器实际内存: 47Gi ↗</text>
+
+  <!-- limits 线 -->
+  <line x1="770" y1="190" x2="770" y2="225" stroke="#f87171" stroke-width="2"/>
+  <text x="780" y="212" fill="#f87171" font-size="11">limits: 48Gi</text>
+
+  <text x="510" y="255" fill="#f87171" font-size="12" font-weight="600">突增到 49Gi → 立即 OOM Kill</text>
+  <text x="510" y="278" fill="#8b93a7" font-size="11">Kubelet 不管 Node 有没有空余——只看容器的 limits</text>
+</svg>
+</div>
+
+<h3>CPU vs Memory 的限制机制完全不同</h3>
+<table>
+<thead><tr><th>维度</th><th>CPU（可压缩资源）</th><th>Memory（不可压缩资源）</th></tr></thead>
+<tbody>
+<tr><td>限制机制</td><td>CFS（Completely Fair Scheduler）quota</td><td>cgroup <code>memory.max</code></td></tr>
+<tr><td>超限后果</td><td><b>Throttle</b>——降速，进程暂停等待下个周期</td><td><b>OOM Kill</b>——SIGKILL 直接杀进程</td></tr>
+<tr><td>单位</td><td><code>1</code> = 1 vCPU = 1000m</td><td><code>1Gi</code> = 1024<sup>3</sup> bytes</td></tr>
+<tr><td>可压缩？</td><td>是（CPU 时间片可以"挤一挤"）</td><td>否（内存用了就是用了，无法暂停）</td></tr>
+<tr><td>overcommit 安全性</td><td>比较安全（最多变慢）</td><td>非常危险（可能被杀）</td></tr>
+</tbody>
+</table>
+
+<h3>CPU limits：CFS quota 实现（throttle 不杀）</h3>
+<pre><span style="color:#8b93a7"># 假设 limits.cpu = 4，CFS period = 100ms（默认）</span>
+<span style="color:#8b93a7"># kubelet 设置 cgroup 参数：</span>
+cpu.max = "400000 100000"
+<span style="color:#8b93a7">#           quota   period</span>
+<span style="color:#8b93a7">#</span>
+<span style="color:#8b93a7"># 含义：每 100ms 时间窗口内，这个 cgroup 最多用 400ms CPU 时间</span>
+<span style="color:#8b93a7"># 等效于最多跑满 4 个核</span>
+<span style="color:#8b93a7"># 用完 400ms 后，本周期内所有线程被挂起（throttle），下个周期恢复</span>
+
+<span style="color:#6ee7b7"># 查看容器的 CFS 配置：</span>
+$ cat /sys/fs/cgroup/cpu.max
+400000 100000
+
+<span style="color:#6ee7b7"># 查看被 throttle 的统计：</span>
+$ cat /sys/fs/cgroup/cpu.stat | grep throttled
+nr_throttled 12345         <span style="color:#8b93a7"># 被限速的总次数</span>
+throttled_usec 987654321   <span style="color:#8b93a7"># 总共被限速的微秒数</span>
+</pre>
+
+<div class="callout warn">
+<b>CPU throttle 对推理延迟的隐蔽影响</b>：推理服务的 prefill 阶段需要 CPU 做 tokenize 编码，如果 CPU 被 throttle，TTFT（首 token 延迟）会飙升。现象是 P99 延迟周期性升高但 Pod 还活着。排查方法：查看 <code>nr_throttled</code> 是否持续增长。
+</div>
+
+<h3>Memory limits：cgroup memory.max 实现（超了就 OOM Kill）</h3>
+<pre><span style="color:#6ee7b7"># 查看容器的内存限制：</span>
+$ cat /sys/fs/cgroup/memory.max
+53687091200                <span style="color:#8b93a7"># = 50Gi 的字节数</span>
+
+<span style="color:#6ee7b7"># 查看当前使用：</span>
+$ cat /sys/fs/cgroup/memory.current
+48318382080                <span style="color:#8b93a7"># ≈ 45Gi</span>
+
+<span style="color:#8b93a7"># 当 memory.current >= memory.max 时的内核行为：</span>
+<span style="color:#8b93a7"># 1. 内核尝试回收页面缓存（page cache）和可回收 slab</span>
+<span style="color:#8b93a7"># 2. 回收不够 → 触发 cgroup OOM Killer</span>
+<span style="color:#8b93a7"># 3. OOM Killer 选择 cgroup 内 oom_score 最高的进程发 SIGKILL</span>
+<span style="color:#8b93a7"># 4. 容器主进程被杀 → kubelet 检测退出码 137 → 上报 OOMKilled</span>
+<span style="color:#8b93a7"># 5. 按 restartPolicy 决定是否在原节点重启</span>
+</pre>
+
+<div class="callout bad">
+<b>常见误区</b>：以为 OOM Kill 是 kubelet 做的。实际上是 <b>Linux 内核</b>的 cgroup OOM Killer 直接发 SIGKILL——无法捕获、无法优雅处理、没有任何预警。kubelet 只是事后从容器退出码（137）得知发生了 OOM。
+</div>
+
+<h3>requests 和 limits 的关系总结</h3>
+<table>
+<thead><tr><th>维度</th><th>requests</th><th>limits</th></tr></thead>
+<tbody>
+<tr><td>作用时机</td><td>调度时（scheduler 决策）</td><td>运行时（cgroup 强制执行）</td></tr>
+<tr><td>语义</td><td>最低保证量——"我至少需要这么多"</td><td>绝对上限——"我绝不能超过这么多"</td></tr>
+<tr><td>不设的后果</td><td>scheduler 当作 0 → 可能在一个节点上塞太多 Pod</td><td>无上限 → 容器可以吃光整个节点的资源</td></tr>
+<tr><td>CPU 超限</td><td>—</td><td>Throttle（进程被暂停，不杀）</td></tr>
+<tr><td>Memory 超限</td><td>—</td><td>OOM Kill（进程被杀，SIGKILL）</td></tr>
+</tbody>
+</table>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：requests 不设 / limits 不设 / 各种组合的后果</button>
+<div class="expand-content">
+<table>
+<thead><tr><th>配置</th><th>后果</th><th>QoS</th></tr></thead>
+<tbody>
+<tr><td>只设 limits，不设 requests</td><td>K8S 自动把 requests 设为 = limits</td><td>Guaranteed（如果 CPU+Memory 都这样）</td></tr>
+<tr><td>只设 requests，不设 limits</td><td>容器可以无限使用资源，直到节点耗尽</td><td>Burstable</td></tr>
+<tr><td>两个都不设</td><td>零保证 + 无上限 = 最危险的状态</td><td>BestEffort</td></tr>
+<tr><td>requests > limits</td><td>API Server 直接拒绝，创建失败</td><td>—</td></tr>
+<tr><td>requests = limits</td><td>最稳定：调度精确 + 运行时有保证</td><td>Guaranteed</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+推理服务的经典翻车：<code>requests.memory = 16Gi</code>，<code>limits.memory = 64Gi</code>。Scheduler 认为这个 Pod 只需要 16Gi 内存，于是在 256Gi 的节点上调度了 12 个（12×16=192 < 256）。但运行时每个 Pod 实际用 50Gi → 总量 600Gi → 节点内存耗尽 → 连环 OOM Kill。<b>教训</b>：推理服务的 memory requests 应该接近 limits。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="qos"><span class="step">§2</span>三种 QoS 等级</h2>
+
+<div class="card">
+<p>K8S 根据 Pod 中<b>所有容器</b>的 requests/limits 配置自动计算 QoS 等级。QoS 决定了节点资源紧张时<b>谁先被杀</b>。</p>
+
+<h3>QoS 分类规则</h3>
+<table>
+<thead><tr><th>QoS Class</th><th>条件</th><th>保护等级</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:#6ee7b7"><b>Guaranteed</b></td>
+  <td>Pod 内<b>每个容器</b>的 CPU 和 Memory 都设了 requests 且 requests == limits</td>
+  <td>最高保护，最后被杀</td>
+</tr>
+<tr>
+  <td style="color:#fbbf24"><b>Burstable</b></td>
+  <td>至少一个容器设了 requests 或 limits，但不满足 Guaranteed 条件</td>
+  <td>中等保护</td>
+</tr>
+<tr>
+  <td style="color:#f87171"><b>BestEffort</b></td>
+  <td>所有容器都<b>没有</b>设任何 requests 和 limits</td>
+  <td>零保护，最先被杀</td>
+</tr>
+</tbody>
+</table>
+
+<h3>OOM Kill 顺序</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 920 360" width="920">
+  <!-- 标题 -->
+  <text x="460" y="28" text-anchor="middle" fill="#e6e8ee" font-size="14" font-weight="700">节点内存不足时的驱逐/OOM Kill 优先级</text>
+
+  <!-- 优先级箭头 -->
+  <line x1="60" y1="55" x2="60" y2="320" stroke="#8b93a7" stroke-width="1.5"/>
+  <polygon points="55,320 60,332 65,320" fill="#8b93a7"/>
+  <text x="25" y="195" fill="#8b93a7" font-size="10" transform="rotate(-90,25,195)">越往下越安全</text>
+
+  <!-- BestEffort -->
+  <rect x="100" y="55" width="790" height="75" rx="10" fill="#f87171" opacity=".06" stroke="#f87171" stroke-width="1.5"/>
+  <text x="125" y="82" fill="#f87171" font-size="14" font-weight="700">BestEffort — 第一个被杀</text>
+  <text x="125" y="102" fill="#8b93a7" font-size="12">oom_score_adj = <b style="color:#f87171">1000</b>（最高分）</text>
+  <text x="125" y="120" fill="#8b93a7" font-size="11">典型场景：开发者忘记设 resources 的测试 Pod · 生产环境绝对禁止</text>
+
+  <!-- Burstable -->
+  <rect x="100" y="145" width="790" height="85" rx="10" fill="#fbbf24" opacity=".06" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="125" y="172" fill="#fbbf24" font-size="14" font-weight="700">Burstable — 按比例计算，中间被杀</text>
+  <text x="125" y="195" fill="#8b93a7" font-size="12">oom_score_adj = 2 ~ 999（公式：1000 - 1000 × memoryRequest / nodeCapacity）</text>
+  <text x="125" y="215" fill="#8b93a7" font-size="11">同为 Burstable 时，实际内存使用超出 requests 比例越大的越先被杀</text>
+
+  <!-- Guaranteed -->
+  <rect x="100" y="245" width="790" height="75" rx="10" fill="#6ee7b7" opacity=".06" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="125" y="272" fill="#6ee7b7" font-size="14" font-weight="700">Guaranteed — 最后被杀</text>
+  <text x="125" y="295" fill="#8b93a7" font-size="12">oom_score_adj = <b style="color:#6ee7b7">-997</b>（接近最低分）</text>
+  <text x="125" y="313" fill="#8b93a7" font-size="11">除非它自己超过了自己的 limits（那是 cgroup 级 OOM，跟节点级驱逐无关）</text>
+
+  <!-- 底部说明 -->
+  <text x="100" y="348" fill="#8b93a7" font-size="11">完整顺序：BestEffort → Burstable（oom_score 高的先）→ Guaranteed · kubelet eviction 先于内核 OOM Killer</text>
+</svg>
+</div>
+
+<h3>oom_score_adj 的设置</h3>
+<pre><span style="color:#8b93a7"># Guaranteed Pod：固定值</span>
+oom_score_adj = -997
+
+<span style="color:#8b93a7"># BestEffort Pod：固定值</span>
+oom_score_adj = 1000
+
+<span style="color:#8b93a7"># Burstable Pod：按公式计算</span>
+oom_score_adj = max(2, 1000 - 1000 × (memoryRequest / machineMemory))
+
+<span style="color:#8b93a7"># 例：节点 256Gi 内存，Pod requests.memory = 50Gi</span>
+<span style="color:#8b93a7"># oom_score_adj = max(2, 1000 - 1000 × 50/256) = max(2, 805) = 805</span>
+<span style="color:#8b93a7"># → requests 占节点比例越大，score 越低，越不容易被杀</span>
+
+<span style="color:#8b93a7"># 最终 OOM score = oom_score_adj + (进程 RSS / 总内存) × 1000</span>
+<span style="color:#8b93a7"># 所以即使 oom_score_adj 一样，实际用得多的进程也会先被杀</span>
+</pre>
+
+<div class="callout info">
+<b>kubelet eviction vs kernel OOM Kill</b>：kubelet 有一套独立的驱逐机制（eviction），在节点 <code>memory.available</code> 低于阈值（默认 100Mi）时按 QoS 顺序驱逐 Pod。这比内核 OOM Killer 更温和——Pod 状态变为 <code>Evicted</code> 而非 <code>OOMKilled</code>，且 Pod 不会在原节点重启，而是由上层 controller 在其他节点重建。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+场景：一台 8×A100 节点（768GB 内存）上跑了两个推理 Pod：
+<ul class="tight" style="margin-top:6px">
+<li>Pod A（Burstable）：requests.memory=50Gi，limits.memory=100Gi → oom_score_adj ≈ 935</li>
+<li>Pod B（Guaranteed）：requests.memory=200Gi，limits.memory=200Gi → oom_score_adj = -997</li>
+</ul>
+节点内存压力触发时，Pod A <b>一定先被杀</b>——哪怕 Pod B 实际用了更多内存。<b>结论</b>：生产推理服务必须用 Guaranteed QoS。
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：节点级 Eviction 与 Pod 级 OOM Kill 的区别</button>
+<div class="expand-content">
+<table>
+<thead><tr><th>维度</th><th>kubelet Eviction（驱逐）</th><th>Kernel OOM Kill</th></tr></thead>
+<tbody>
+<tr><td>触发者</td><td>kubelet（用户空间进程）</td><td>Linux 内核</td></tr>
+<tr><td>触发条件</td><td>节点可用资源低于 eviction threshold</td><td>cgroup memory.max 被突破 或 系统内存完全耗尽</td></tr>
+<tr><td>选择逻辑</td><td>QoS → Priority → 资源使用超出 requests 的程度</td><td>oom_score（oom_score_adj + 实际内存占比）</td></tr>
+<tr><td>Pod 状态</td><td><code>Failed</code> + reason: <code>Evicted</code></td><td><code>OOMKilled</code>（exitCode=137）</td></tr>
+<tr><td>后续行为</td><td>Pod 不在原节点重启，由 controller 重建</td><td>按 restartPolicy 可能在原节点重启</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gpu"><span class="step">§3</span>Extended Resources（GPU 等）</h2>
+
+<div class="card">
+<p>CPU 和 Memory 是 K8S 内置资源（native resources）。GPU、FPGA、RDMA 网卡等设备通过 <b>Extended Resources</b> 机制扩展，由 device-plugin 注册到 kubelet。最常见的就是 <code>nvidia.com/gpu</code>。</p>
+
+<h3><code>nvidia.com/gpu</code> 的特殊规则</h3>
+<table>
+<thead><tr><th>特性</th><th>CPU / Memory</th><th>nvidia.com/gpu</th></tr></thead>
+<tbody>
+<tr><td>单位</td><td>可以是小数（如 <code>500m</code> = 0.5 核）</td><td><b>只能是正整数</b>（1, 2, 4, 8）</td></tr>
+<tr><td>requests 与 limits</td><td>requests ≤ limits，可以不等</td><td><b>必须相等</b>（apiserver 强制校验）</td></tr>
+<tr><td>overcommit</td><td>CPU 可以超分</td><td><b>绝对禁止</b>（GPU 显存无法共享）</td></tr>
+<tr><td>分割性</td><td>可以按毫核/字节粒度分配</td><td><b>不可分割</b>（一整块卡给你）</td></tr>
+<tr><td>跨节点</td><td>不涉及</td><td><b>不能跨节点拼凑</b>（请求 4 卡 = 单节点 4 卡）</td></tr>
+<tr><td>限制执行者</td><td>cgroup（内核级）</td><td>device-plugin（通过环境变量 + 设备挂载）</td></tr>
+</tbody>
+</table>
+
+<h3>GPU 分配的完整链路</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 920 200" width="920">
+  <!-- Step 1: device-plugin 注册 -->
+  <rect x="20" y="50" width="180" height="65" rx="10" fill="#1f2937" stroke="#fb7185"/>
+  <text x="40" y="73" fill="#fb7185" font-size="11" font-weight="600">NVIDIA Device Plugin</text>
+  <text x="40" y="92" fill="#8b93a7" font-size="10">发现 8 块 GPU</text>
+  <text x="40" y="105" fill="#8b93a7" font-size="10">通过 gRPC 注册到 kubelet</text>
+
+  <path d="M200 82 L230 82" stroke="#8b93a7" stroke-width="1.2"/>
+  <text x="207" y="75" fill="#8b93a7" font-size="9">gRPC</text>
+
+  <!-- Step 2: kubelet 上报 -->
+  <rect x="230" y="50" width="180" height="65" rx="10" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="250" y="73" fill="#6ee7b7" font-size="11" font-weight="600">Kubelet</text>
+  <text x="250" y="92" fill="#8b93a7" font-size="10">上报 Node Status:</text>
+  <text x="250" y="105" fill="#8b93a7" font-size="10">capacity.nvidia.com/gpu: 8</text>
+
+  <path d="M410 82 L440 82" stroke="#8b93a7" stroke-width="1.2"/>
+  <text x="415" y="75" fill="#8b93a7" font-size="9">PATCH</text>
+
+  <!-- Step 3: Scheduler 感知 -->
+  <rect x="440" y="50" width="180" height="65" rx="10" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="460" y="73" fill="#a78bfa" font-size="11" font-weight="600">Scheduler</text>
+  <text x="460" y="92" fill="#8b93a7" font-size="10">Filter: allocatable GPU ≥ 4?</text>
+  <text x="460" y="105" fill="#8b93a7" font-size="10">绑定 Pod → 这个 Node</text>
+
+  <path d="M620 82 L650 82" stroke="#8b93a7" stroke-width="1.2"/>
+  <text x="627" y="75" fill="#8b93a7" font-size="9">Bind</text>
+
+  <!-- Step 4: Pod 获得 GPU -->
+  <rect x="650" y="50" width="250" height="65" rx="10" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="670" y="73" fill="#fbbf24" font-size="11" font-weight="600">Pod 容器启动</text>
+  <text x="670" y="92" fill="#8b93a7" font-size="10">device-plugin 分配具体设备 ID</text>
+  <text x="670" y="105" fill="#8b93a7" font-size="10">注入 NVIDIA_VISIBLE_DEVICES=0,1,2,3</text>
+
+  <!-- 底部说明 -->
+  <text x="20" y="150" fill="#e6e8ee" font-size="12" font-weight="600">一个 Pod 请求 nvidia.com/gpu: 4 的含义：</text>
+  <text x="20" y="172" fill="#8b93a7" font-size="11">① Scheduler 在 Filter 阶段找到一个剩余 GPU ≥ 4 的<b>单个节点</b>（不能跨节点！）</text>
+  <text x="20" y="190" fill="#8b93a7" font-size="11">② Kubelet 调用 device-plugin Allocate()，从节点 GPU 池中取出 4 块，通过环境变量和设备挂载传给容器</text>
+</svg>
+</div>
+
+<h3>YAML 示例</h3>
+<pre><span style="color:#8b93a7"># 正确：请求 8 块 GPU（单机 Tensor Parallel）</span>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sglang-qwen3-72b
+spec:
+  containers:
+  - name: sglang
+    image: lmsysorg/sglang:v0.4.5-cu124
+    resources:
+      requests:
+        nvidia.com/gpu: 8          <span style="color:#8b93a7"># 必须是正整数</span>
+      limits:
+        nvidia.com/gpu: 8          <span style="color:#8b93a7"># 必须跟 requests 相等</span>
+
+<span style="color:#8b93a7"># 错误示例 ——</span>
+resources:
+  requests:
+    nvidia.com/gpu: 4              <span style="color:#f87171"># ✗ requests != limits → apiserver 拒绝</span>
+  limits:
+    nvidia.com/gpu: 8
+
+resources:
+  requests:
+    nvidia.com/gpu: 0.5            <span style="color:#f87171"># ✗ 不能是小数 → apiserver 拒绝</span>
+  limits:
+    nvidia.com/gpu: 0.5
+</pre>
+
+<div class="callout warn">
+<b>GPU 不支持 overcommit 的根本原因</b>：GPU 显存没有 swap 机制、没有 page cache 可回收、没有 CFS 时间片可切分。一旦显存被一个进程占用，其他进程无法透明地使用同一块空间。强制共享会导致 CUDA OOM error 或计算结果错误。
+</div>
+
+<div class="callout info">
+<b>GPU 拓扑感知</b>：默认 device-plugin 不保证分配的 4 卡之间有 NVLink 高速互连。如果推理服务需要卡间高速通信（Tensor Parallelism），需要配合 <b>topology-aware scheduling</b>（如 NVIDIA GPU Operator 的 topology manager 策略）。下一章详述。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+多机推理（如 Qwen3-235B 需要 4 机 32 卡）时，你不能写 <code>nvidia.com/gpu: 32</code>——因为单节点最多 8 卡。正确做法是创建 4 个 Pod 各请求 8 卡，通过 LWS（LeaderWorkerSet）或 PyTorchJob 编排它们的启动顺序和 NCCL 通信。GPU 资源模型只管"单 Pod 单节点"——跨节点的编排是上层 controller 的事。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="limitrange"><span class="step">§4</span>LimitRange · 给 namespace 设默认 requests/limits</h2>
+
+<div class="card">
+<p><code>LimitRange</code> 解决三个问题：</p>
+<ul class="tight">
+  <li><b>防忘记</b>：给没设 resources 的容器自动注入默认 requests/limits</li>
+  <li><b>防超大</b>：限制单个 Pod/Container 的最大资源请求</li>
+  <li><b>防超小</b>：确保每个容器至少请求一定资源（避免饥饿）</li>
+</ul>
+
+<h3>YAML 示例</h3>
+<pre><span style="color:#8b93a7"># 给推理 namespace 设置资源约束</span>
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: inference-limits
+  namespace: inference
+spec:
+  limits:
+  - type: Container
+    default:                       <span style="color:#8b93a7"># 没设 limits 时自动注入</span>
+      cpu: "8"
+      memory: 32Gi
+    defaultRequest:                <span style="color:#8b93a7"># 没设 requests 时自动注入</span>
+      cpu: "4"
+      memory: 16Gi
+    max:                           <span style="color:#8b93a7"># 单个容器的 limits 上限</span>
+      cpu: "64"
+      memory: 512Gi
+      nvidia.com/gpu: "8"          <span style="color:#8b93a7"># 单容器最多 8 卡（单机上限）</span>
+    min:                           <span style="color:#8b93a7"># 单个容器的 requests 下限</span>
+      cpu: "500m"
+      memory: 1Gi
+  - type: Pod                      <span style="color:#8b93a7"># Pod 级限制（所有容器之和）</span>
+    max:
+      cpu: "128"
+      memory: 768Gi
+      nvidia.com/gpu: "8"
+</pre>
+
+<h3>LimitRange 的行为</h3>
+<table>
+<thead><tr><th>场景</th><th>LimitRange 行为</th></tr></thead>
+<tbody>
+<tr><td>容器没设 limits</td><td>自动注入 <code>default</code> 值</td></tr>
+<tr><td>容器没设 requests</td><td>自动注入 <code>defaultRequest</code> 值</td></tr>
+<tr><td>容器 limits 超过 max</td><td>apiserver <b>拒绝</b>创建 Pod（准入控制阶段报错）</td></tr>
+<tr><td>容器 requests 低于 min</td><td>apiserver <b>拒绝</b>创建 Pod</td></tr>
+<tr><td>已经在运行的 Pod</td><td><b>不受影响</b>——LimitRange 只在 Pod 创建时生效</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>LimitRange 是准入控制器</b>：它在 Pod 创建时注入/校验，对已运行的 Pod 无效。修改 LimitRange 后，需要 <code>kubectl rollout restart</code> 或重新创建 Pod 才能应用新规则。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+GPU 集群最佳实践：给推理 namespace 设 LimitRange，确保不会有人创建 BestEffort Pod 偷偷占用 GPU 节点的 CPU/Memory 资源。关键配置：① <code>defaultRequest.cpu</code> 至少 1 核 ② <code>defaultRequest.memory</code> 至少 2Gi ③ <code>max.nvidia.com/gpu = 8</code> 防止请求超过单节点 GPU 数。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="quota"><span class="step">§5</span>ResourceQuota · 给 namespace 设资源总量上限</h2>
+
+<div class="card">
+<p>如果说 LimitRange 是"单人限购"（限制单个 Pod），那 <b>ResourceQuota</b> 就是"团队预算"——限制整个 namespace 内所有 Pod 的资源总和。</p>
+
+<h3>计算型配额</h3>
+<pre><span style="color:#8b93a7"># 团队 A 的推理 namespace：最多用 32 块 GPU</span>
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: team-a-quota
+  namespace: inference-team-a
+spec:
+  hard:
+    requests.cpu: "128"            <span style="color:#8b93a7"># 所有 Pod requests.cpu 之和 ≤ 128 核</span>
+    requests.memory: 512Gi         <span style="color:#8b93a7"># 所有 Pod requests.memory 之和 ≤ 512Gi</span>
+    limits.cpu: "256"              <span style="color:#8b93a7"># 所有 Pod limits.cpu 之和 ≤ 256 核</span>
+    limits.memory: 1Ti             <span style="color:#8b93a7"># 所有 Pod limits.memory 之和 ≤ 1TiB</span>
+    requests.nvidia.com/gpu: "32"  <span style="color:#8b93a7"># 团队 A 最多使用 32 块 GPU</span>
+</pre>
+
+<h3>对象数配额</h3>
+<pre><span style="color:#8b93a7"># 限制 namespace 内的对象数量，防止资源泄露</span>
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: object-quota
+  namespace: inference-team-a
+spec:
+  hard:
+    pods: "50"                     <span style="color:#8b93a7"># 最多 50 个 Pod</span>
+    services: "10"                 <span style="color:#8b93a7"># 最多 10 个 Service</span>
+    configmaps: "50"               <span style="color:#8b93a7"># 最多 50 个 ConfigMap</span>
+    persistentvolumeclaims: "20"   <span style="color:#8b93a7"># 最多 20 个 PVC</span>
+    services.loadbalancers: "2"    <span style="color:#8b93a7"># LB 类型 Service 最多 2 个（贵）</span>
+</pre>
+
+<h3>配合 PriorityClass 的 scopeSelector</h3>
+<pre><span style="color:#8b93a7"># 按优先级分别限配额——高优先级推理服务不受低优先级的配额限制</span>
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: low-priority-gpu-limit
+  namespace: shared-inference
+spec:
+  hard:
+    requests.nvidia.com/gpu: "8"   <span style="color:#8b93a7"># 低优先级任务最多只能用 8 卡</span>
+  scopeSelector:
+    matchExpressions:
+    - scopeName: PriorityClass
+      operator: In
+      values:
+      - low-priority               <span style="color:#8b93a7"># 只匹配 priorityClassName=low-priority 的 Pod</span>
+      - batch-job
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: high-priority-gpu-limit
+  namespace: shared-inference
+spec:
+  hard:
+    requests.nvidia.com/gpu: "64"  <span style="color:#8b93a7"># 高优先级推理服务可以用 64 卡</span>
+  scopeSelector:
+    matchExpressions:
+    - scopeName: PriorityClass
+      operator: In
+      values:
+      - high-priority
+</pre>
+
+<div class="callout bad">
+<b>ResourceQuota 的强制副作用</b>：当 namespace 存在 ResourceQuota 且包含计算资源配额（如 requests.cpu）时，<b>该 namespace 下所有新建的 Pod 都必须设 resources</b>。否则 apiserver 无法计算配额用量，会直接拒绝：<code>must specify requests.cpu, requests.memory</code>。所以 ResourceQuota 通常配合 LimitRange 使用（提供默认值兜底）。
+</div>
+
+<h3>查看配额使用情况</h3>
+<pre><span style="color:#6ee7b7">$ kubectl describe resourcequota team-a-quota -n inference-team-a</span>
+
+Name:                    team-a-quota
+Namespace:               inference-team-a
+Resource                 Used     Hard
+--------                 ----     ----
+limits.cpu               96       256
+limits.memory            384Gi    1Ti
+requests.cpu             48       128
+requests.memory          384Gi    512Gi
+requests.nvidia.com/gpu  24       32    <span style="color:#fbbf24">← 还能再申请 8 块 GPU</span>
+</pre>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+GPU 集群多团队共享的标准模式：每个团队一个 namespace + 一个 ResourceQuota（限制 GPU 总量）+ 一个 LimitRange（提供默认值 + 限制单 Pod 上限）。这样既能防止一个团队把所有 GPU 吃光，也能防止单个 Pod 请求过多资源阻塞调度。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="best-practice"><span class="step">§6</span>资源设置最佳实践</h2>
+
+<div class="card">
+<h3>推理服务的 resources 配置范例</h3>
+<pre><span style="color:#8b93a7"># 8×A100-80GB 单机部署 Qwen3-72B（SGLang Tensor Parallel 8）</span>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sglang-qwen3-72b
+  namespace: inference
+spec:
+  replicas: 2
+  template:
+    spec:
+      containers:
+      - name: sglang
+        image: lmsysorg/sglang:v0.4.5-cu124
+        command: ["python3", "-m", "sglang.launch_server"]
+        args:
+        - "--model-path=/models/Qwen3-72B"
+        - "--tp=8"
+        - "--mem-fraction-static=0.88"      <span style="color:#8b93a7"># 控制 GPU 显存使用比例</span>
+        resources:
+          requests:
+            cpu: "4"                         <span style="color:#8b93a7"># 推理主要用 GPU，CPU 做 tokenize/网络</span>
+            memory: 50Gi                     <span style="color:#8b93a7"># = limits，让 memory 成为 Guaranteed 级别</span>
+            nvidia.com/gpu: 8                <span style="color:#8b93a7"># 8 卡 Tensor Parallel</span>
+          limits:
+            cpu: "16"                        <span style="color:#8b93a7"># 允许 burst（prefill 高并发时 CPU 密集）</span>
+            memory: 50Gi                     <span style="color:#8b93a7"># = requests！推理内存稳定，不允许超</span>
+            nvidia.com/gpu: 8                <span style="color:#8b93a7"># GPU 强制 requests == limits</span>
+</pre>
+
+<div class="callout warn">
+<b>注意</b>：上面 CPU requests(4) ≠ limits(16)，严格来说 QoS 是 <b>Burstable</b> 而非 Guaranteed。但因为 memory 的 requests == limits 且 GPU 也相等，这个 Pod 的 oom_score_adj 会比较低。如果需要绝对的 Guaranteed QoS（生产环境推荐），把 CPU 也设为 requests == limits == 16。
+</div>
+
+<h3>三种资源的设置思路</h3>
+<div class="grid cols-3">
+<div class="card" style="margin:0">
+<h4 style="margin-top:0">CPU: requests=4, limits=16</h4>
+<ul class="tight" style="font-size:12px">
+  <li>推理 90% 算力在 GPU</li>
+  <li>CPU 负责 tokenize、HTTP、调度</li>
+  <li>prefill 阶段 CPU burst 需求高</li>
+  <li>超 limits 只 throttle 不杀</li>
+  <li>requests 设低可节省调度资源</li>
+</ul>
+</div>
+<div class="card" style="margin:0">
+<h4 style="margin-top:0">Memory: requests=limits=50Gi</h4>
+<ul class="tight" style="font-size:12px">
+  <li>推理服务内存使用模式<b>稳定</b></li>
+  <li>模型加载后基本恒定</li>
+  <li>KV Cache 有上限（mem_fraction）</li>
+  <li>超了就 OOM Kill，不可恢复</li>
+  <li><b>必须 Guaranteed 保护</b></li>
+</ul>
+</div>
+<div class="card" style="margin:0">
+<h4 style="margin-top:0">GPU: requests=limits=8</h4>
+<ul class="tight" style="font-size:12px">
+  <li>强制要求 requests == limits</li>
+  <li>只能正整数</li>
+  <li>不可超分、不可共享</li>
+  <li>8 卡 = TP-8 单机推理</li>
+  <li>没有任何灵活空间</li>
+</ul>
+</div>
+</div>
+
+<h3>Memory 设多少？先压测再定</h3>
+<pre><span style="color:#8b93a7"># 推理服务 Host Memory 构成（以 8×A100 Qwen3-72B 为例）</span>
+<span style="color:#8b93a7"># ┌────────────────────────────────────────────────────────┐</span>
+<span style="color:#8b93a7"># │ Tokenizer 词表 + 映射表          ~2-4 GB               │</span>
+<span style="color:#8b93a7"># │ KV Cache 管理结构（host 端）      ~1-3 GB               │</span>
+<span style="color:#8b93a7"># │ 请求队列 / batch scheduler       ~2-5 GB               │</span>
+<span style="color:#8b93a7"># │ NCCL 通信 buffer（每卡 0.5-1G）  ~4-8 GB               │</span>
+<span style="color:#8b93a7"># │ Python runtime + 框架开销        ~3-5 GB               │</span>
+<span style="color:#8b93a7"># │ 峰值 batch 处理临时内存          ~5-15 GB              │</span>
+<span style="color:#8b93a7"># ├────────────────────────────────────────────────────────┤</span>
+<span style="color:#8b93a7"># │ 总计：稳态 ~20-30 GB，峰值可达 ~40-50 GB               │</span>
+<span style="color:#8b93a7"># └────────────────────────────────────────────────────────┘</span>
+
+<span style="color:#6ee7b7"># 正确做法：压测观察峰值，再加余量</span>
+<span style="color:#8b93a7"># Step 1: 先不设 limits.memory，跑满负载压测 1 小时</span>
+<span style="color:#8b93a7"># Step 2: 查 cgroup 历史峰值</span>
+$ cat /sys/fs/cgroup/memory.peak        <span style="color:#8b93a7"># cgroup v2 的历史最高水位</span>
+$ cat /sys/fs/cgroup/memory.max_usage_in_bytes  <span style="color:#8b93a7"># cgroup v1</span>
+
+<span style="color:#8b93a7"># Step 3: limits = peak × 1.2（留 20% buffer）</span>
+<span style="color:#8b93a7"># Step 4: requests = limits（保证 Guaranteed QoS）</span>
+</pre>
+
+<h3>常见错误配置及后果</h3>
+<table>
+<thead><tr><th>错误配置</th><th>后果</th><th>正确做法</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:#f87171">完全不设 resources</td>
+  <td>BestEffort QoS → 一有压力就被杀 · 无调度约束可能超卖</td>
+  <td>永远设 requests + limits</td>
+</tr>
+<tr>
+  <td style="color:#f87171">memory requests << limits（如 16Gi / 64Gi）</td>
+  <td>scheduler 超卖内存 → 运行时集体 OOM Kill</td>
+  <td>推理服务 memory requests = limits</td>
+</tr>
+<tr>
+  <td style="color:#f87171">CPU limits 设太低（如 2 核）</td>
+  <td>tokenize/prefill 被 throttle → TTFT 飙升</td>
+  <td>CPU limits = 2~4× requests</td>
+</tr>
+<tr>
+  <td style="color:#f87171">memory limits 只看空载值</td>
+  <td>高并发时 KV Cache 增长超限 → OOMKilled</td>
+  <td>用压测峰值 × 1.2</td>
+</tr>
+<tr>
+  <td style="color:#f87171">GPU requests ≠ limits</td>
+  <td>apiserver 直接拒绝创建</td>
+  <td>GPU 始终 requests == limits</td>
+</tr>
+</tbody>
+</table>
+
+<h3>完整 Guaranteed QoS 推理 Pod</h3>
+<pre><span style="color:#8b93a7"># 如果追求最高保护（生产环境推荐）：全部 requests == limits</span>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: sglang-guaranteed
+  namespace: inference
+spec:
+  containers:
+  - name: sglang
+    image: lmsysorg/sglang:v0.4.5-cu124
+    resources:
+      requests:                    <span style="color:#8b93a7"># requests == limits → QoS = Guaranteed</span>
+        cpu: "16"                  <span style="color:#8b93a7"># 独占 16 核（代价：scheduler 要扣 16 核）</span>
+        memory: 50Gi
+        nvidia.com/gpu: 8
+      limits:                      <span style="color:#8b93a7"># 完全等于 requests</span>
+        cpu: "16"
+        memory: 50Gi
+        nvidia.com/gpu: 8
+<span style="color:#8b93a7"># 此 Pod：</span>
+<span style="color:#8b93a7"># - QoS = Guaranteed</span>
+<span style="color:#8b93a7"># - oom_score_adj = -997</span>
+<span style="color:#8b93a7"># - 节点内存紧张时最后被驱逐</span>
+<span style="color:#8b93a7"># - 代价：CPU 独占 16 核，即使平时只用 4 核（利用率 vs 稳定性的取舍）</span>
+</pre>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+<b>Guaranteed 的代价与取舍</b>：CPU requests=16 意味着 scheduler 从节点 allocatable 中扣除 16 核。如果推理服务平时只用 4 核，这 12 核就"浪费"了。但对于<b>生产推理服务</b>，这个代价完全值得——被 OOM Kill 一次的损失（请求丢失、模型重加载 2 分钟、GPU 闲置）远大于多占 12 核 CPU 的成本。<b>稳定性 > 利用率</b>。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§7</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① requests</div><div>Scheduler 的调度依据 · 决定 Pod 放哪台节点 · 所有 Pod requests 总和 ≤ Node Allocatable</div>
+  <div class="k">② limits</div><div>运行时天花板 · kubelet/cgroup 强制执行 · CPU 超了 throttle（不杀）· Memory 超了 OOM Kill</div>
+  <div class="k">③ QoS 三等级</div><div>Guaranteed（-997）→ Burstable（2~999）→ BestEffort（1000）· 数字越大越先被杀</div>
+  <div class="k">④ OOM Kill 顺序</div><div>BestEffort 最先 → Burstable 按比例 → Guaranteed 最后 · 推理服务用 Guaranteed</div>
+  <div class="k">⑤ GPU 特殊规则</div><div>只能整数 · requests == limits · 不可超分 · 不跨节点 · device-plugin 管理</div>
+  <div class="k">⑥ LimitRange</div><div>namespace 级 · 注入默认值 + 限制单 Pod 上下限 · 准入时生效</div>
+  <div class="k">⑦ ResourceQuota</div><div>namespace 级 · 限制所有 Pod 的资源总量 + 对象数 · 配合 PriorityClass 精细控制</div>
+  <div class="k">⑧ 推理黄金法则</div><div>Memory: requests=limits（Guaranteed 保护）· CPU: 可 burst · GPU: 天然 Guaranteed</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——知道了 <code>nvidia.com/gpu</code> 在资源模型里怎么运作，下一章深入 GPU 是怎么被 K8S "发现"和管理的：NVIDIA device-plugin 的注册机制、Allocate 流程、GPU 拓扑感知调度、MIG 分片与 Time-slicing 共享。→ <a href="08-gpu-device-plugin.html" style="color:var(--brand)">08-gpu-device-plugin.html</a>
+</div>
+</div>
+
+<div class="foot">
+第二层 · 07 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

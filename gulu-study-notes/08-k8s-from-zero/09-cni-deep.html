@@ -1,0 +1,843 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>容器网络深入 · CNI / veth / Overlay vs Underlay</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>容器网络深入 <span class="tag">第三层 · 09/15</span></h1>
+<div class="sub">CNI / veth pair / Overlay vs Underlay——NCCL 跨节点带宽差 10 倍的根因就藏在这一层。搞懂数据包怎么走，才能理解为什么多机推理性能上不去。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么要理解容器网络</a>
+  <a href="#model">§1 K8S 网络三保证</a>
+  <a href="#single-node">§2 单节点：veth + bridge</a>
+  <a href="#cross-node">§3 跨节点：Overlay vs Underlay</a>
+  <a href="#cni-compare">§4 主流 CNI 对比</a>
+  <a href="#full-path">§5 完整数据包路径</a>
+  <a href="#inference">§6 CNI 与推理性能</a>
+  <a href="#takeaway">§7 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么要理解容器网络</h2>
+
+<div class="card">
+<p>你可能觉得"网络不就是通了就行吗？"但在多机推理场景下，网络是<b>性能的天花板</b>：</p>
+<ul class="tight">
+  <li>同样 2 台 8×A100 机器跑 Tensor Parallel，Overlay 网络下 NCCL allreduce 带宽只有 <b>3-5 GB/s</b>，而 Underlay/hostNetwork 能跑到 <b>22-24 GB/s</b></li>
+  <li>同一个模型、同样的 GPU，换一种 CNI 配置，推理 throughput 差 3-5 倍</li>
+  <li>Pod 间通信偶尔丢包——是 CNI 的 MTU 配错了，VXLAN 封装后超过物理网卡 MTU 导致分片</li>
+  <li>跨节点的 prefill-decode 分离架构，网络延迟直接影响 TTFT（Time To First Token）</li>
+</ul>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+真实案例：某团队用 Flannel（VXLAN）部署 2 机 16 卡 Qwen-72B 推理，NCCL allreduce 带宽只有 3.2 GB/s，推理吞吐量仅为单机的 1.1 倍（GPU 大量时间在等网络）。切换到 Calico BGP + hostNetwork 后，NCCL 带宽升到 22 GB/s，吞吐量达到单机的 1.85 倍。<b>差距全在网络这一层</b>。
+</div>
+
+<div class="callout warn">
+理解容器网络不是为了"面试八股"——它直接决定你多机推理的投入产出比。GPU 很贵，因为网络配置问题浪费 50% 算力是最不该犯的错误。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="model"><span class="step">§1</span>K8S 网络模型的三个保证</h2>
+
+<div class="card">
+<p>K8S 定义了一个<b>扁平网络模型</b>，不管底层用什么 CNI 插件实现，必须满足三个保证：</p>
+
+<div class="grid cols-3" style="margin:16px 0">
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px">
+    <h4 style="margin-top:0;color:var(--brand)">保证一：Pod 间直接通信</h4>
+    <p style="font-size:13px;margin:0">任何两个 Pod 之间可以<b>直接通信</b>，无需 NAT 转换。不管它们在同一个 Node 还是不同 Node，发出的包和收到的包源 IP 保持不变。</p>
+  </div>
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px">
+    <h4 style="margin-top:0;color:var(--brand2)">保证二：Node 和 Pod 互通</h4>
+    <p style="font-size:13px;margin:0">Node 上的进程可以和<b>任意 Pod</b> 直接通信（反过来也一样），无需 NAT。kubelet、kube-proxy 等系统组件依赖这一点。</p>
+  </div>
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px">
+    <h4 style="margin-top:0;color:var(--warn)">保证三：IP 一致性</h4>
+    <p style="font-size:13px;margin:0">Pod 看到自己的 IP 地址 = 别人看到它的 IP 地址（<b>无隐式 NAT</b>）。NCCL 等分布式协议依赖"我声明的地址就是别人能连到我的地址"。</p>
+  </div>
+</div>
+
+<div class="callout info">
+<b>为什么这三个保证对推理很重要？</b>NCCL 初始化时，每个 rank 会广播自己的 IP+port 给其他 rank。如果 Pod 看到的自己的 IP 和别人看到的不一致（NAT 场景），NCCL bootstrap 会直接失败。扁平网络让容器内的 NCCL 程序像在裸机一样工作——零适配。
+</div>
+
+<h3>这意味着什么</h3>
+<pre><span style="color:#8b93a7"># Pod A (10.244.1.5 @ Node1) 想访问 Pod B (10.244.2.8 @ Node2)</span>
+<span style="color:#8b93a7"># 在 K8S 网络模型下，直接：</span>
+curl http://10.244.2.8:8080/generate
+
+<span style="color:#8b93a7"># 不需要知道 Pod B 在哪台 Node 上</span>
+<span style="color:#8b93a7"># 不需要端口映射</span>
+<span style="color:#8b93a7"># Pod B 收到的 src IP 就是 10.244.1.5（Pod A 的真实 IP）</span>
+</pre>
+
+<div class="callout warn">
+K8S 只定义了<b>目标</b>（这三个保证），不规定<b>怎么实现</b>——CNI 插件就是"怎么实现"的答案。不同 CNI 用不同方式达成同样的保证，但性能代价天差地别。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="single-node"><span class="step">§2</span>单节点网络：veth pair + bridge</h2>
+
+<div class="card">
+<p>理解容器网络的第一步：看<b>同一台 Node 上的两个 Pod 怎么通信</b>。</p>
+
+<h3>核心组件</h3>
+<ul class="tight">
+  <li><b>Network Namespace</b>：每个 Pod 有独立的网络命名空间（独立网卡、路由表、iptables）——Pod 间天然网络隔离</li>
+  <li><b>veth pair</b>：虚拟网卡对，像一根"虚拟网线"。一端在 Pod 内（叫 <code>eth0</code>），一端在宿主机（叫 <code>vethXXX</code>）</li>
+  <li><b>bridge（cni0 / cbr0）</b>：宿主机上的虚拟交换机，把所有 Pod 的 veth 宿主机端连在一起</li>
+</ul>
+
+<h3>同节点 Pod 间通信路径</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 380" width="900">
+  <defs>
+    <marker id="arrGreen" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#6ee7b7"/>
+    </marker>
+  </defs>
+
+  <!-- Node 大框 -->
+  <rect x="30" y="20" width="840" height="340" rx="14" fill="#1a2332" stroke="#6ee7b7" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="55" y="48" fill="#6ee7b7" font-size="14" font-weight="700">Worker Node（宿主机 Linux Kernel）</text>
+
+  <!-- Pod A -->
+  <rect x="80" y="80" width="250" height="120" rx="10" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="100" y="105" fill="#fbbf24" font-size="12" font-weight="600">Pod A（Network Namespace A）</text>
+  <rect x="110" y="118" width="100" height="32" rx="6" fill="#162924" stroke="#6ee7b7"/>
+  <text x="125" y="139" fill="#6ee7b7" font-size="11" font-weight="600">eth0</text>
+  <text x="110" y="170" fill="#8b93a7" font-size="10">IP: 10.244.1.5</text>
+  <text x="110" y="185" fill="#8b93a7" font-size="10">默认路由 → eth0</text>
+
+  <!-- Pod B -->
+  <rect x="570" y="80" width="250" height="120" rx="10" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="590" y="105" fill="#fbbf24" font-size="12" font-weight="600">Pod B（Network Namespace B）</text>
+  <rect x="690" y="118" width="100" height="32" rx="6" fill="#162924" stroke="#6ee7b7"/>
+  <text x="705" y="139" fill="#6ee7b7" font-size="11" font-weight="600">eth0</text>
+  <text x="690" y="170" fill="#8b93a7" font-size="10">IP: 10.244.1.8</text>
+  <text x="690" y="185" fill="#8b93a7" font-size="10">默认路由 → eth0</text>
+
+  <!-- veth pair A -->
+  <line x1="160" y1="150" x2="160" y2="245" stroke="#a78bfa" stroke-width="2" stroke-dasharray="4 2"/>
+  <text x="170" y="210" fill="#a78bfa" font-size="10">veth pair</text>
+  <rect x="120" y="245" width="80" height="28" rx="5" fill="#1a1520" stroke="#a78bfa"/>
+  <text x="132" y="264" fill="#a78bfa" font-size="10">vethXXX</text>
+
+  <!-- veth pair B -->
+  <line x1="740" y1="150" x2="740" y2="245" stroke="#a78bfa" stroke-width="2" stroke-dasharray="4 2"/>
+  <text x="750" y="210" fill="#a78bfa" font-size="10">veth pair</text>
+  <rect x="700" y="245" width="80" height="28" rx="5" fill="#1a1520" stroke="#a78bfa"/>
+  <text x="712" y="264" fill="#a78bfa" font-size="10">vethYYY</text>
+
+  <!-- Bridge -->
+  <rect x="270" y="280" width="360" height="45" rx="8" fill="#1f2937" stroke="#7dd3fc" stroke-width="2"/>
+  <text x="395" y="300" fill="#7dd3fc" font-size="13" font-weight="700" text-anchor="middle">cni0 Bridge（Linux 虚拟交换机）</text>
+  <text x="395" y="318" fill="#8b93a7" font-size="10" text-anchor="middle">根据 MAC 地址表做二层转发</text>
+
+  <!-- 连接 veth 到 bridge -->
+  <line x1="160" y1="273" x2="270" y2="300" stroke="#7dd3fc" stroke-width="1.5"/>
+  <line x1="740" y1="273" x2="630" y2="300" stroke="#7dd3fc" stroke-width="1.5"/>
+
+  <!-- 数据流 -->
+  <path d="M210 134 C380 134 380 65 450 65 C520 65 520 134 690 134" fill="none" stroke="#6ee7b7" stroke-width="2.5" stroke-dasharray="6 3" marker-end="url(#arrGreen)"/>
+  <text x="450" y="52" fill="#6ee7b7" font-size="11" text-anchor="middle" font-weight="600">数据流方向（全程内核态，不经物理网卡）</text>
+
+  <!-- 步骤标注 -->
+  <text x="230" y="128" fill="#6ee7b7" font-size="10">① 出 eth0</text>
+  <text x="340" y="92" fill="#6ee7b7" font-size="10">② veth → bridge</text>
+  <text x="500" y="92" fill="#6ee7b7" font-size="10">③ bridge MAC 查表</text>
+  <text x="620" y="128" fill="#6ee7b7" font-size="10">④ 送达 Pod B</text>
+
+  <!-- 底部路径说明 -->
+  <text x="80" y="355" fill="#8b93a7" font-size="11">完整路径：Pod A eth0 → vethXXX → cni0 bridge（二层 MAC 转发）→ vethYYY → Pod B eth0</text>
+</svg>
+</div>
+
+<h3>关键细节</h3>
+<ul class="tight">
+  <li><b>同节点通信不经过物理网卡</b>——全在内核内存中通过 bridge 二层转发，延迟极低（~10-50μs）</li>
+  <li><b>veth pair 是一对一的</b>：每创建一个 Pod，CNI 就会创建一对 veth。宿主机上 <code>ip link</code> 能看到一堆 <code>vethXXXXX</code></li>
+  <li><b>Bridge 像交换机一样工作</b>：学习 MAC 地址 → 根据目标 MAC 转发到对应端口</li>
+  <li>CNI 还负责给 Pod 分配 IP、设置默认路由、配置 DNS（<code>/etc/resolv.conf</code>）</li>
+</ul>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：用命令观察 veth pair 和 bridge</button>
+<div class="expand-content">
+<pre><span style="color:#8b93a7"># 在宿主机上查看 bridge 和它连接的 veth</span>
+$ brctl show cni0
+bridge name   bridge id          STP enabled   interfaces
+cni0          8000.a2b4c6d8e0f1  no            veth3f8a1b2c
+                                               veth7d4e5f6a
+                                               vethb9c0d1e2
+
+<span style="color:#8b93a7"># 查看某个 Pod 的 veth 对应宿主机的哪个网卡</span>
+<span style="color:#8b93a7"># 先在 Pod 内：</span>
+$ kubectl exec my-pod -- cat /sys/class/net/eth0/iflink
+15
+
+<span style="color:#8b93a7"># 再在宿主机上找编号 15 的网卡：</span>
+$ ip link | grep "^15:"
+15: veth3f8a1b2c@if14: &lt;BROADCAST,MULTICAST,UP&gt; mtu 1450 ... master cni0
+
+<span style="color:#8b93a7"># 确认 MTU（VXLAN 模式下通常是 1450，纯路由模式是 1500）</span>
+$ ip link show cni0 | grep mtu
+4: cni0: &lt;BROADCAST,MULTICAST,UP&gt; mtu 1450 ...</pre>
+</div>
+
+<div class="callout info">
+<b>同节点通信性能极高</b>——两个 Pod 在同一 Node 上交换数据，本质就是内核内存拷贝，跟进程间通信差不多。所以<b>同机多卡推理完全不需要担心 CNI 性能</b>——瓶颈在 PCIe/NVLink，不在网络栈。跨节点才是 CNI 的战场。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="cross-node"><span class="step">§3</span>跨节点网络：Overlay vs Underlay</h2>
+
+<div class="card">
+<p>同节点走 bridge 二层转发就行，但<b>跨节点</b>时目标 Pod 在另一台物理机上。Pod 的 <code>10.244.x.x</code> 地址是集群内部分配的，物理交换机根本不认识——包怎么送过去？</p>
+
+<p>两种根本不同的思路：</p>
+
+<h3>方案一：Overlay（VXLAN 封装隧道）</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 240" width="900">
+  <!-- 原始包 -->
+  <text x="30" y="25" fill="#fbbf24" font-size="12" font-weight="600">原始 IP 包（Pod 发出的）</text>
+  <rect x="30" y="35" width="500" height="40" rx="6" fill="#1f2937" stroke="#fbbf24"/>
+  <rect x="40" y="45" width="100" height="22" rx="4" fill="#2a2a3e" stroke="#8b93a7"/>
+  <text x="50" y="60" fill="#6ee7b7" font-size="9">Src: 10.244.1.5</text>
+  <rect x="150" y="45" width="100" height="22" rx="4" fill="#2a2a3e" stroke="#8b93a7"/>
+  <text x="160" y="60" fill="#fb7185" font-size="9">Dst: 10.244.2.8</text>
+  <rect x="260" y="45" width="250" height="22" rx="4" fill="#2a2a3e" stroke="#8b93a7"/>
+  <text x="270" y="60" fill="#8b93a7" font-size="9">TCP Header + Payload（应用数据）</text>
+
+  <!-- 箭头 -->
+  <text x="30" y="105" fill="#a78bfa" font-size="12" font-weight="600">VXLAN 封装后（加了 ~50 bytes 外层 header）</text>
+
+  <!-- 封装后的包 -->
+  <rect x="30" y="115" width="840" height="45" rx="6" fill="#1f2937" stroke="#a78bfa" stroke-width="2"/>
+  <rect x="40" y="125" width="85" height="26" rx="4" fill="#162924" stroke="#6ee7b7"/>
+  <text x="47" y="142" fill="#6ee7b7" font-size="8.5">Outer Eth 14B</text>
+  <rect x="130" y="125" width="95" height="26" rx="4" fill="#162924" stroke="#6ee7b7"/>
+  <text x="137" y="142" fill="#6ee7b7" font-size="8.5">Outer IP 20B</text>
+  <text x="137" y="152" fill="#8b93a7" font-size="7">Node1→Node2</text>
+  <rect x="230" y="125" width="80" height="26" rx="4" fill="#1a1520" stroke="#fbbf24"/>
+  <text x="237" y="142" fill="#fbbf24" font-size="8.5">UDP:4789 8B</text>
+  <rect x="315" y="125" width="80" height="26" rx="4" fill="#1a1520" stroke="#a78bfa"/>
+  <text x="322" y="142" fill="#a78bfa" font-size="8.5">VXLAN Hdr 8B</text>
+  <rect x="400" y="125" width="450" height="26" rx="4" fill="#2a2a3e" stroke="#fbbf24" stroke-dasharray="3 2"/>
+  <text x="410" y="142" fill="#fbbf24" font-size="8.5">原始完整帧（Src:10.244.1.5 Dst:10.244.2.8 + TCP + Payload）</text>
+
+  <!-- 说明 -->
+  <text x="30" y="190" fill="#6ee7b7" font-size="11">外层 IP：Node 的物理 IP（192.168.1.x）→ 物理交换机只看这个地址做路由</text>
+  <text x="30" y="210" fill="#8b93a7" font-size="11">物理网络完全不需要知道 10.244.x.x 是什么 → 对底层基础设施透明</text>
+  <text x="30" y="230" fill="#fb7185" font-size="11">代价：每包多 50 bytes header + 封装/解封 CPU 开销 + MTU 缩小（1500→1450）</text>
+</svg>
+</div>
+
+<div class="grid cols-2" style="margin:16px 0">
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px">
+    <h4 style="margin-top:0;color:var(--brand)">Overlay 优点</h4>
+    <ul class="tight">
+      <li>部署简单，对底层网络<b>零要求</b>（只要 Node 间 IP 可达即可）</li>
+      <li>任何云平台、IDC 都能用，不需要找网络团队配路由</li>
+      <li>Pod 网段完全自管理，跟物理网络规划解耦</li>
+      <li>可跨三层网络（跨机房、跨 AZ）</li>
+    </ul>
+  </div>
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px">
+    <h4 style="margin-top:0;color:var(--bad)">Overlay 缺点</h4>
+    <ul class="tight">
+      <li>封装开销 ~50 bytes/包：有效 MTU 降到 1450</li>
+      <li>CPU 开销：每包都要封装/解封装，高带宽时 CPU 占用明显</li>
+      <li><b>性能损失 5-15%</b>（小包场景更严重——header 占比大）</li>
+      <li>排障困难：tcpdump 看到的是封装后的包，内层需要手动解析</li>
+    </ul>
+  </div>
+</div>
+
+<h3>方案二：Underlay（BGP 路由 / 直接路由）</h3>
+
+<p>另一种思路：不封装，直接<b>告诉物理网络怎么路由 Pod IP</b>。</p>
+
+<pre><span style="color:#8b93a7"># 每个 Node 通过 BGP 协议向物理路由器/交换机宣告：</span>
+<span style="color:#8b93a7"># "10.244.1.0/24 这个网段的包，发给我（Node1 的物理 IP 192.168.1.10）"</span>
+<span style="color:#8b93a7"># "10.244.2.0/24 这个网段的包，发给 Node2 的物理 IP 192.168.1.11"</span>
+
+<span style="color:#6ee7b7"># Node1 的路由表：</span>
+10.244.1.0/24  dev cni0               <span style="color:#8b93a7"># 本地 Pod，走 bridge</span>
+10.244.2.0/24  via 192.168.1.11 dev eth0  <span style="color:#8b93a7"># Node2 的 Pod，路由过去</span>
+
+<span style="color:#6ee7b7"># 物理交换机也学到了这些路由（通过 BGP peer）</span>
+10.244.1.0/24  → next-hop 192.168.1.10 (Node1)
+10.244.2.0/24  → next-hop 192.168.1.11 (Node2)
+
+<span style="color:#8b93a7"># 结果：Pod 的包"裸"着走物理网络，零封装！</span>
+</pre>
+
+<div class="grid cols-2" style="margin:16px 0">
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px">
+    <h4 style="margin-top:0;color:var(--brand)">Underlay 优点</h4>
+    <ul class="tight">
+      <li><b>零封装</b>：原始 IP 包直接在物理网络传输，性能接近裸机</li>
+      <li>无额外 CPU 开销，MTU 不受影响（可以用 Jumbo Frame 9000）</li>
+      <li>延迟最低：少了封装/解封步骤</li>
+      <li>排障简单：tcpdump 直接看到 Pod 的真实 IP 包</li>
+    </ul>
+  </div>
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px">
+    <h4 style="margin-top:0;color:var(--bad)">Underlay 缺点</h4>
+    <ul class="tight">
+      <li>需要物理网络设备支持 BGP 或允许静态路由配置</li>
+      <li>需要网络团队配合（BGP peer、路由通告策略）</li>
+      <li>Pod IP 段需要跟物理网络规划不冲突</li>
+      <li>跨三层网络（跨机房）需要全路径 BGP，配置复杂</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout bad">
+<b>核心取舍</b>：Overlay 用"运维便利性"换"性能"，Underlay 用"基础设施复杂度"换"高性能"。对 HTTP API 服务来说 Overlay 足够；对<b>多机 NCCL 通信</b>来说，Overlay 的性能损失是灾难级的。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+<b>判断你的集群用的哪种模式</b>：
+<pre style="margin:8px 0 0"><span style="color:#8b93a7"># 检查 Pod 网卡的 MTU</span>
+$ kubectl exec -it any-pod -- ip link show eth0 | grep mtu
+    link/ether ... mtu <b>1450</b>  <span style="color:#8b93a7"># ← 1450 说明是 VXLAN Overlay（被吃了 50B）</span>
+    link/ether ... mtu <b>1500</b>  <span style="color:#8b93a7"># ← 1500 说明是直接路由 Underlay</span>
+    link/ether ... mtu <b>9000</b>  <span style="color:#8b93a7"># ← 9000 说明开了 Jumbo Frame（高性能集群）</span>
+
+<span style="color:#8b93a7"># 看有没有 flannel.1 / vxlan.calico 设备（VTEP）</span>
+$ ip link show | grep -E "flannel|vxlan"
+5: flannel.1: &lt;BROADCAST,MULTICAST,UP&gt; mtu 1450 ...  <span style="color:#8b93a7"># ← Overlay 模式</span></pre>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="cni-compare"><span class="step">§4</span>主流 CNI 插件对比</h2>
+
+<div class="card">
+<p>CNI（Container Network Interface）是 K8S 定义的标准接口。kubelet 创建 Pod 时调用 CNI 二进制文件来配置网络。不同 CNI 插件 = 不同的实现策略。</p>
+
+<table>
+<thead><tr><th>CNI 插件</th><th>默认网络模式</th><th>性能</th><th>NetworkPolicy</th><th>复杂度</th><th>最适合场景</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:var(--brand)"><b>Calico</b></td>
+  <td>BGP 路由（可选 VXLAN fallback）</td>
+  <td style="color:var(--brand)">高</td>
+  <td>完整支持</td>
+  <td>中</td>
+  <td>生产首选，性能与安全兼得</td>
+</tr>
+<tr>
+  <td style="color:var(--brand2)"><b>Cilium</b></td>
+  <td>eBPF 原生路由（可选 VXLAN/Geneve）</td>
+  <td style="color:var(--brand)">极高</td>
+  <td>完整 + L7 策略</td>
+  <td>高</td>
+  <td>大规模集群 / 替代 kube-proxy / 需内核 5.10+</td>
+</tr>
+<tr>
+  <td style="color:var(--warn)"><b>Flannel</b></td>
+  <td>VXLAN Overlay</td>
+  <td style="color:var(--warn)">中</td>
+  <td>不支持</td>
+  <td>低</td>
+  <td>开发测试 / 不需要 NetworkPolicy 的小集群</td>
+</tr>
+</tbody>
+</table>
+
+<h3>三者的本质差异</h3>
+<div class="grid cols-3" style="margin:14px 0">
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px">
+    <h4 style="margin-top:0;color:var(--brand)">Calico</h4>
+    <ul class="tight" style="font-size:12px">
+      <li>默认用 BGP 把 Pod 路由宣告到网络</li>
+      <li>同子网走直接路由，跨子网可 fallback VXLAN</li>
+      <li>用 iptables/eBPF 实现 NetworkPolicy</li>
+      <li>成熟稳定，文档丰富</li>
+      <li>支持 <code>CrossSubnet</code> 模式（折中方案）</li>
+    </ul>
+  </div>
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px">
+    <h4 style="margin-top:0;color:var(--brand2)">Cilium</h4>
+    <ul class="tight" style="font-size:12px">
+      <li>用 eBPF 程序在内核中做路由+策略</li>
+      <li>跳过 iptables 和 bridge，减少包经过的层</li>
+      <li>可完全替代 kube-proxy（Service→Pod 映射）</li>
+      <li>支持 WireGuard 透明加密</li>
+      <li>需要 Linux 5.10+ 内核</li>
+    </ul>
+  </div>
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px">
+    <h4 style="margin-top:0;color:var(--warn)">Flannel</h4>
+    <ul class="tight" style="font-size:12px">
+      <li>最简单的 VXLAN 实现，10 分钟部署</li>
+      <li>不支持 NetworkPolicy（需配合 Calico 策略引擎）</li>
+      <li>适合学习和理解 Overlay 原理</li>
+      <li>host-gw 模式可在同子网走直接路由</li>
+      <li>功能最少但坑也最少</li>
+    </ul>
+  </div>
+</div>
+
+<h3>选择决策</h3>
+<div class="callout info">
+<ul class="tight" style="margin:0">
+  <li><b>GPU 推理集群（NCCL 多机）</b>：管理网用 Calico BGP，NCCL 走独立网卡的 hostNetwork 或 SR-IOV</li>
+  <li><b>普通 API 服务集群</b>：Calico 或 Cilium，性能和安全都够</li>
+  <li><b>学习/测试/minikube</b>：Flannel，5 分钟搞定</li>
+  <li><b>安全合规要求高</b>：Cilium（L7 策略 + WireGuard 加密）</li>
+</ul>
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：Calico BGP vs VXLAN 模式切换</button>
+<div class="expand-content">
+<pre><span style="color:#8b93a7"># 查看当前 Calico 的 IPPool 配置</span>
+$ calicoctl get ippool -o yaml
+apiVersion: projectcalico.org/v3
+kind: IPPool
+spec:
+  cidr: 10.244.0.0/16
+  ipipMode: Never
+  vxlanMode: Never         <span style="color:#8b93a7"># ← 纯 BGP 路由（最高性能）</span>
+  natOutgoing: true
+
+<span style="color:#8b93a7"># 如果底层交换机不支持 BGP，改为 CrossSubnet 模式：</span>
+<span style="color:#8b93a7"># 同子网走直接路由，跨子网 fallback 到 VXLAN</span>
+spec:
+  vxlanMode: CrossSubnet
+
+<span style="color:#8b93a7"># 或者纯 VXLAN（最方便但性能最差）：</span>
+spec:
+  vxlanMode: Always</pre>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+在腾讯云 TKE 上，默认 CNI 是 <b>VPC-CNI</b>（类似 AWS VPC CNI），Pod 直接获得 VPC 子网 IP，性能等同裸机——这本质上就是 Underlay 模式。如果你在自建集群上想要同等性能，需要用 Calico BGP 并让网络团队在交换机上配 BGP peer。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="full-path"><span class="step">§5</span>从 Pod A (Node1) 到 Pod B (Node2) 的完整数据包路径</h2>
+
+<div class="card">
+<p>把所有组件串起来——看一个跨节点数据包的<b>完整旅程</b>。</p>
+
+<h3>路径一：Underlay（BGP 直接路由）</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 960 400" width="960">
+  <defs>
+    <marker id="arrFlow1" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#6ee7b7"/>
+    </marker>
+  </defs>
+
+  <!-- Node 1 -->
+  <rect x="20" y="30" width="420" height="320" rx="12" fill="#1a2332" stroke="#6ee7b7" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="45" y="55" fill="#6ee7b7" font-size="13" font-weight="700">Node 1 (192.168.1.10)</text>
+
+  <!-- Pod A -->
+  <rect x="50" y="75" width="150" height="55" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="70" y="98" fill="#fbbf24" font-size="11" font-weight="600">Pod A (10.244.1.5)</text>
+  <rect x="70" y="108" width="60" height="18" rx="4" fill="#162924" stroke="#6ee7b7"/>
+  <text x="80" y="121" fill="#6ee7b7" font-size="9">eth0</text>
+
+  <!-- 步骤1 -->
+  <circle cx="100" cy="150" r="11" fill="#6ee7b7" opacity=".9"/>
+  <text x="100" y="154" text-anchor="middle" fill="#0b0d12" font-size="9" font-weight="700">1</text>
+  <text x="120" y="154" fill="#8b93a7" font-size="9">veth pair</text>
+  <line x1="100" y1="126" x2="100" y2="170" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="3 2"/>
+
+  <!-- Bridge -->
+  <rect x="50" y="172" width="160" height="30" rx="6" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="90" y="192" fill="#7dd3fc" font-size="10" font-weight="600">cni0 bridge</text>
+  <circle cx="130" cy="215" r="11" fill="#6ee7b7" opacity=".9"/>
+  <text x="130" y="219" text-anchor="middle" fill="#0b0d12" font-size="9" font-weight="700">2</text>
+  <text x="148" y="219" fill="#8b93a7" font-size="9">路由查表</text>
+
+  <!-- 路由表 -->
+  <rect x="50" y="232" width="200" height="35" rx="6" fill="#1f2937" stroke="#8b93a7"/>
+  <text x="60" y="248" fill="#8b93a7" font-size="9">10.244.2.0/24 via 192.168.1.11</text>
+  <text x="60" y="262" fill="#8b93a7" font-size="9">→ 下一跳是 Node2 物理 IP</text>
+
+  <!-- 物理网卡 -->
+  <circle cx="150" cy="285" r="11" fill="#6ee7b7" opacity=".9"/>
+  <text x="150" y="289" text-anchor="middle" fill="#0b0d12" font-size="9" font-weight="700">3</text>
+  <rect x="70" y="298" width="140" height="30" rx="6" fill="#1a1520" stroke="#fb7185" stroke-width="2"/>
+  <text x="100" y="318" fill="#fb7185" font-size="10" font-weight="600">eth0 物理网卡</text>
+
+  <!-- Node 2 -->
+  <rect x="520" y="30" width="420" height="320" rx="12" fill="#1a2332" stroke="#6ee7b7" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="545" y="55" fill="#6ee7b7" font-size="13" font-weight="700">Node 2 (192.168.1.11)</text>
+
+  <!-- Pod B -->
+  <rect x="750" y="75" width="150" height="55" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="770" y="98" fill="#fbbf24" font-size="11" font-weight="600">Pod B (10.244.2.8)</text>
+  <rect x="810" y="108" width="60" height="18" rx="4" fill="#162924" stroke="#6ee7b7"/>
+  <text x="820" y="121" fill="#6ee7b7" font-size="9">eth0</text>
+
+  <!-- 步骤7 -->
+  <circle cx="840" cy="150" r="11" fill="#6ee7b7" opacity=".9"/>
+  <text x="840" y="154" text-anchor="middle" fill="#0b0d12" font-size="9" font-weight="700">7</text>
+  <line x1="840" y1="126" x2="840" y2="170" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="3 2"/>
+
+  <!-- Bridge -->
+  <rect x="730" y="172" width="160" height="30" rx="6" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="770" y="192" fill="#7dd3fc" font-size="10" font-weight="600">cni0 bridge</text>
+  <circle cx="810" cy="215" r="11" fill="#6ee7b7" opacity=".9"/>
+  <text x="810" y="219" text-anchor="middle" fill="#0b0d12" font-size="9" font-weight="700">6</text>
+
+  <!-- 路由表 -->
+  <rect x="700" y="232" width="200" height="35" rx="6" fill="#1f2937" stroke="#8b93a7"/>
+  <text x="710" y="248" fill="#8b93a7" font-size="9">10.244.2.0/24 dev cni0 (本地网段)</text>
+  <text x="710" y="262" fill="#8b93a7" font-size="9">→ 转发给 bridge</text>
+
+  <!-- 物理网卡 -->
+  <circle cx="800" cy="285" r="11" fill="#6ee7b7" opacity=".9"/>
+  <text x="800" y="289" text-anchor="middle" fill="#0b0d12" font-size="9" font-weight="700">5</text>
+  <rect x="730" y="298" width="140" height="30" rx="6" fill="#1a1520" stroke="#fb7185" stroke-width="2"/>
+  <text x="760" y="318" fill="#fb7185" font-size="10" font-weight="600">eth0 物理网卡</text>
+
+  <!-- 物理网络 -->
+  <rect x="280" y="330" width="400" height="40" rx="8" fill="#1f2937" stroke="#fbbf24" stroke-width="2"/>
+  <text x="400" y="348" fill="#fbbf24" font-size="11" font-weight="600" text-anchor="middle">物理网络 / 交换机（已学到 BGP 路由）</text>
+  <text x="400" y="364" fill="#8b93a7" font-size="9" text-anchor="middle">10.244.2.0/24 → next-hop 192.168.1.11</text>
+
+  <circle cx="480" cy="340" r="11" fill="#6ee7b7" opacity=".9"/>
+  <text x="480" y="344" text-anchor="middle" fill="#0b0d12" font-size="9" font-weight="700">4</text>
+
+  <!-- 连线 -->
+  <line x1="210" y1="313" x2="280" y2="345" stroke="#fb7185" stroke-width="1.5"/>
+  <line x1="680" y1="345" x2="730" y2="313" stroke="#fb7185" stroke-width="1.5"/>
+
+  <!-- 顶部数据包标注 -->
+  <path d="M200 90 Q480 -5 750 90" stroke="#6ee7b7" stroke-width="2" fill="none" stroke-dasharray="6 3" marker-end="url(#arrFlow1)"/>
+  <text x="480" y="30" fill="#6ee7b7" font-size="11" font-weight="600" text-anchor="middle">IP 包原封不动：src=10.244.1.5 dst=10.244.2.8（无封装）</text>
+</svg>
+</div>
+
+<h3>路径二：Overlay（VXLAN 隧道）</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 960 430" width="960">
+  <defs>
+    <marker id="arrFlow2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="5" markerHeight="5" orient="auto">
+      <path d="M0,0 L10,5 L0,10 Z" fill="#a78bfa"/>
+    </marker>
+  </defs>
+
+  <!-- Node 1 -->
+  <rect x="20" y="30" width="420" height="360" rx="12" fill="#1a2332" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="45" y="55" fill="#a78bfa" font-size="13" font-weight="700">Node 1 (192.168.1.10)</text>
+
+  <!-- Pod A -->
+  <rect x="50" y="75" width="150" height="50" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="70" y="98" fill="#fbbf24" font-size="11" font-weight="600">Pod A (10.244.1.5)</text>
+  <rect x="70" y="105" width="60" height="16" rx="4" fill="#162924" stroke="#6ee7b7"/>
+  <text x="80" y="117" fill="#6ee7b7" font-size="8">eth0</text>
+
+  <!-- veth -->
+  <line x1="100" y1="125" x2="100" y2="152" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="3 2"/>
+  <circle cx="100" cy="140" r="9" fill="#a78bfa" opacity=".8"/>
+  <text x="100" y="143" text-anchor="middle" fill="#0b0d12" font-size="8" font-weight="700">1</text>
+
+  <!-- Bridge -->
+  <rect x="50" y="155" width="160" height="25" rx="5" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="90" y="172" fill="#7dd3fc" font-size="9">cni0 bridge</text>
+
+  <!-- VTEP 封装 -->
+  <rect x="40" y="200" width="240" height="65" rx="8" fill="#1a1520" stroke="#a78bfa" stroke-width="2"/>
+  <text x="60" y="220" fill="#a78bfa" font-size="11" font-weight="700">VTEP (flannel.1)</text>
+  <text x="60" y="238" fill="#8b93a7" font-size="9">封装：原始帧 → VXLAN + UDP + 外层 IP</text>
+  <text x="60" y="254" fill="#8b93a7" font-size="9">outer: 192.168.1.10 → 192.168.1.11:4789</text>
+  <circle cx="160" cy="185" r="9" fill="#a78bfa" opacity=".8"/>
+  <text x="160" y="188" text-anchor="middle" fill="#0b0d12" font-size="8" font-weight="700">2</text>
+
+  <!-- 物理网卡 -->
+  <rect x="80" y="290" width="140" height="30" rx="6" fill="#1a1520" stroke="#fb7185" stroke-width="2"/>
+  <text x="108" y="310" fill="#fb7185" font-size="10" font-weight="600">eth0 物理网卡</text>
+  <circle cx="150" cy="278" r="9" fill="#a78bfa" opacity=".8"/>
+  <text x="150" y="281" text-anchor="middle" fill="#0b0d12" font-size="8" font-weight="700">3</text>
+
+  <!-- Node 2 -->
+  <rect x="520" y="30" width="420" height="360" rx="12" fill="#1a2332" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="545" y="55" fill="#a78bfa" font-size="13" font-weight="700">Node 2 (192.168.1.11)</text>
+
+  <!-- Pod B -->
+  <rect x="760" y="75" width="150" height="50" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="780" y="98" fill="#fbbf24" font-size="11" font-weight="600">Pod B (10.244.2.8)</text>
+  <rect x="820" y="105" width="60" height="16" rx="4" fill="#162924" stroke="#6ee7b7"/>
+  <text x="830" y="117" fill="#6ee7b7" font-size="8">eth0</text>
+
+  <!-- veth -->
+  <line x1="850" y1="125" x2="850" y2="152" stroke="#a78bfa" stroke-width="1.5" stroke-dasharray="3 2"/>
+  <circle cx="850" cy="140" r="9" fill="#a78bfa" opacity=".8"/>
+  <text x="850" y="143" text-anchor="middle" fill="#0b0d12" font-size="8" font-weight="700">7</text>
+
+  <!-- Bridge -->
+  <rect x="740" y="155" width="160" height="25" rx="5" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="778" y="172" fill="#7dd3fc" font-size="9">cni0 bridge</text>
+  <circle cx="820" cy="185" r="9" fill="#a78bfa" opacity=".8"/>
+  <text x="820" y="188" text-anchor="middle" fill="#0b0d12" font-size="8" font-weight="700">6</text>
+
+  <!-- VTEP 解封 -->
+  <rect x="680" y="200" width="240" height="65" rx="8" fill="#1a1520" stroke="#a78bfa" stroke-width="2"/>
+  <text x="700" y="220" fill="#a78bfa" font-size="11" font-weight="700">VTEP (flannel.1)</text>
+  <text x="700" y="238" fill="#8b93a7" font-size="9">解封：剥离外层 header</text>
+  <text x="700" y="254" fill="#8b93a7" font-size="9">还原原始帧 → 送入 bridge</text>
+  <circle cx="800" cy="278" r="9" fill="#a78bfa" opacity=".8"/>
+  <text x="800" y="281" text-anchor="middle" fill="#0b0d12" font-size="8" font-weight="700">5</text>
+
+  <!-- 物理网卡 -->
+  <rect x="740" y="290" width="140" height="30" rx="6" fill="#1a1520" stroke="#fb7185" stroke-width="2"/>
+  <text x="768" y="310" fill="#fb7185" font-size="10" font-weight="600">eth0 物理网卡</text>
+
+  <!-- 物理网络 -->
+  <rect x="280" y="350" width="400" height="40" rx="8" fill="#1f2937" stroke="#8b93a7" stroke-width="1.5"/>
+  <text x="400" y="368" fill="#8b93a7" font-size="11" font-weight="600" text-anchor="middle">物理网络（只看到外层 UDP 包：Node1 → Node2:4789）</text>
+  <text x="400" y="383" fill="#8b93a7" font-size="9" text-anchor="middle">交换机不知道 10.244.x.x 的存在 — 这就是 Overlay 的含义</text>
+  <circle cx="480" cy="350" r="9" fill="#a78bfa" opacity=".8"/>
+  <text x="480" y="353" text-anchor="middle" fill="#0b0d12" font-size="8" font-weight="700">4</text>
+
+  <!-- 连线 -->
+  <line x1="220" y1="310" x2="280" y2="365" stroke="#fb7185" stroke-width="1.5"/>
+  <line x1="680" y1="365" x2="740" y2="310" stroke="#fb7185" stroke-width="1.5"/>
+
+  <!-- 顶部数据包标注 -->
+  <path d="M200 90 Q480 -5 760 90" stroke="#a78bfa" stroke-width="2" fill="none" stroke-dasharray="6 3" marker-end="url(#arrFlow2)"/>
+  <rect x="320" y="5" width="320" height="30" rx="5" fill="#1a1520" stroke="#a78bfa"/>
+  <text x="330" y="18" fill="#fb7185" font-size="8">Outer IP</text>
+  <text x="380" y="18" fill="#fbbf24" font-size="8">UDP:4789</text>
+  <text x="430" y="18" fill="#a78bfa" font-size="8">VXLAN</text>
+  <text x="480" y="18" fill="#6ee7b7" font-size="8">Inner: 10.244.1.5→10.244.2.8</text>
+  <text x="330" y="30" fill="#8b93a7" font-size="7">封装后的包（+50B overhead）</text>
+</svg>
+</div>
+
+<h3>两种路径对比总结</h3>
+<table>
+<thead><tr><th>环节</th><th>Underlay（BGP）</th><th>Overlay（VXLAN）</th></tr></thead>
+<tbody>
+<tr><td>离开 Pod</td><td>eth0 → veth → bridge</td><td>eth0 → veth → bridge</td></tr>
+<tr><td>离开 Node</td><td>路由查表 → 直接从物理网卡发出</td><td>VTEP 封装 → 物理网卡发出</td></tr>
+<tr><td>物理网络</td><td><b>认识</b> Pod IP（BGP 路由）→ 直接转发</td><td><b>不认识</b> Pod IP → 只看外层 Node IP 转发</td></tr>
+<tr><td>到达对端 Node</td><td>路由查表 → bridge → veth → Pod</td><td>VTEP 解封 → bridge → veth → Pod</td></tr>
+<tr><td>额外步骤数</td><td>0（原始包直通）</td><td>+2（封装+解封）</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="inference"><span class="step">§6</span>CNI 与推理性能的关系</h2>
+
+<div class="card">
+<p>不同的推理通信模式对 CNI 性能的敏感度完全不同：</p>
+
+<h3>场景一：HTTP API 请求（客户端 → 推理服务）</h3>
+<div class="grid cols-2" style="margin:12px 0">
+  <div>
+    <ul class="tight">
+      <li>数据量：请求 ~1-10 KB，响应 ~1-100 KB（流式 token）</li>
+      <li>频率：QPS 几百到几千</li>
+      <li>带宽需求：几十 MB/s，远低于网卡能力</li>
+      <li>对延迟敏感度：中等（用户感知级 ~100ms）</li>
+    </ul>
+  </div>
+  <div>
+    <div class="callout" style="margin:0">
+      <b>结论</b>：CNI 性能差异<b>可忽略</b>。Overlay 的 50 bytes header 和 0.1ms 额外延迟，对 HTTP 场景无感。Flannel VXLAN 也完全够用。
+    </div>
+  </div>
+</div>
+
+<h3>场景二：NCCL 多机通信（Tensor Parallel / Pipeline Parallel）</h3>
+<div class="grid cols-2" style="margin:12px 0">
+  <div>
+    <ul class="tight">
+      <li>数据量：每步 allreduce 几十 KB ~ 几 MB</li>
+      <li>频率：每个 token 生成都要通信（<b>极高频</b>）</li>
+      <li>带宽需求：<b>数十 GB/s</b>，需要跑满 100Gbps 网卡</li>
+      <li>对延迟敏感度：<b>极高</b>——每多 1μs，吞吐量可见下降</li>
+    </ul>
+  </div>
+  <div>
+    <div class="callout bad" style="margin:0">
+      <b>结论</b>：CNI 是<b>关键瓶颈</b>！Overlay 封装 CPU 开销 + 内核协议栈延迟 = NCCL 带宽大幅下降。必须用 Underlay 或彻底绕过 CNI。
+    </div>
+  </div>
+</div>
+
+<h3>场景三：prefill-decode 分离（跨节点 KV Cache 传输）</h3>
+<div class="grid cols-2" style="margin:12px 0">
+  <div>
+    <ul class="tight">
+      <li>数据量：一次 KV Cache 传输 100MB-1GB</li>
+      <li>频率：每个请求一次（prefill 完成后传给 decode 节点）</li>
+      <li>对延迟影响：直接影响 TTFT（首 token 延迟）</li>
+    </ul>
+  </div>
+  <div>
+    <div class="callout warn" style="margin:0">
+      <b>结论</b>：有影响但不如 NCCL 极端。大块传输中 header 占比小，瓶颈在 MTU（分片）和 TCP 窗口。建议 Underlay + Jumbo Frame。
+    </div>
+  </div>
+</div>
+
+<h3>性能实测数据</h3>
+<table>
+<thead><tr><th>网络方案</th><th>TCP 吞吐量</th><th>RTT 延迟</th><th>NCCL busbw</th><th>相对裸机</th></tr></thead>
+<tbody>
+<tr><td>裸机（无容器化）</td><td>~97 Gbps</td><td>~18 μs</td><td>~24 GB/s</td><td style="color:var(--brand)">100%</td></tr>
+<tr><td><code>hostNetwork: true</code></td><td>~96 Gbps</td><td>~19 μs</td><td>~23 GB/s</td><td style="color:var(--brand)">~96%</td></tr>
+<tr><td>Calico BGP（直接路由）</td><td>~90 Gbps</td><td>~25 μs</td><td>~20 GB/s</td><td style="color:var(--warn)">~83%</td></tr>
+<tr><td>Cilium eBPF（原生路由）</td><td>~92 Gbps</td><td>~22 μs</td><td>~21 GB/s</td><td style="color:var(--warn)">~87%</td></tr>
+<tr><td>Flannel VXLAN（Overlay）</td><td>~65 Gbps</td><td>~45 μs</td><td>~3-5 GB/s</td><td style="color:var(--bad)">~15-20%</td></tr>
+<tr><td>SR-IOV + RDMA</td><td>~97 Gbps</td><td>~2 μs</td><td>~24 GB/s</td><td style="color:var(--brand)">~100%</td></tr>
+</tbody>
+</table>
+
+<div class="callout bad">
+<b>注意 NCCL busbw 那一列</b>：Overlay vs hostNetwork/RDMA 差了 <b>5-8 倍</b>！这不是 15% 的差异，是"能用 vs 不能用"的差异。原因：NCCL 用高频小消息模式，Overlay 的 per-packet CPU 开销 + 内核路径长度被极度放大。
+</div>
+
+<h3>解法预告</h3>
+<table>
+<thead><tr><th>方案</th><th>原理</th><th>性能</th><th>复杂度</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:var(--brand)"><b>hostNetwork: true</b></td>
+  <td>Pod 直接用宿主机网络栈，跳过 veth/bridge/CNI</td>
+  <td>接近裸机</td>
+  <td>低（但端口冲突风险，每节点只能跑一个实例）</td>
+</tr>
+<tr>
+  <td style="color:var(--brand2)"><b>SR-IOV</b></td>
+  <td>物理网卡虚拟出多个 VF，每个 Pod 独占一个 VF，绕过内核协议栈</td>
+  <td>裸机级</td>
+  <td>中（需要 SR-IOV device plugin + 网卡支持）</td>
+</tr>
+<tr>
+  <td style="color:var(--purple)"><b>RDMA (RoCE v2)</b></td>
+  <td>网卡硬件直接 DMA 读写远端内存，CPU 完全不参与数据搬运</td>
+  <td>极致（延迟 < 2μs）</td>
+  <td>高（需要 RDMA 网卡 + 无损网络交换机）</td>
+</tr>
+<tr>
+  <td style="color:var(--pink)"><b>GPUDirect RDMA</b></td>
+  <td>RDMA + GPU 显存直通，网卡直接读写 GPU 显存，零拷贝</td>
+  <td>NCCL 最优路径</td>
+  <td>极高（Mellanox/NVIDIA 全栈 + GPU Operator）</td>
+</tr>
+</tbody>
+</table>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+<b>快速验证 NCCL 带宽的方法</b>：
+<pre style="margin:8px 0 0"><span style="color:#8b93a7"># 在两个 GPU Pod 上运行 nccl-tests 的 all_reduce_perf</span>
+$ mpirun -np 2 -H pod-node1:1,pod-node2:1 \
+    --mca btl_tcp_if_include eth0 \
+    /opt/nccl-tests/build/all_reduce_perf -b 8 -e 128M -f 2 -g 1
+
+<span style="color:#8b93a7"># 关注输出中的 busbw 列（单位 GB/s）：</span>
+<span style="color:#8b93a7">#   Flannel VXLAN:      busbw ~3-5 GB/s   → 不可接受</span>
+<span style="color:#8b93a7">#   Calico BGP:         busbw ~18-22 GB/s  → 可用</span>
+<span style="color:#8b93a7">#   hostNetwork:        busbw ~22-24 GB/s  → 推荐</span>
+<span style="color:#8b93a7">#   SR-IOV + RDMA:      busbw ~24-48 GB/s  → 最优</span>
+
+<span style="color:#8b93a7"># 如果 busbw 远低于预期，按顺序检查：</span>
+<span style="color:#8b93a7"># 1. MTU 配置（ip link show）</span>
+<span style="color:#8b93a7"># 2. CNI 模式（是否走了 VXLAN）</span>
+<span style="color:#8b93a7"># 3. NCCL_SOCKET_IFNAME 是否指向了正确的网卡</span>
+<span style="color:#8b93a7"># 4. 交换机是否开启了 PFC/ECN（无损网络）</span></pre>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§7</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① 三个保证</div><div>K8S 网络 = Pod 直通无 NAT + Node-Pod 互通 + IP 一致性。CNI 插件负责实现这些保证</div>
+  <div class="k">② 单节点路径</div><div>Pod eth0 → veth pair → cni0 bridge → veth pair → 对端 Pod eth0。内核态完成，不经物理网卡</div>
+  <div class="k">③ Overlay 原理</div><div>VXLAN 把原始包装进 UDP 隧道（+50B header），物理网络不需要认识 Pod IP。简单但有性能代价</div>
+  <div class="k">④ Underlay 原理</div><div>BGP 让交换机直接学到 Pod 网段路由，包裸传无封装。高性能但需要网络设备配合</div>
+  <div class="k">⑤ CNI 选型</div><div>Calico BGP 生产首选 / Cilium eBPF 大规模集群 / Flannel 仅测试环境</div>
+  <div class="k">⑥ 推理关键结论</div><div>HTTP API → CNI 无感。NCCL 多机 → CNI 是 5-8 倍瓶颈！必须 hostNetwork 或 SR-IOV</div>
+  <div class="k">⑦ 标准架构</div><div>管理网（Calico/Cilium）+ NCCL 专网（hostNetwork/SR-IOV/RDMA）双网络分离</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——数据包能在 Pod 间传递了，但外部用户怎么访问集群内的推理服务？Ingress Controller 和 Gateway API 是流量入口的两代方案。下一章看路由规则、TLS 卸载、灰度发布，以及如何为推理服务配置智能 L7 负载均衡。→ <a href="10-ingress-and-gateway.html" style="color:var(--brand)">10-ingress-and-gateway.html</a>
+</div>
+</div>
+
+<div class="foot">
+第三层 · 09 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,808 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>GPU 资源管理 · Device Plugin / MIG / Time-Slicing</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>GPU 资源管理 <span class="tag">第二层 · 08/15</span></h1>
+<div class="sub">K8S 如何认识 GPU、Device Plugin 协议全解、NVIDIA 生态集成、MIG 硬件切分与 Time-Slicing 时间片共享——从"一个 Pod 独占一块卡"到"8 块卡灵活切分给 20 个租户"。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么 K8S 不原生认识 GPU</a>
+  <a href="#protocol">§1 Device Plugin 协议</a>
+  <a href="#nvidia-plugin">§2 NVIDIA Device Plugin 工作流</a>
+  <a href="#gpu-operator">§3 GPU Operator</a>
+  <a href="#mig">§4 MIG（Multi-Instance GPU）</a>
+  <a href="#timeslicing">§5 Time-Slicing</a>
+  <a href="#compare">§6 MIG vs Time-Slicing vs vGPU 对比</a>
+  <a href="#takeaway">§7 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么 K8S 不原生认识 GPU</h2>
+
+<div class="card">
+<p>K8S 内置只认识三种资源：<code>cpu</code>、<code>memory</code>、<code>ephemeral-storage</code>。为什么不把 GPU 也做进去？</p>
+
+<h3>设计哲学：核心精简 + 插件扩展</h3>
+<ul class="tight">
+  <li><b>硬件厂商太多</b>：NVIDIA、AMD、Intel、华为昇腾、寒武纪……每家的设备发现/分配/隔离逻辑完全不同</li>
+  <li><b>迭代速度不同步</b>：GPU 驱动一年更新几十次，K8S 一年发 3 个版本——耦合在一起必然拖慢双方</li>
+  <li><b>资源类型无限扩展</b>：除了 GPU 还有 FPGA、RDMA NIC、TPU、NPU……不可能全写进核心</li>
+</ul>
+
+<p>所以 K8S 设计了 <b>Extended Resource</b> + <b>Device Plugin</b> 框架：</p>
+<ul class="tight">
+  <li><b>Extended Resource</b>：在 Node 对象的 <code>status.capacity</code> 中注册自定义资源名，如 <code>nvidia.com/gpu: 8</code></li>
+  <li><b>Device Plugin</b>：一个 gRPC 服务，负责告诉 kubelet "本节点有哪些设备、怎么分配给容器"</li>
+</ul>
+
+<div class="callout info">
+<b>类比</b>：K8S 核心就像操作系统内核，Device Plugin 就像设备驱动程序。内核不需要知道每块显卡的细节，只需要定义好驱动接口，由厂商实现具体驱动。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="protocol"><span class="step">§1</span>Device Plugin 协议</h2>
+
+<div class="card">
+<p>Device Plugin 框架在 K8S 1.10 进入 Beta（至今仍是 Beta，接口已非常稳定）。核心是一套 <b>gRPC 协议</b>，plugin 以 Unix Domain Socket 方式跟 kubelet 通信。</p>
+
+<h3>注册机制</h3>
+<p>kubelet 监听目录 <code>/var/lib/kubelet/device-plugins/</code> 下的 socket 文件。Plugin 启动时在该目录创建 socket，然后向 kubelet 的 Registration 服务注册自己。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 920 380" width="920">
+  <!-- 标题 -->
+  <text x="20" y="25" fill="#8b93a7" font-size="12" font-weight="600">Device Plugin 注册 &amp; 工作流程</text>
+
+  <!-- Plugin 框 -->
+  <rect x="40" y="50" width="200" height="300" rx="12" fill="#1f2937" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="140" y="75" text-anchor="middle" fill="#fb7185" font-size="13" font-weight="700">Device Plugin</text>
+  <text x="140" y="93" text-anchor="middle" fill="#8b93a7" font-size="10">（如 nvidia-device-plugin）</text>
+
+  <!-- Plugin 内部步骤 -->
+  <rect x="60" y="110" width="160" height="30" rx="6" fill="#162924" stroke="#6ee7b7"/>
+  <text x="140" y="130" text-anchor="middle" fill="#6ee7b7" font-size="10">1. 发现本地设备</text>
+
+  <rect x="60" y="155" width="160" height="30" rx="6" fill="#162924" stroke="#6ee7b7"/>
+  <text x="140" y="175" text-anchor="middle" fill="#6ee7b7" font-size="10">2. 创建 gRPC socket</text>
+
+  <rect x="60" y="200" width="160" height="30" rx="6" fill="#162924" stroke="#6ee7b7"/>
+  <text x="140" y="220" text-anchor="middle" fill="#6ee7b7" font-size="10">3. 调用 Register()</text>
+
+  <rect x="60" y="245" width="160" height="30" rx="6" fill="#162924" stroke="#6ee7b7"/>
+  <text x="140" y="265" text-anchor="middle" fill="#6ee7b7" font-size="10">4. ListAndWatch 上报</text>
+
+  <rect x="60" y="290" width="160" height="30" rx="6" fill="#162924" stroke="#6ee7b7"/>
+  <text x="140" y="310" text-anchor="middle" fill="#6ee7b7" font-size="10">5. 等待 Allocate 调用</text>
+
+  <!-- kubelet 框 -->
+  <rect x="360" y="50" width="200" height="300" rx="12" fill="#1f2937" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="460" y="75" text-anchor="middle" fill="#6ee7b7" font-size="13" font-weight="700">kubelet</text>
+  <text x="460" y="93" text-anchor="middle" fill="#8b93a7" font-size="10">DeviceManager 模块</text>
+
+  <!-- kubelet 内部步骤 -->
+  <rect x="380" y="155" width="160" height="30" rx="6" fill="#1a1a2e" stroke="#a78bfa"/>
+  <text x="460" y="175" text-anchor="middle" fill="#a78bfa" font-size="10">监听 socket 目录</text>
+
+  <rect x="380" y="200" width="160" height="30" rx="6" fill="#1a1a2e" stroke="#a78bfa"/>
+  <text x="460" y="220" text-anchor="middle" fill="#a78bfa" font-size="10">接受 Register 请求</text>
+
+  <rect x="380" y="245" width="160" height="30" rx="6" fill="#1a1a2e" stroke="#a78bfa"/>
+  <text x="460" y="265" text-anchor="middle" fill="#a78bfa" font-size="10">记录设备列表</text>
+
+  <rect x="380" y="290" width="160" height="30" rx="6" fill="#1a1a2e" stroke="#a78bfa"/>
+  <text x="460" y="310" text-anchor="middle" fill="#a78bfa" font-size="10">上报 capacity 给 apiserver</text>
+
+  <!-- API Server 框 -->
+  <rect x="680" y="120" width="200" height="160" rx="12" fill="#1f2937" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="780" y="150" text-anchor="middle" fill="#7dd3fc" font-size="13" font-weight="700">API Server</text>
+
+  <rect x="700" y="170" width="160" height="30" rx="6" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="780" y="190" text-anchor="middle" fill="#fbbf24" font-size="10">Node.status.capacity 更新</text>
+
+  <rect x="700" y="215" width="160" height="30" rx="6" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="780" y="235" text-anchor="middle" fill="#fbbf24" font-size="10">nvidia.com/gpu: 8</text>
+
+  <rect x="700" y="250" width="160" height="20" rx="4" fill="none"/>
+  <text x="780" y="265" text-anchor="middle" fill="#8b93a7" font-size="10">Scheduler 可见 → 可调度</text>
+
+  <!-- 连线 -->
+  <path d="M240 215 L360 215" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arrG)"/>
+  <text x="290" y="208" fill="#8b93a7" font-size="9">Register + ListAndWatch</text>
+
+  <path d="M560 305 L680 235" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arrY)"/>
+  <text x="600" y="263" fill="#8b93a7" font-size="9">NodeStatus patch</text>
+
+  <!-- 箭头定义 -->
+  <defs>
+    <marker id="arrG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#6ee7b7"/></marker>
+    <marker id="arrY" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#fbbf24"/></marker>
+  </defs>
+</svg>
+</div>
+
+<h3>三个核心 RPC</h3>
+<table>
+<thead><tr><th>RPC 方法</th><th>方向</th><th>职责</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:#6ee7b7"><b>ListAndWatch</b></td>
+  <td>kubelet → plugin（stream）</td>
+  <td>plugin 通过 stream 持续上报设备列表和健康状态。设备掉线/恢复时推新消息。</td>
+</tr>
+<tr>
+  <td style="color:#fbbf24"><b>Allocate</b></td>
+  <td>kubelet → plugin</td>
+  <td>Pod 被调度到本节点，kubelet 调用 Allocate 要求分配指定数量的设备。Plugin 返回环境变量、挂载路径、设备文件。</td>
+</tr>
+<tr>
+  <td style="color:#a78bfa"><b>GetPreferredAllocation</b></td>
+  <td>kubelet → plugin</td>
+  <td>（可选）当多个设备可选时，plugin 建议优先分配哪些设备（如同一 NVLink 域内的 GPU）。</td>
+</tr>
+</tbody>
+</table>
+
+<h3>gRPC proto 定义（简化）</h3>
+<pre>service DevicePlugin {
+  // 持续上报设备列表（stream）
+  rpc ListAndWatch(Empty) returns (stream ListAndWatchResponse) {}
+
+  // kubelet 请求分配 N 个设备给一个容器
+  rpc Allocate(AllocateRequest) returns (AllocateResponse) {}
+
+  // 可选：建议分配哪些设备（拓扑感知）
+  rpc GetPreferredAllocation(PreferredAllocationRequest)
+      returns (PreferredAllocationResponse) {}
+}
+
+message Device {
+  string ID = 1;          // 设备唯一 ID，如 "GPU-abc123"
+  DeviceHealth health = 2; // HEALTHY / UNHEALTHY
+}
+
+message AllocateResponse {
+  repeated ContainerAllocateResponse container_responses = 1;
+}
+
+message ContainerAllocateResponse {
+  map&lt;string, string&gt; envs = 1;    // 注入容器的环境变量
+  repeated Mount mounts = 2;        // 挂载到容器的路径
+  repeated DeviceSpec devices = 3;  // 设备文件（/dev/nvidia0）
+}
+</pre>
+
+<div class="callout warn">
+<b>socket 路径约定</b>：Plugin 的 socket 必须放在 <code>/var/lib/kubelet/device-plugins/</code> 下。kubelet 注册服务的 socket 固定为 <code>/var/lib/kubelet/device-plugins/kubelet.sock</code>。Plugin 重启后需要重新注册——所以 DaemonSet 的 <code>restartPolicy: Always</code> 至关重要。
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：完整注册时序</button>
+<div class="expand-content">
+<ol>
+<li>Plugin 进程启动，扫描本地设备（如 <code>/dev/nvidia*</code>）</li>
+<li>在 <code>/var/lib/kubelet/device-plugins/nvidia.sock</code> 创建 gRPC 服务</li>
+<li>Plugin 作为 gRPC client 连接 <code>kubelet.sock</code>，调用 <code>Registration.Register()</code>，传入：
+  <ul><li><code>resource_name</code>: <code>"nvidia.com/gpu"</code></li>
+  <li><code>endpoint</code>: <code>"nvidia.sock"</code></li>
+  <li><code>version</code>: <code>"v1beta1"</code></li></ul>
+</li>
+<li>kubelet 收到注册，连接 <code>nvidia.sock</code>，调用 <code>ListAndWatch()</code></li>
+<li>Plugin 通过 stream 返回设备列表：<code>[{ID:"GPU-0",health:HEALTHY}, {ID:"GPU-1",health:HEALTHY}, ...]</code></li>
+<li>kubelet 将 <code>nvidia.com/gpu: 8</code> patch 到 <code>Node.status.capacity</code> 和 <code>Node.status.allocatable</code></li>
+<li>Scheduler 看到该 Node 有 GPU 资源，开始调度 GPU Pod 过来</li>
+</ol>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="nvidia-plugin"><span class="step">§2</span>NVIDIA Device Plugin 工作流</h2>
+
+<div class="card">
+<p>NVIDIA 官方的 <code>k8s-device-plugin</code> 是目前最广泛使用的 GPU device plugin 实现。它以 DaemonSet 方式部署在所有 GPU 节点上。</p>
+
+<h3>部署方式</h3>
+<pre><span style="color:#8b93a7"># 一行搞定部署（生产环境建议用 Helm chart 或 GPU Operator）</span>
+kubectl apply -f https://raw.githubusercontent.com/NVIDIA/k8s-device-plugin/v0.17.0/deployments/static/nvidia-device-plugin.yml
+</pre>
+
+<h3>DaemonSet YAML 核心片段</h3>
+<pre>apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: nvidia-device-plugin-daemonset
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      name: nvidia-device-plugin-ds
+  template:
+    spec:
+      tolerations:
+      - key: nvidia.com/gpu        <span style="color:#8b93a7"># 容忍 GPU 节点的 taint</span>
+        operator: Exists
+        effect: NoSchedule
+      containers:
+      - name: nvidia-device-plugin-ctr
+        image: nvcr.io/nvidia/k8s-device-plugin:v0.17.0
+        securityContext:
+          privileged: true          <span style="color:#8b93a7"># 需要访问 /dev/nvidia*</span>
+        volumeMounts:
+        - name: device-plugin       <span style="color:#8b93a7"># 挂载 kubelet 的 device-plugins 目录</span>
+          mountPath: /var/lib/kubelet/device-plugins
+      volumes:
+      - name: device-plugin
+        hostPath:
+          path: /var/lib/kubelet/device-plugins
+</pre>
+
+<h3>Allocate 时做了什么</h3>
+<p>当一个请求 <code>nvidia.com/gpu: 2</code> 的 Pod 被调度到本节点，kubelet 调用 plugin 的 <code>Allocate()</code>：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 860 240" width="860">
+  <!-- kubelet -->
+  <rect x="30" y="40" width="150" height="50" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="105" y="60" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">kubelet</text>
+  <text x="105" y="78" text-anchor="middle" fill="#8b93a7" font-size="10">Allocate(GPU-0, GPU-1)</text>
+
+  <path d="M180 65 L250 65" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arrG)"/>
+
+  <!-- plugin -->
+  <rect x="250" y="30" width="200" height="70" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="350" y="55" text-anchor="middle" fill="#fb7185" font-size="12" font-weight="600">NVIDIA Device Plugin</text>
+  <text x="350" y="73" text-anchor="middle" fill="#8b93a7" font-size="10">返回 AllocateResponse</text>
+
+  <path d="M450 65 L520 65" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arrP)"/>
+
+  <!-- 返回内容 -->
+  <rect x="520" y="20" width="310" height="200" rx="10" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="540" y="45" fill="#fbbf24" font-size="11" font-weight="600">AllocateResponse 内容：</text>
+
+  <text x="540" y="70" fill="#6ee7b7" font-size="11">envs:</text>
+  <text x="560" y="88" fill="#8b93a7" font-size="10.5">NVIDIA_VISIBLE_DEVICES=GPU-0,GPU-1</text>
+
+  <text x="540" y="112" fill="#6ee7b7" font-size="11">mounts:</text>
+  <text x="560" y="130" fill="#8b93a7" font-size="10.5">/usr/local/nvidia/lib64 (驱动 .so)</text>
+  <text x="560" y="148" fill="#8b93a7" font-size="10.5">/usr/bin/nvidia-smi (工具)</text>
+
+  <text x="540" y="172" fill="#6ee7b7" font-size="11">devices:</text>
+  <text x="560" y="190" fill="#8b93a7" font-size="10.5">/dev/nvidia0, /dev/nvidia1</text>
+  <text x="560" y="208" fill="#8b93a7" font-size="10.5">/dev/nvidiactl, /dev/nvidia-uvm</text>
+
+  <!-- 箭头定义 -->
+  <defs>
+    <marker id="arrP" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#fb7185"/></marker>
+  </defs>
+</svg>
+</div>
+
+<h3>Pod 视角：看到的 GPU 环境</h3>
+<pre><span style="color:#8b93a7"># 进入 Pod 后</span>
+$ echo $NVIDIA_VISIBLE_DEVICES
+GPU-0,GPU-1
+
+$ nvidia-smi
++---------------------------+
+| GPU  Name      | Bus-Id   |
+|  0   A100 80GB | 00:3B:00 |  <span style="color:#8b93a7"># 只看到被分配的 2 块</span>
+|  1   A100 80GB | 00:86:00 |
++---------------------------+
+
+<span style="color:#8b93a7"># nvidia-container-runtime 利用 NVIDIA_VISIBLE_DEVICES 做隔离</span>
+<span style="color:#8b93a7"># Pod 内看不到其他 6 块 GPU</span>
+</pre>
+
+<div class="callout bad">
+<b>陷阱：Device Plugin crash = GPU "消失"</b><br>
+如果 nvidia-device-plugin Pod 崩溃或被驱逐：
+<ul class="tight" style="margin-top:6px">
+<li>kubelet 检测到 socket 断开 → 标记所有设备为 Unhealthy</li>
+<li>Node 的 <code>allocatable</code> 中 GPU 数量变为 0</li>
+<li>已经在运行的 Pod <b>不受影响</b>（设备已挂载），但新 Pod 不会再调度过来</li>
+<li>plugin 恢复后重新注册，GPU 资源恢复</li>
+</ul>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+8 块 A100 节点，4 块给在线推理（独占），4 块切 MIG 给开发调试。实现方式：给节点打不同 label，在线推理 Pod 通过 <code>nodeSelector</code> + <code>resources.limits: nvidia.com/gpu: 4</code> 独占；开发调试走 MIG 切分后的资源名（§4 详述）。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gpu-operator"><span class="step">§3</span>GPU Operator · 一键搞定 GPU 全栈</h2>
+
+<div class="card">
+<p>手动管理 GPU 节点需要装一堆东西：内核驱动、CUDA toolkit、container-toolkit、device-plugin、DCGM 监控……新节点加入时全要重做。<b>GPU Operator</b> 把这些全自动化了。</p>
+
+<h3>解决的核心痛点</h3>
+<ul class="tight">
+  <li><b>新 GPU 节点加入</b> → 自动安装驱动 + 配置 runtime + 部署 device-plugin</li>
+  <li><b>驱动升级</b> → 修改 Operator CR 字段，自动滚动升级所有节点</li>
+  <li><b>MIG 切换</b> → 通过 ConfigMap 声明 MIG profile，Operator 自动配置</li>
+  <li><b>监控</b> → 自动部署 DCGM-exporter，暴露 GPU 利用率/温度/显存到 Prometheus</li>
+</ul>
+
+<h3>组件拓扑图</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 420" width="900">
+  <!-- Operator Controller -->
+  <rect x="320" y="20" width="260" height="55" rx="10" fill="#1f2937" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="450" y="45" text-anchor="middle" fill="#6ee7b7" font-size="14" font-weight="700">GPU Operator Controller</text>
+  <text x="450" y="63" text-anchor="middle" fill="#8b93a7" font-size="10">watch ClusterPolicy CR → reconcile 所有组件</text>
+
+  <!-- 下方组件 - 第一行 -->
+  <rect x="30" y="120" width="170" height="60" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="115" y="145" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">NVIDIA Driver</text>
+  <text x="115" y="163" text-anchor="middle" fill="#8b93a7" font-size="10">容器化内核驱动</text>
+
+  <rect x="220" y="120" width="170" height="60" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="305" y="145" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="600">Container Toolkit</text>
+  <text x="305" y="163" text-anchor="middle" fill="#8b93a7" font-size="10">nvidia-container-runtime</text>
+
+  <rect x="410" y="120" width="170" height="60" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="495" y="145" text-anchor="middle" fill="#fb7185" font-size="11" font-weight="600">Device Plugin</text>
+  <text x="495" y="163" text-anchor="middle" fill="#8b93a7" font-size="10">注册 GPU 到 kubelet</text>
+
+  <rect x="600" y="120" width="170" height="60" rx="8" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="685" y="145" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">DCGM-Exporter</text>
+  <text x="685" y="163" text-anchor="middle" fill="#8b93a7" font-size="10">GPU 指标 → Prometheus</text>
+
+  <!-- 第二行 -->
+  <rect x="30" y="210" width="170" height="60" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="115" y="235" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">GFD</text>
+  <text x="115" y="253" text-anchor="middle" fill="#8b93a7" font-size="10">GPU Feature Discovery</text>
+
+  <rect x="220" y="210" width="170" height="60" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="305" y="235" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">MIG Manager</text>
+  <text x="305" y="253" text-anchor="middle" fill="#8b93a7" font-size="10">MIG profile 配置</text>
+
+  <rect x="410" y="210" width="170" height="60" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="495" y="235" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="600">Node Feature Discovery</text>
+  <text x="495" y="253" text-anchor="middle" fill="#8b93a7" font-size="10">自动打 GPU label</text>
+
+  <rect x="600" y="210" width="170" height="60" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="685" y="235" text-anchor="middle" fill="#fb7185" font-size="11" font-weight="600">GPU Driver Validator</text>
+  <text x="685" y="253" text-anchor="middle" fill="#8b93a7" font-size="10">驱动加载验证</text>
+
+  <!-- 连线 operator → 组件 -->
+  <line x1="380" y1="75" x2="115" y2="120" stroke="#6ee7b7" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="420" y1="75" x2="305" y2="120" stroke="#6ee7b7" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="480" y1="75" x2="495" y2="120" stroke="#6ee7b7" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="520" y1="75" x2="685" y2="120" stroke="#6ee7b7" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="380" y1="75" x2="115" y2="210" stroke="#6ee7b7" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="420" y1="75" x2="305" y2="210" stroke="#6ee7b7" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="480" y1="75" x2="495" y2="210" stroke="#6ee7b7" stroke-width="1" stroke-dasharray="3 2"/>
+  <line x1="520" y1="75" x2="685" y2="210" stroke="#6ee7b7" stroke-width="1" stroke-dasharray="3 2"/>
+
+  <!-- 底部：节点视角 -->
+  <rect x="30" y="310" width="740" height="90" rx="12" fill="#0f1218" stroke="#262b38" stroke-dasharray="4 3"/>
+  <text x="50" y="335" fill="#8b93a7" font-size="12" font-weight="600">GPU Worker Node 视角</text>
+  <text x="50" y="360" fill="#8b93a7" font-size="11">内核模块: nvidia.ko, nvidia-uvm.ko (由 Driver 容器加载)</text>
+  <text x="50" y="378" fill="#8b93a7" font-size="11">Runtime: containerd → nvidia-container-runtime hook → 注入 GPU 设备到容器</text>
+  <text x="50" y="396" fill="#8b93a7" font-size="11">设备文件: /dev/nvidia0 ... /dev/nvidia7, /dev/nvidiactl, /dev/nvidia-uvm</text>
+</svg>
+</div>
+
+<h3>安装 GPU Operator</h3>
+<pre><span style="color:#8b93a7"># Helm 安装（推荐）</span>
+helm repo add nvidia https://helm.ngc.nvidia.com/nvidia
+helm repo update
+
+helm install gpu-operator nvidia/gpu-operator \
+  --namespace gpu-operator \
+  --create-namespace \
+  --set driver.version="550.127.05"    <span style="color:#8b93a7"># 指定驱动版本</span>
+  --set mig.strategy="mixed"           <span style="color:#8b93a7"># MIG 策略：single/mixed/none</span>
+  --set devicePlugin.config.name="device-plugin-config"  <span style="color:#8b93a7"># 引用 ConfigMap</span>
+</pre>
+
+<div class="callout info">
+<b>GFD（GPU Feature Discovery）</b>会自动给节点打上细粒度 label：<br>
+<code>nvidia.com/gpu.product=NVIDIA-A100-SXM4-80GB</code><br>
+<code>nvidia.com/gpu.memory=81920</code><br>
+<code>nvidia.com/mig.capable=true</code><br>
+你可以直接用这些 label 做 <code>nodeAffinity</code>，不需要手动维护。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="mig"><span class="step">§4</span>MIG（Multi-Instance GPU）· 硬件级 GPU 切分</h2>
+
+<div class="card">
+<p>A100 / H100 / H200 支持 <b>Multi-Instance GPU</b>——在硬件层面把一块物理 GPU 切成多个独立实例，每个实例有自己的 SM（流处理器）、显存和显存控制器。</p>
+
+<h3>MIG 的硬件本质</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 340" width="900">
+  <!-- 物理 GPU -->
+  <rect x="20" y="20" width="860" height="300" rx="14" fill="#0f1218" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="40" y="48" fill="#6ee7b7" font-size="14" font-weight="700">A100 80GB · 物理 GPU</text>
+  <text x="40" y="68" fill="#8b93a7" font-size="11">108 SM · 80GB HBM2e · 8 个 Memory Slice · 7 个 GPC（Graphics Processing Cluster）</text>
+
+  <!-- MIG 切分示意 - 7个 1g.10gb -->
+  <text x="40" y="100" fill="#fbbf24" font-size="12" font-weight="600">切法 A：7 x 1g.10gb（最大并行实例数）</text>
+
+  <rect x="40" y="110" width="105" height="70" rx="6" fill="#1f2937" stroke="#fb7185"/>
+  <text x="92" y="135" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="600">MIG 1g.10gb</text>
+  <text x="92" y="152" text-anchor="middle" fill="#8b93a7" font-size="9">14 SM · 10GB</text>
+  <text x="92" y="168" text-anchor="middle" fill="#8b93a7" font-size="9">1 Memory Slice</text>
+
+  <rect x="155" y="110" width="105" height="70" rx="6" fill="#1f2937" stroke="#fb7185"/>
+  <text x="207" y="135" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="600">MIG 1g.10gb</text>
+  <text x="207" y="152" text-anchor="middle" fill="#8b93a7" font-size="9">14 SM · 10GB</text>
+  <text x="207" y="168" text-anchor="middle" fill="#8b93a7" font-size="9">1 Memory Slice</text>
+
+  <rect x="270" y="110" width="105" height="70" rx="6" fill="#1f2937" stroke="#fb7185"/>
+  <text x="322" y="135" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="600">MIG 1g.10gb</text>
+  <text x="322" y="152" text-anchor="middle" fill="#8b93a7" font-size="9">14 SM · 10GB</text>
+  <text x="322" y="168" text-anchor="middle" fill="#8b93a7" font-size="9">1 Memory Slice</text>
+
+  <text x="385" y="150" fill="#8b93a7" font-size="14">...</text>
+
+  <rect x="415" y="110" width="105" height="70" rx="6" fill="#1f2937" stroke="#fb7185"/>
+  <text x="467" y="135" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="600">MIG 1g.10gb</text>
+  <text x="467" y="152" text-anchor="middle" fill="#8b93a7" font-size="9">14 SM · 10GB</text>
+  <text x="467" y="168" text-anchor="middle" fill="#8b93a7" font-size="9">1 Memory Slice</text>
+
+  <text x="530" y="155" fill="#8b93a7" font-size="11">× 7 个实例</text>
+
+  <!-- 切法 B -->
+  <text x="40" y="210" fill="#a78bfa" font-size="12" font-weight="600">切法 B：混合（3g.40gb × 1 + 2g.20gb × 1 + 1g.10gb × 2）</text>
+
+  <rect x="40" y="220" width="250" height="70" rx="6" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="165" y="245" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="600">MIG 3g.40gb</text>
+  <text x="165" y="263" text-anchor="middle" fill="#8b93a7" font-size="10">42 SM · 40GB · 4 Memory Slices</text>
+  <text x="165" y="278" text-anchor="middle" fill="#8b93a7" font-size="9">适合：中等模型推理</text>
+
+  <rect x="300" y="220" width="200" height="70" rx="6" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="400" y="245" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">MIG 2g.20gb</text>
+  <text x="400" y="263" text-anchor="middle" fill="#8b93a7" font-size="10">28 SM · 20GB · 2 Memory Slices</text>
+  <text x="400" y="278" text-anchor="middle" fill="#8b93a7" font-size="9">适合：小模型 / Embedding</text>
+
+  <rect x="510" y="220" width="105" height="70" rx="6" fill="#1f2937" stroke="#fb7185"/>
+  <text x="562" y="245" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="600">1g.10gb</text>
+  <text x="562" y="263" text-anchor="middle" fill="#8b93a7" font-size="9">14 SM·10GB</text>
+
+  <rect x="625" y="220" width="105" height="70" rx="6" fill="#1f2937" stroke="#fb7185"/>
+  <text x="677" y="245" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="600">1g.10gb</text>
+  <text x="677" y="263" text-anchor="middle" fill="#8b93a7" font-size="9">14 SM·10GB</text>
+
+  <text x="745" y="260" fill="#8b93a7" font-size="10">共享同一物理卡</text>
+  <text x="745" y="278" fill="#8b93a7" font-size="10">但完全硬件隔离</text>
+</svg>
+</div>
+
+<h3>常见 MIG Profile（A100 80GB）</h3>
+<table>
+<thead><tr><th>Profile</th><th>SM 数</th><th>显存</th><th>Memory Slices</th><th>最大实例数/卡</th><th>典型用途</th></tr></thead>
+<tbody>
+<tr><td style="color:#fb7185"><b>1g.10gb</b></td><td>14</td><td>10 GB</td><td>1</td><td>7</td><td>开发调试 / 极小模型</td></tr>
+<tr><td style="color:#fb7185"><b>2g.20gb</b></td><td>28</td><td>20 GB</td><td>2</td><td>3</td><td>Embedding / 小模型推理</td></tr>
+<tr><td style="color:#fb7185"><b>3g.40gb</b></td><td>42</td><td>40 GB</td><td>4</td><td>2</td><td>中等模型推理</td></tr>
+<tr><td style="color:#fb7185"><b>4g.40gb</b></td><td>56</td><td>40 GB</td><td>4</td><td>1</td><td>较大模型 / 更多算力</td></tr>
+<tr><td style="color:#fb7185"><b>7g.80gb</b></td><td>98</td><td>80 GB</td><td>8</td><td>1</td><td>全卡（等效不切分）</td></tr>
+</tbody>
+</table>
+
+<h3>K8S 中 MIG 资源的呈现</h3>
+<p>启用 MIG 后，device-plugin 不再上报 <code>nvidia.com/gpu</code>，而是上报更细粒度的资源名：</p>
+<pre><span style="color:#8b93a7"># Node status.capacity（mixed strategy 模式）</span>
+nvidia.com/mig-1g.10gb: 4    <span style="color:#8b93a7"># 4 个 1g.10gb 实例可用</span>
+nvidia.com/mig-3g.40gb: 2    <span style="color:#8b93a7"># 2 个 3g.40gb 实例可用</span>
+
+<span style="color:#8b93a7"># Pod 请求 MIG 实例（就像请求普通 GPU 一样）</span>
+resources:
+  limits:
+    nvidia.com/mig-1g.10gb: 1   <span style="color:#8b93a7"># 请求 1 个 1g.10gb MIG 实例</span>
+</pre>
+
+<h3>配置 MIG：nvidia-mig-parted</h3>
+<pre><span style="color:#8b93a7"># mig-config.yaml - 声明式 MIG 配置</span>
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mig-parted-config
+  namespace: gpu-operator
+data:
+  config.yaml: |
+    version: v1
+    mig-configs:
+      all-1g.10gb:            <span style="color:#8b93a7"># 配置名称</span>
+        - devices: all        <span style="color:#8b93a7"># 应用于所有 GPU</span>
+          mig-enabled: true
+          mig-devices:
+            "1g.10gb": 7      <span style="color:#8b93a7"># 每块 GPU 切 7 个 1g.10gb</span>
+
+      mixed-inference:        <span style="color:#8b93a7"># 混合切法</span>
+        - devices: [0,1,2,3]  <span style="color:#8b93a7"># 前 4 块不切（独占给在线推理）</span>
+          mig-enabled: false
+        - devices: [4,5,6,7]  <span style="color:#8b93a7"># 后 4 块切 MIG</span>
+          mig-enabled: true
+          mig-devices:
+            "3g.40gb": 1      <span style="color:#8b93a7"># 每块切 1 个 3g + 若干 1g</span>
+            "1g.10gb": 3
+
+<span style="color:#8b93a7"># 应用配置到节点（通过 label 触发）</span>
+kubectl label node gpu-node-01 nvidia.com/mig.config=mixed-inference --overwrite
+</pre>
+
+<div class="callout warn">
+<b>MIG 切换需要重启 GPU</b>：修改 MIG 配置时，相关 GPU 上的所有进程必须先停止。GPU Operator 的 MIG Manager 会自动 drain 节点 → 重配 MIG → uncordon 节点。<b>生产环境切换 MIG 要在维护窗口进行</b>。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+场景：8 块 A100 节点，4 块给在线推理（独占），4 块切 MIG 给开发调试。<br><br>
+<b>实现步骤：</b>
+<ol style="margin:6px 0 0 18px;padding:0">
+<li>配置 <code>mig-parted-config</code> 的 <code>mixed-inference</code> profile</li>
+<li>给节点打 label <code>nvidia.com/mig.config=mixed-inference</code></li>
+<li>MIG Manager 自动把 GPU 4-7 切成 MIG 实例</li>
+<li>Node capacity 同时呈现：<code>nvidia.com/gpu: 4</code>（未切的）+ <code>nvidia.com/mig-3g.40gb: 4</code> + <code>nvidia.com/mig-1g.10gb: 12</code></li>
+<li>在线推理 Pod 请求 <code>nvidia.com/gpu</code>，开发 Pod 请求 <code>nvidia.com/mig-1g.10gb</code></li>
+</ol>
+</div>
+
+<h3>适用场景</h3>
+<ul class="tight">
+  <li><b>小模型推理</b>：7B 参数模型 FP16 只需 14GB 显存，1 块 A100 可以跑 5 个独立实例</li>
+  <li><b>开发调试</b>：开发者只需要少量 GPU 算力验证代码逻辑</li>
+  <li><b>多租户共享</b>：每个团队分到独立 MIG 实例，硬件级隔离互不影响</li>
+  <li><b>Embedding / 向量化</b>：小模型高并发，MIG 切分可以最大化利用率</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="timeslicing"><span class="step">§5</span>Time-Slicing · 时间片共享</h2>
+
+<div class="card">
+<p>Time-Slicing 是一种<b>软件级 GPU 共享</b>方案：多个 Pod "看到同一块 GPU"，通过 CUDA Time-Slicing 机制轮转使用算力。<b>没有硬件隔离</b>。</p>
+
+<h3>工作原理</h3>
+<ul class="tight">
+  <li>device-plugin 对外声称一块 GPU 有 N 个"副本"（replicas）</li>
+  <li>每个 Pod 请求 1 个 <code>nvidia.com/gpu</code>，实际上多个 Pod 共享同一物理卡</li>
+  <li>NVIDIA GPU 硬件的时间片调度器在多个 CUDA context 间轮转</li>
+  <li>每个 Pod 内 <code>nvidia-smi</code> 看到的是<b>同一块完整的 GPU</b>（不像 MIG 那样只看到切片）</li>
+</ul>
+
+<h3>配置方式</h3>
+<pre><span style="color:#8b93a7"># device-plugin ConfigMap</span>
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: device-plugin-config
+  namespace: gpu-operator
+data:
+  any: |
+    version: v1
+    sharing:
+      timeSlicing:
+        renameByDefault: false   <span style="color:#8b93a7"># true 时资源名变为 nvidia.com/gpu.shared</span>
+        failRequestsGreaterThanOne: true  <span style="color:#8b93a7"># 禁止单 Pod 请求 >1 个共享 GPU</span>
+        resources:
+        - name: nvidia.com/gpu
+          replicas: 4            <span style="color:#8b93a7"># 每块物理 GPU "变成" 4 个逻辑 GPU</span>
+
+<span style="color:#8b93a7"># 应用配置（通过 label 选择使用此配置的节点）</span>
+kubectl label node dev-gpu-node nvidia.com/device-plugin.config=any
+</pre>
+
+<h3>效果</h3>
+<pre><span style="color:#8b93a7"># 节点原来有 2 块 GPU，配置 replicas=4 后：</span>
+$ kubectl describe node dev-gpu-node | grep nvidia
+  nvidia.com/gpu:     8    <span style="color:#8b93a7"># 2 块 × 4 replicas = 8 个逻辑 GPU</span>
+
+<span style="color:#8b93a7"># 8 个 Pod 都请求 nvidia.com/gpu: 1，全部能调度成功</span>
+<span style="color:#8b93a7"># 每 4 个 Pod 共享一块物理 GPU</span>
+</pre>
+
+<h3>Pod 内看到什么</h3>
+<pre><span style="color:#8b93a7"># Pod A（和 Pod B、C、D 共享 GPU-0）</span>
+$ nvidia-smi
++-------------+
+| GPU 0       |        <span style="color:#8b93a7"># 看到完整的一块 GPU</span>
+| A100 80GB   |        <span style="color:#8b93a7"># 显存显示 80GB（不是 20GB！）</span>
++-------------+
+| Processes:            |
+| PID   Mem   GPU-Util |
+| 1234  12GB  25%      |  <span style="color:#8b93a7"># 自己的进程</span>
+| 5678  15GB  30%      |  <span style="color:#8b93a7"># 别人的进程也能看到！</span>
++-------------+
+</pre>
+
+<div class="callout bad">
+<b>Time-Slicing 的致命风险：显存不隔离</b>
+<ul class="tight" style="margin-top:6px">
+<li>所有共享 Pod 的显存使用<b>叠加在同一块 GPU 上</b></li>
+<li>如果 4 个 Pod 各用 25GB，总共 100GB > 80GB → <b>CUDA OOM</b></li>
+<li>一个 Pod OOM 可能导致<b>所有共享该 GPU 的 Pod 全部崩溃</b></li>
+<li>没有任何机制阻止一个 Pod 吃掉全部 80GB 显存</li>
+</ul>
+</div>
+
+<div class="callout warn">
+<b>性能损耗</b>：Time-Slicing 的上下文切换有开销。当并发 Pod 多且都是计算密集型时：
+<ul class="tight" style="margin-top:6px">
+<li>上下文切换延迟：每次切换约 10-100μs</li>
+<li>显存带宽竞争：多个模型的 weight 无法同时常驻 HBM</li>
+<li>实际吞吐 < 独占吞吐 × Pod 数的倒数（不是线性切分）</li>
+</ul>
+</div>
+
+<h3>适用场景</h3>
+<ul class="tight">
+  <li><b>开发测试</b>：开发者只需要少量算力跑测试，显存用量可控</li>
+  <li><b>低利用率工作负载</b>：Jupyter notebook、间歇性推理请求</li>
+  <li><b>不支持 MIG 的老卡</b>：V100、T4 等无法用 MIG，Time-Slicing 是唯一的超卖方案</li>
+  <li><b>快速原型验证</b>：不需要性能保证，只要能跑</li>
+</ul>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+<b>绝对不要</b>在生产推理环境用 Time-Slicing。一个用户的 batch 推理吃满显存 → 其他人的在线推理全部 OOM。正确做法：生产推理用独占 GPU 或 MIG，开发测试环境才用 Time-Slicing（并设好 Pod memory limit 做软约束）。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="compare"><span class="step">§6</span>MIG vs Time-Slicing vs vGPU 对比</h2>
+
+<div class="card">
+<table>
+<thead><tr><th>维度</th><th style="color:#6ee7b7">MIG</th><th style="color:#fbbf24">Time-Slicing</th><th style="color:#a78bfa">vGPU（NVIDIA vCS/vWS）</th></tr></thead>
+<tbody>
+<tr>
+  <td><b>隔离级别</b></td>
+  <td>硬件级（独立 SM + 显存控制器）</td>
+  <td>无隔离（共享一切）</td>
+  <td>驱动级（Hypervisor mediated）</td>
+</tr>
+<tr>
+  <td><b>显存隔离</b></td>
+  <td>完全隔离，互不影响</td>
+  <td>无隔离，可互相 OOM</td>
+  <td>驱动强制限额</td>
+</tr>
+<tr>
+  <td><b>算力隔离</b></td>
+  <td>完全隔离（独享 SM）</td>
+  <td>时间片轮转，互相影响延迟</td>
+  <td>可配置算力比例</td>
+</tr>
+<tr>
+  <td><b>性能损耗</b></td>
+  <td>接近零（硬件原生）</td>
+  <td>中等（上下文切换 + 缓存失效）</td>
+  <td>5-10%（Hypervisor 开销）</td>
+</tr>
+<tr>
+  <td><b>灵活性</b></td>
+  <td>低（切换需重启 GPU，profile 有限）</td>
+  <td>高（改 ConfigMap 即可，秒级生效）</td>
+  <td>中（需要 vGPU License Manager）</td>
+</tr>
+<tr>
+  <td><b>支持的 GPU</b></td>
+  <td>A100 / H100 / H200 / B200</td>
+  <td>所有 NVIDIA GPU</td>
+  <td>支持 vGPU 的 Datacenter GPU</td>
+</tr>
+<tr>
+  <td><b>最大实例数/卡</b></td>
+  <td>7（A100/H100）</td>
+  <td>无硬限制（replicas 可设任意值）</td>
+  <td>取决于 license 和配置</td>
+</tr>
+<tr>
+  <td><b>成本</b></td>
+  <td>免费（GPU 硬件特性）</td>
+  <td>免费（device-plugin 配置）</td>
+  <td>需要 vGPU License（按 GPU 计费）</td>
+</tr>
+<tr>
+  <td><b>适用场景</b></td>
+  <td>生产多租户 / 小模型推理</td>
+  <td>开发测试 / 低利用率</td>
+  <td>企业 VDI / 严格 SLA 多租户</td>
+</tr>
+</tbody>
+</table>
+
+<h3>决策树</h3>
+<pre>需要 GPU 共享？
+├─ 否 → 独占（nvidia.com/gpu: N）
+└─ 是 → 需要硬件级隔离？
+         ├─ 是 → GPU 支持 MIG？
+         │       ├─ 是 → <span style="color:#6ee7b7">用 MIG</span>
+         │       └─ 否 → <span style="color:#a78bfa">用 vGPU（需 License）</span>
+         └─ 否 → 是否容忍 OOM 风险？
+                  ├─ 是（开发测试）→ <span style="color:#fbbf24">用 Time-Slicing</span>
+                  └─ 否 → <span style="color:#a78bfa">用 vGPU 或回到 MIG</span>
+</pre>
+
+<div class="callout info">
+<b>混合部署是最佳实践</b>：同一集群内不同 Node Pool 可以用不同策略。在线推理 Pool 用独占/MIG，开发 Pool 用 Time-Slicing，通过 nodeSelector / taint 隔离。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§7</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① Extended Resource</div><div>K8S 通过 Device Plugin 框架扩展硬件支持，核心不内置任何加速器逻辑</div>
+  <div class="k">② Device Plugin 三板斧</div><div>ListAndWatch（上报设备）→ Allocate（分配设备）→ GetPreferredAllocation（拓扑亲和）</div>
+  <div class="k">③ NVIDIA Plugin</div><div>DaemonSet 部署 · 发现 /dev/nvidia* · Allocate 时注入 NVIDIA_VISIBLE_DEVICES + 设备挂载</div>
+  <div class="k">④ GPU Operator</div><div>自动化全栈：驱动 + toolkit + plugin + 监控 · 新节点加入零人工</div>
+  <div class="k">⑤ MIG = 硬件切分</div><div>A100/H100 独有 · 完全隔离 · 切换需重启 · 适合生产多租户和小模型推理</div>
+  <div class="k">⑥ Time-Slicing = 软共享</div><div>所有 GPU 可用 · 无隔离 · 显存可互 OOM · 只适合开发测试</div>
+  <div class="k">⑦ Plugin crash = GPU 消失</div><div>device-plugin Pod 挂了新 Pod 无法调度，但已运行 Pod 不受影响 · 监控要覆盖</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——GPU Pod 调度到了节点，容器要通信。CNI 是怎么给 Pod 分 IP 的？多机推理的 RDMA/GPUDirect 网络怎么配？跨节点 NCCL 通信的网络拓扑问题。→ <a href="09-cni-deep.html" style="color:var(--brand)">09-cni-deep.html</a>
+</div>
+</div>
+
+<div class="foot">
+第二层 · 08 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

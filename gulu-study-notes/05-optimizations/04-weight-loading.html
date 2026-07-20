@@ -1,0 +1,565 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>09 · 权重加载全流程</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+@media (max-width:900px){.cols-2{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>权重加载全流程 <span class="tag">09</span></h1>
+<div class="sub">.safetensors → GPU 的那段旅程：lazy 流式 + 权重合并 + TP shard 一步到位</div>
+
+<div class="toc">
+  <a href="#overview">总览</a>
+  <a href="#safetensors">safetensors 是啥</a>
+  <a href="#flow">主流程 3 步</a>
+  <a href="#shard">TP shard 的规则</a>
+  <a href="#merge">QKV / gate_up 合并</a>
+  <a href="#moe">MoE expert 堆叠</a>
+  <a href="#register">模型注册</a>
+  <a href="#tips">实战技巧</a>
+</div>
+
+<!-- ============ 1 ============ -->
+<h2 id="overview"><span class="step">PART 1</span>为什么这不是"一行 torch.load 就行"？</h2>
+
+<div class="card">
+<p>朴素方案：</p>
+<pre><code><span class="com"># 想象中</span>
+weights = torch.<span class="fn">load</span>(<span class="str">"model.safetensors"</span>)
+model.<span class="fn">load_state_dict</span>(weights)</code></pre>
+
+<p>但实际情况复杂得多：</p>
+
+<table>
+<tr><th>问题</th><th>为啥</th><th>怎么办</th></tr>
+<tr><td>模型太大</td><td>Llama-70B fp16 是 140 GB，一次全读进 CPU 内存会 OOM</td><td><strong>lazy 流式读取</strong>，一个 tensor 处理完再下一个</td></tr>
+<tr><td>TP 切分</td><td>HF 上权重是完整的，4 卡每卡只要 1/4</td><td><strong>加载时切</strong>，不是加载完再切（避免 CPU 峰值）</td></tr>
+<tr><td>权重合并</td><td>HF 里 <code>q_proj / k_proj / v_proj</code> 是 3 个独立 tensor，mini-sglang 用融合的 <code>qkv_proj</code></td><td><strong>攒齐 3 个后 cat</strong></td></tr>
+<tr><td>MoE expert 堆叠</td><td>HF 里 <code>experts.0.gate_proj / experts.1.gate_proj ...</code>，mini-sglang 打包成一个 stacked tensor</td><td><strong>攒齐所有 expert 后 stack</strong></td></tr>
+<tr><td>key 名字不同</td><td>HF 的 layer 命名可能跟 mini-sglang 内部不一致</td><td>架构注册表 + 规则化映射</td></tr>
+<tr><td>vision / multimodal 头</td><td>Mistral3 等模型有 vision 部分，推理时不用</td><td>加载时丢弃</td></tr>
+</table>
+
+<div class="callout">
+<strong>核心设计：weight loading 是一个 generator</strong>——每次只产出一个已经 sharded、merged、在 GPU 上的 tensor，model.load_state_dict 拿过来就装上。CPU 峰值内存 = 1 个最大 tensor + 一点 merge buffer。
+</div>
+</div>
+
+<!-- ============ 2 ============ -->
+<h2 id="safetensors"><span class="step">PART 2</span>safetensors 格式速览</h2>
+
+<div class="card">
+<p>HuggingFace 上的模型权重现在主流是 <code>.safetensors</code> 格式（不是旧的 pytorch_model.bin pickle）。</p>
+
+<h3>文件结构</h3>
+<pre><code><span class="com"># 一个 .safetensors 文件：</span>
+┌──────────────┬─────────────────────────────────────┐
+│  8 bytes     │  header_length (u64, little-endian) │
+├──────────────┼─────────────────────────────────────┤
+│  header JSON │  {"tensor_name": {dtype, shape,     │
+│              │     data_offsets: [start, end]}, …} │
+├──────────────┼─────────────────────────────────────┤
+│  raw tensor  │  连续二进制数据（按 header 描述偏移）│
+│  bytes       │                                     │
+└──────────────┴─────────────────────────────────────┘</code></pre>
+
+<h3>为什么比 pickle 好？</h3>
+<ul class="tight">
+  <li><strong>安全</strong>：pickle 可以执行任意代码，safetensors 纯数据</li>
+  <li><strong>零拷贝 lazy 读</strong>：header 只描述 offsets，可以 <code>mmap</code> 文件然后用 <code>safetensors.safe_open</code> 逐个读 tensor，不加载全部</li>
+  <li><strong>跨框架</strong>：不依赖 PyTorch</li>
+</ul>
+
+<h3>mini-sglang 怎么读</h3>
+<pre><code><span class="com"># models/weight.py:90</span>
+<span class="kw">with</span> safetensors.<span class="fn">safe_open</span>(file, framework=<span class="str">"pt"</span>, device=str(device)) <span class="kw">as</span> f:
+    <span class="kw">for</span> name <span class="kw">in</span> f.<span class="fn">keys</span>():
+        raw = f.<span class="fn">get_tensor</span>(name)    <span class="com"># 此刻才从磁盘读, 直接到 GPU</span>
+        ...                          <span class="com"># 处理完 raw 就丢</span></code></pre>
+
+<div class="callout info">
+<code>framework="pt"</code> + <code>device="cuda:0"</code> 让它直接产出 PyTorch GPU tensor，<u>跳过 CPU</u>。这是 safetensors + CUDA 的组合优势：磁盘 → GPU 直通，CPU 只做元数据管理。
+</div>
+</div>
+
+<!-- ============ 3 ============ -->
+<h2 id="flow"><span class="step">PART 3</span>主流程：load_weight generator</h2>
+
+<div class="card">
+<p>整个加载逻辑就一个函数（<code>models/weight.py:75</code>），核心结构：</p>
+
+<pre><code><span class="kw">def</span> <span class="fn">load_weight</span>(model_path, device) -> Iterator[Tuple[str, torch.Tensor]]:
+    <span class="com">"""Yields (name, tensor) 已经 sharded, merged, 在 GPU 上"""</span>
+
+    <span class="com"># ① 下载/找到 .safetensors 文件列表</span>
+    model_folder = <span class="fn">download_hf_weight</span>(model_path)
+    files = glob.<span class="fn">glob</span>(f<span class="str">"{model_folder}/*.safetensors"</span>)
+
+    <span class="com"># ② 准备 merge/expert buffer</span>
+    merge_buf = {}       <span class="com"># 攒 q_proj/k_proj/v_proj → qkv_proj</span>
+    expert_buf = {}      <span class="com"># 攒 experts.0 / experts.1 / ... → 堆叠</span>
+
+    <span class="kw">for</span> file <span class="kw">in</span> files:
+        <span class="kw">with</span> safetensors.<span class="fn">safe_open</span>(file, ...) <span class="kw">as</span> f:
+            <span class="kw">for</span> name <span class="kw">in</span> f.<span class="fn">keys</span>():
+                <span class="com"># ③ 过滤 multimodal 前缀</span>
+                <span class="kw">if</span> name.<span class="fn">startswith</span>((<span class="str">"vision_tower."</span>, <span class="str">"multi_modal_projector."</span>)):
+                    <span class="kw">continue</span>
+                raw = f.<span class="fn">get_tensor</span>(name)
+                name = name.<span class="fn">removeprefix</span>(<span class="str">"language_model."</span>)
+
+                <span class="com"># ④ TP shard（按规则切 dim 0 / dim 1 / vocab）</span>
+                tensor = <span class="fn">_shard_tensor</span>(name, raw, rank, world, num_kv_heads)
+                <span class="kw">del</span> raw
+
+                <span class="com"># ⑤ 如果属于合并组，存 merge_buf 攒齐再 yield</span>
+                <span class="kw">if</span> (info := <span class="fn">_get_merge_info</span>(name)) <span class="kw">is</span> <span class="kw">None</span>:
+                    out = (name, tensor)
+                <span class="kw">else</span>:
+                    merged_key, slot, all_slots = info
+                    merge_buf[merged_key][slot] = tensor
+                    <span class="kw">if not</span> <span class="fn">all</span>(s <span class="kw">in</span> merge_buf[merged_key] <span class="kw">for</span> s <span class="kw">in</span> all_slots):
+                        <span class="kw">continue</span>   <span class="com"># 还没攒齐, 下一个</span>
+                    parts = [merge_buf[merged_key][s] <span class="kw">for</span> s <span class="kw">in</span> all_slots]
+                    <span class="kw">del</span> merge_buf[merged_key]
+                    out = (merged_key, torch.<span class="fn">cat</span>(parts, dim=0))
+
+                <span class="com"># ⑥ MoE: 同名 expert 再攒齐一轮 stack</span>
+                <span class="kw">if</span> config.is_moe <span class="kw">and</span> (expert_info := <span class="fn">_get_expert_stack_info</span>(out[0])):
+                    packed_key, expert_idx = expert_info
+                    expert_buf[packed_key][expert_idx] = out[1]
+                    <span class="kw">if</span> <span class="fn">len</span>(expert_buf[packed_key]) != config.num_experts:
+                        <span class="kw">continue</span>
+                    experts = [expert_buf[packed_key][i] <span class="kw">for</span> i <span class="kw">in</span> range(config.num_experts)]
+                    <span class="kw">yield</span> packed_key, torch.<span class="fn">stack</span>(experts, dim=0)
+                <span class="kw">else</span>:
+                    <span class="kw">yield</span> out[0], out[1]</code></pre>
+
+<h3>这个函数的 3 个"关卡"</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <defs>
+    <marker id="la" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7dd3fc"/></marker>
+  </defs>
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">权重流经的 3 个关卡</text>
+
+  <!-- Disk -->
+  <rect x="40" y="80" width="150" height="80" fill="#1f2937" stroke="#8b93a7" rx="6"/>
+  <text x="115" y="108" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">💾 Disk</text>
+  <text x="115" y="128" text-anchor="middle" fill="#8b93a7" font-size="10">.safetensors</text>
+  <text x="115" y="144" text-anchor="middle" fill="#8b93a7" font-size="10">N 个文件</text>
+
+  <line x1="190" y1="120" x2="230" y2="120" stroke="#7dd3fc" stroke-width="2" marker-end="url(#la)"/>
+
+  <!-- Gate 1: Shard -->
+  <rect x="230" y="80" width="200" height="80" fill="#2a1f0b" stroke="#fbbf24" stroke-width="2" rx="6"/>
+  <text x="330" y="106" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">关卡 ① _shard_tensor</text>
+  <text x="330" y="124" text-anchor="middle" fill="#cbd5e1" font-size="10">TP 切片（dim 0 / dim 1 / vocab）</text>
+  <text x="330" y="140" text-anchor="middle" fill="#cbd5e1" font-size="10">每 rank 只留自己那 1/N</text>
+
+  <line x1="430" y1="120" x2="470" y2="120" stroke="#7dd3fc" stroke-width="2" marker-end="url(#la)"/>
+
+  <!-- Gate 2: Merge -->
+  <rect x="470" y="80" width="200" height="80" fill="#0b1f2a" stroke="#7dd3fc" stroke-width="2" rx="6"/>
+  <text x="570" y="106" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="700">关卡 ② merge_buf</text>
+  <text x="570" y="124" text-anchor="middle" fill="#cbd5e1" font-size="10">攒齐 q/k/v → cat 成 qkv_proj</text>
+  <text x="570" y="140" text-anchor="middle" fill="#cbd5e1" font-size="10">gate/up → gate_up_proj</text>
+
+  <line x1="670" y1="120" x2="710" y2="120" stroke="#7dd3fc" stroke-width="2" marker-end="url(#la)"/>
+
+  <!-- Gate 3: Expert -->
+  <rect x="710" y="80" width="200" height="80" fill="#1a0f2a" stroke="#a78bfa" stroke-width="2" rx="6"/>
+  <text x="810" y="106" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="700">关卡 ③ expert_buf</text>
+  <text x="810" y="124" text-anchor="middle" fill="#cbd5e1" font-size="10">(仅 MoE) 攒齐 N 个 expert</text>
+  <text x="810" y="140" text-anchor="middle" fill="#cbd5e1" font-size="10">→ torch.stack(dim=0)</text>
+
+  <line x1="910" y1="120" x2="950" y2="120" stroke="#7dd3fc" stroke-width="2" marker-end="url(#la)"/>
+
+  <!-- Model -->
+  <rect x="950" y="80" width="200" height="80" fill="#0f2a1f" stroke="#34d399" stroke-width="2" rx="6"/>
+  <text x="1050" y="106" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">🎯 Model State</text>
+  <text x="1050" y="124" text-anchor="middle" fill="#cbd5e1" font-size="10">已 shard + merged</text>
+  <text x="1050" y="140" text-anchor="middle" fill="#cbd5e1" font-size="10">GPU bf16 tensor</text>
+
+  <text x="600" y="210" text-anchor="middle" fill="var(--brand)" font-size="12" font-weight="600">整个流程是 generator，一个 tensor 处理完立刻 yield，下一个才开始</text>
+  <text x="600" y="232" text-anchor="middle" fill="#8b93a7" font-size="11">CPU 峰值内存 ≈ 一个最大 tensor（几百 MB），不是几十 GB</text>
+</svg>
+</div>
+
+<h3>调用入口</h3>
+<pre><code><span class="com"># engine/engine.py:139  _load_weight_state_dict</span>
+<span class="kw">return</span> {k: v.<span class="fn">to</span>(self.dtype) <span class="kw">for</span> k, v <span class="kw">in</span> <span class="fn">load_weight</span>(config.model_path, self.device)}
+
+<span class="com"># 然后</span>
+self.model.<span class="fn">load_state_dict</span>(self.<span class="fn">_load_weight_state_dict</span>(config))</code></pre>
+
+<p>注意 <code>dict comprehension</code> 在驱动 generator——生成器一个个 yield，字典一个个填充，整个过程是流式的。</p>
+</div>
+
+<!-- ============ 4 ============ -->
+<h2 id="shard"><span class="step">PART 4</span>_shard_tensor · TP 切片规则</h2>
+
+<div class="card">
+<p>这是加载时最核心的决策：<strong>对于一个给定的权重名字，应该按哪一维切？切哪一段？</strong></p>
+
+<pre><code><span class="com"># models/weight.py:13</span>
+_SPLIT_DIM_0 = [<span class="str">".q_proj"</span>, <span class="str">".k_proj"</span>, <span class="str">".v_proj"</span>, <span class="str">".gate_proj"</span>, <span class="str">".up_proj"</span>]
+_SPLIT_DIM_1 = [<span class="str">".o_proj"</span>, <span class="str">".down_proj"</span>]
+
+<span class="kw">def</span> <span class="fn">_shard_tensor</span>(key, value, r, n, num_kv_heads):
+    <span class="kw">if</span> <span class="fn">any</span>(key.<span class="fn">count</span>(sub) <span class="kw">for</span> sub <span class="kw">in</span> _SPLIT_DIM_0):
+        <span class="com"># ① Column parallel: 按输出维 (dim 0) 切</span>
+        is_kv_proj = <span class="fn">any</span>(key.<span class="fn">count</span>(sub) <span class="kw">for</span> sub <span class="kw">in</span> (<span class="str">".k_proj"</span>, <span class="str">".v_proj"</span>))
+        <span class="kw">if</span> is_kv_proj <span class="kw">and</span> num_kv_heads &lt; n:
+            <span class="com"># GQA corner case: kv_heads 不够分 → 复制</span>
+            head_dim = value.shape[0] // num_kv_heads
+            head_idx = r * num_kv_heads // n
+            <span class="kw">return</span> value[head_idx * head_dim : (head_idx + 1) * head_dim].<span class="fn">clone</span>()
+        <span class="kw">return</span> value.<span class="fn">chunk</span>(n, dim=0)[r].<span class="fn">clone</span>()
+
+    <span class="kw">elif</span> <span class="fn">any</span>(key.<span class="fn">count</span>(sub) <span class="kw">for</span> sub <span class="kw">in</span> _SPLIT_DIM_1):
+        <span class="com"># ② Row parallel: 按输入维 (dim 1) 切</span>
+        <span class="kw">return</span> value.<span class="fn">chunk</span>(n, dim=1)[r].<span class="fn">clone</span>()
+
+    <span class="kw">elif</span> key.<span class="fn">count</span>(<span class="str">"lm_head"</span>) <span class="kw">or</span> key.<span class="fn">count</span>(<span class="str">"embed_tokens"</span>):
+        <span class="com"># ③ Vocab parallel: 按词表维切</span>
+        num_embeddings_per_partition = <span class="fn">div_ceil</span>(value.shape[0], n)
+        vocab_start = r * num_embeddings_per_partition
+        vocab_end = <span class="fn">min</span>((r+1) * num_embeddings_per_partition, value.shape[0])
+        <span class="kw">return</span> value[vocab_start:vocab_end, :].<span class="fn">clone</span>()
+    <span class="kw">else</span>:
+        <span class="com"># ④ 其他（bias、layernorm、rmsnorm weight 等）：复制</span>
+        <span class="kw">return</span> value</code></pre>
+
+<h3>三条规则对照表</h3>
+<table>
+<tr><th>权重类型</th><th>关键词</th><th>切法</th><th>对应 Layer</th></tr>
+<tr><td>Column Parallel</td><td><code>q_proj / k_proj / v_proj / gate_proj / up_proj</code></td><td>按 dim=0 切（输出维）</td><td>LinearQKVMerged / LinearColParallelMerged</td></tr>
+<tr><td>Row Parallel</td><td><code>o_proj / down_proj</code></td><td>按 dim=1 切（输入维）</td><td>LinearOProj / LinearRowParallel</td></tr>
+<tr><td>Vocab Parallel</td><td><code>lm_head / embed_tokens</code></td><td>按 vocab 维切（dim=0）</td><td>ParallelLMHead / VocabParallelEmbedding</td></tr>
+<tr><td>Replicated</td><td>以上都不匹配</td><td>不切（全部复制）</td><td>norm weights、bias 等</td></tr>
+</table>
+
+<div class="callout info">
+<strong>为什么 PyTorch 权重 shape 是 <code>[out_dim, in_dim]</code>？</strong><br>
+PyTorch 的 <code>nn.Linear(in, out)</code> 内部权重形状是 <code>[out, in]</code>（跟数学公式 <code>Y = X·W</code> 的 W 形状是转置关系，因为 PyTorch 做 <code>F.linear(x, w) = x @ w.T</code>）。所以<u>"按输出维切"对应 dim=0，"按输入维切"对应 dim=1</u>——跟 06 章矩阵 W 的"切列"是同一回事，只是 index 方向相反。
+</div>
+
+<h3>GQA 的 corner case：num_kv_heads < tp_size</h3>
+<p>比如 Qwen3-0.6B 只有 2 个 KV head 但用户开 <code>--tp 4</code>。2 < 4，不能均分，要复制：</p>
+
+<pre><code>num_kv_heads = 2, tp_size = 4, rank = 0,1,2,3
+
+head_dim = value.shape[0] // num_kv_heads    <span class="com"># K/V 每个 head 的维度</span>
+head_idx = r * num_kv_heads // n             <span class="com"># rank 0,1 → head 0;  rank 2,3 → head 1</span>
+<span class="kw">return</span> value[head_idx * head_dim : (head_idx + 1) * head_dim]
+
+<span class="com"># rank 0, 1 都拿 K_head_0, V_head_0     （复制）</span>
+<span class="com"># rank 2, 3 都拿 K_head_1, V_head_1     （复制）</span></code></pre>
+
+<p>这就对应 06 章说的 <code>allow_replicate=True</code>——KV head 不够切时"跨卡共享"。</p>
+
+<h3>_SPLIT_DIM_0 里藏着一个细节：attn_bias</h3>
+<p>注意关键字用 <code>key.count(sub)</code> 而不是 <code>key.endswith(sub)</code>。这样 <code>q_proj.weight</code> 和 <code>q_proj.bias</code> 都能被匹配到。bias 作为一维张量，<code>chunk(n, dim=0)</code> 依然能正确切（dim=0 就是它唯一的维度）。</p>
+</div>
+
+<!-- ============ 5 ============ -->
+<h2 id="merge"><span class="step">PART 5</span>QKV / gate_up 合并</h2>
+
+<div class="card">
+<p>HF 的模型把 Q、K、V 存成 3 个独立权重：</p>
+<pre><code>model.layers.0.self_attn.q_proj.weight    [Hq·D, hidden]
+model.layers.0.self_attn.k_proj.weight    [Hkv·D, hidden]
+model.layers.0.self_attn.v_proj.weight    [Hkv·D, hidden]</code></pre>
+
+<p>mini-sglang 为了<strong>一次 matmul 算出 Q、K、V</strong>（减少 3 个 kernel launch → 1 个），用融合的 <code>qkv_proj</code>：</p>
+<pre><code>model.layers.0.self_attn.qkv_proj.weight    [(Hq+2·Hkv)·D, hidden]</code></pre>
+
+<h3>怎么合并？attend-then-cat 模式</h3>
+
+<pre><code><span class="com"># models/weight.py:17</span>
+_MERGE_GROUPS = {
+    <span class="str">".q_proj"</span>:    (<span class="str">".qkv_proj"</span>,     (<span class="str">"q"</span>, <span class="str">"k"</span>, <span class="str">"v"</span>)),
+    <span class="str">".k_proj"</span>:    (<span class="str">".qkv_proj"</span>,     (<span class="str">"q"</span>, <span class="str">"k"</span>, <span class="str">"v"</span>)),
+    <span class="str">".v_proj"</span>:    (<span class="str">".qkv_proj"</span>,     (<span class="str">"q"</span>, <span class="str">"k"</span>, <span class="str">"v"</span>)),
+    <span class="str">".gate_proj"</span>: (<span class="str">".gate_up_proj"</span>, (<span class="str">"gate"</span>, <span class="str">"up"</span>)),
+    <span class="str">".up_proj"</span>:   (<span class="str">".gate_up_proj"</span>, (<span class="str">"gate"</span>, <span class="str">"up"</span>)),
+}</code></pre>
+
+<h3>流程示意</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1000 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <text x="500" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">QKV 合并的状态机（以某一层为例）</text>
+
+  <!-- Initial: merge_buf empty -->
+  <rect x="40" y="60" width="200" height="60" fill="#0a0d12" stroke="#374151" rx="6"/>
+  <text x="140" y="82" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">初始</text>
+  <text x="140" y="102" text-anchor="middle" fill="#8b93a7" font-size="10">merge_buf[&quot;…qkv_proj&quot;] = {}</text>
+
+  <!-- Step 1: see q_proj -->
+  <rect x="280" y="60" width="200" height="60" fill="#2a1f0b" stroke="#fbbf24" rx="6"/>
+  <text x="380" y="82" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">读到 q_proj</text>
+  <text x="380" y="102" text-anchor="middle" fill="#cbd5e1" font-size="10">merge_buf[&quot;…qkv_proj&quot;][&quot;q&quot;] = T_q</text>
+
+  <!-- Step 2: see k_proj -->
+  <rect x="520" y="60" width="200" height="60" fill="#2a1f0b" stroke="#fbbf24" rx="6"/>
+  <text x="620" y="82" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">读到 k_proj</text>
+  <text x="620" y="102" text-anchor="middle" fill="#cbd5e1" font-size="10">[&quot;q&quot;]=T_q, [&quot;k&quot;]=T_k</text>
+
+  <!-- Step 3: see v_proj -->
+  <rect x="760" y="60" width="200" height="60" fill="#0f2a1f" stroke="#34d399" rx="6"/>
+  <text x="860" y="82" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600">读到 v_proj ✓ 攒齐</text>
+  <text x="860" y="102" text-anchor="middle" fill="#cbd5e1" font-size="10">q, k, v 都在 → 触发 cat</text>
+
+  <!-- Arrows -->
+  <line x1="240" y1="90" x2="280" y2="90" stroke="#7dd3fc" stroke-width="2" marker-end="url(#la2)"/>
+  <line x1="480" y1="90" x2="520" y2="90" stroke="#7dd3fc" stroke-width="2" marker-end="url(#la2)"/>
+  <line x1="720" y1="90" x2="760" y2="90" stroke="#7dd3fc" stroke-width="2" marker-end="url(#la2)"/>
+
+  <defs>
+    <marker id="la2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7dd3fc"/></marker>
+  </defs>
+
+  <!-- Output -->
+  <rect x="280" y="180" width="440" height="100" fill="#0b0d12" stroke="var(--brand)" stroke-width="2" rx="8"/>
+  <text x="500" y="208" text-anchor="middle" fill="var(--brand)" font-size="13" font-weight="700">yield (&quot;…qkv_proj.weight&quot;, torch.cat([T_q, T_k, T_v], dim=0))</text>
+  <text x="500" y="232" text-anchor="middle" fill="#cbd5e1" font-size="11">shape: [(Hq+Hkv+Hkv)·D, hidden]</text>
+  <text x="500" y="254" text-anchor="middle" fill="#8b93a7" font-size="10">（注：每卡只是 local 部分，已 shard 过了）</text>
+
+  <line x1="860" y1="120" x2="500" y2="180" stroke="#34d399" stroke-width="2" marker-end="url(#la3)"/>
+
+  <defs>
+    <marker id="la3" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#34d399"/></marker>
+  </defs>
+</svg>
+</div>
+
+<div class="callout warn">
+<strong>关键细节：合并发生在 <u>shard 之后</u></strong><br>
+先 _shard_tensor 切好 local 那份，再塞 merge_buf。这样 cat 出来的已经是 local 的 qkv_proj，不需要额外通信。
+<ul class="tight">
+  <li>rank 0: cat(local_q₀, local_k₀, local_v₀) → local qkv_proj₀</li>
+  <li>rank 1: cat(local_q₁, local_k₁, local_v₁) → local qkv_proj₁</li>
+  <li>... 每张卡独立 cat，结果互不相干</li>
+</ul>
+</div>
+
+<h3>合并的顺序保证</h3>
+<p>safetensors 里同一 layer 的 q/k/v 通常是按字母序出现（k → q → v 或 q → k → v），但代码<u>不依赖顺序</u>——靠 <code>merge_buf[merged_key][slot] = tensor</code> 这种字典键赋值，然后检查 <code>all(s in merge_buf[merged_key] for s in all_slots)</code> 确保三个都到齐了才触发 cat。</p>
+
+<p>同样的逻辑对 MLP 的 <code>gate_proj + up_proj → gate_up_proj</code> 适用。</p>
+</div>
+
+<!-- ============ 6 ============ -->
+<h2 id="moe"><span class="step">PART 6</span>MoE · experts 堆叠</h2>
+
+<div class="card">
+<p>MoE 模型（如 Qwen3-MoE）的权重布局：</p>
+<pre><code>model.layers.0.mlp.experts.0.gate_proj.weight
+model.layers.0.mlp.experts.0.up_proj.weight
+model.layers.0.mlp.experts.0.down_proj.weight
+model.layers.0.mlp.experts.1.gate_proj.weight
+...
+model.layers.0.mlp.experts.63.gate_proj.weight     <span class="com"># 64 个 expert</span></code></pre>
+
+<p>mini-sglang 把<u>所有 expert 同名权重堆叠成一个 tensor</u>（方便 fused MoE kernel 用）：</p>
+<pre><code>model.layers.0.mlp.experts.gate_up_proj    shape [num_experts, 2·inter, hidden]
+model.layers.0.mlp.experts.down_proj       shape [num_experts, hidden, inter]</code></pre>
+
+<h3>代码实现</h3>
+<pre><code><span class="com"># models/weight.py:31</span>
+_EXPERT_PATTERN = re.<span class="fn">compile</span>(r<span class="str">"^(?P&lt;prefix&gt;.+\.experts)\.(?P&lt;idx&gt;\d+)\.(?P&lt;name&gt;.+)$"</span>)
+
+<span class="kw">def</span> <span class="fn">_get_expert_stack_info</span>(key):
+    match = _EXPERT_PATTERN.<span class="fn">match</span>(key)
+    <span class="kw">if</span> match <span class="kw">is</span> <span class="kw">None</span>: <span class="kw">return</span> <span class="kw">None</span>
+    packed_name = match.<span class="fn">group</span>(<span class="str">"name"</span>)
+    <span class="kw">if</span> packed_name.<span class="fn">endswith</span>(<span class="str">".weight"</span>):
+        packed_name = packed_name.<span class="fn">removesuffix</span>(<span class="str">".weight"</span>)
+    <span class="kw">return</span> f<span class="str">"{match.group('prefix')}.{packed_name}"</span>, <span class="fn">int</span>(match.<span class="fn">group</span>(<span class="str">"idx"</span>))
+    <span class="com"># 例：</span>
+    <span class="com">#   "…experts.5.gate_up_proj.weight" → ("…experts.gate_up_proj", 5)</span></code></pre>
+
+<h3>双重 buffer：先 merge 再 stack</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1100 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="550" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">MoE 加载的两层攒齐逻辑</text>
+
+  <rect x="40" y="60" width="280" height="170" fill="#0a0d12" stroke="#fbbf24" rx="8"/>
+  <text x="180" y="88" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">第一层 merge_buf（同一个 expert 内）</text>
+  <text x="60" y="112" fill="#cbd5e1" font-size="11" font-family="SF Mono">experts.0.gate_proj ─┐</text>
+  <text x="60" y="130" fill="#cbd5e1" font-size="11" font-family="SF Mono">experts.0.up_proj  ──┼─ cat →</text>
+  <text x="60" y="150" fill="#cbd5e1" font-size="11" font-family="SF Mono">                    experts.0.gate_up_proj</text>
+  <text x="60" y="180" fill="#8b93a7" font-size="10">gate + up 合成一个 tensor</text>
+  <text x="60" y="198" fill="#8b93a7" font-size="10">（同 dense 模型的逻辑）</text>
+
+  <line x1="320" y1="140" x2="360" y2="140" stroke="#7dd3fc" stroke-width="2" marker-end="url(#lb)"/>
+  <defs>
+    <marker id="lb" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#7dd3fc"/></marker>
+  </defs>
+
+  <rect x="360" y="60" width="320" height="170" fill="#0a0d12" stroke="#a78bfa" rx="8"/>
+  <text x="520" y="88" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="700">第二层 expert_buf（跨所有 expert）</text>
+  <text x="380" y="112" fill="#cbd5e1" font-size="11" font-family="SF Mono">experts.0.gate_up_proj ─┐</text>
+  <text x="380" y="130" fill="#cbd5e1" font-size="11" font-family="SF Mono">experts.1.gate_up_proj ─┤</text>
+  <text x="380" y="146" fill="#cbd5e1" font-size="11" font-family="SF Mono">  ...                   ├─ stack →</text>
+  <text x="380" y="162" fill="#cbd5e1" font-size="11" font-family="SF Mono">experts.63.gate_up_proj ─┘</text>
+  <text x="380" y="190" fill="#8b93a7" font-size="10">stack(dim=0) 变 3D tensor</text>
+  <text x="380" y="208" fill="#8b93a7" font-size="10">[num_experts, 2·inter, hidden]</text>
+
+  <line x1="680" y1="140" x2="720" y2="140" stroke="#7dd3fc" stroke-width="2" marker-end="url(#lb)"/>
+
+  <rect x="720" y="80" width="340" height="130" fill="#0f2a1f" stroke="#34d399" rx="8"/>
+  <text x="890" y="108" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">yield 最终 3D tensor</text>
+  <text x="740" y="132" fill="#cbd5e1" font-size="11" font-family="SF Mono">"experts.gate_up_proj"</text>
+  <text x="740" y="152" fill="#cbd5e1" font-size="11" font-family="SF Mono">shape [N, 2·inter, hidden]</text>
+  <text x="740" y="180" fill="#8b93a7" font-size="11">→ 装进 MoELayer.fused_experts_weights</text>
+  <text x="740" y="198" fill="#8b93a7" font-size="11">→ 给 fused MoE kernel 使用</text>
+</svg>
+</div>
+
+<div class="callout info">
+<strong>为什么堆叠？</strong> fused MoE kernel（<code>kernel/triton/fused_moe.py</code>）要并行处理多个 expert 的 matmul。如果每个 expert 是独立 tensor，kernel 要 launch 64 次（一次一 expert）。堆成一个 3D tensor 后，kernel 只 launch 1 次，通过 expert_id 在 dim 0 上索引。
+</div>
+
+<p>mini-sglang 目前的 MoE 做 <strong>expert 复制</strong>——每张卡都有所有 expert 权重，只切 row/col parallel 那一维。所以<u>没有跨 TP 的 expert 路由（all-to-all）</u>，这是简化之处（SGLang 主线支持 Expert Parallel）。</p>
+</div>
+
+<!-- ============ 7 ============ -->
+<h2 id="register"><span class="step">PART 7</span>模型注册：怎么知道用哪个模型类？</h2>
+
+<div class="card">
+<p>HF 的 config.json 里有个字段 <code>"architectures": ["Qwen3ForCausalLM"]</code>。mini-sglang 用这个字符串在注册表里查对应类。</p>
+
+<pre><code><span class="com"># models/register.py</span>
+_MODEL_REGISTRY = {
+    <span class="str">"LlamaForCausalLM"</span>:                    (<span class="str">".llama"</span>,      <span class="str">"LlamaForCausalLM"</span>),
+    <span class="str">"Qwen2ForCausalLM"</span>:                    (<span class="str">".qwen2"</span>,      <span class="str">"Qwen2ForCausalLM"</span>),
+    <span class="str">"Qwen3ForCausalLM"</span>:                    (<span class="str">".qwen3"</span>,      <span class="str">"Qwen3ForCausalLM"</span>),
+    <span class="str">"Qwen3MoeForCausalLM"</span>:                 (<span class="str">".qwen3_moe"</span>,  <span class="str">"Qwen3MoeForCausalLM"</span>),
+    <span class="str">"MistralForCausalLM"</span>:                  (<span class="str">".mistral"</span>,    <span class="str">"MistralForCausalLM"</span>),
+    <span class="str">"Mistral3ForConditionalGeneration"</span>:    (<span class="str">".mistral"</span>,    <span class="str">"MistralForCausalLM"</span>),
+}
+
+<span class="kw">def</span> <span class="fn">get_model_class</span>(model_architecture, model_config):
+    module_path, class_name = _MODEL_REGISTRY[model_architecture]
+    module = importlib.<span class="fn">import_module</span>(module_path, package=__package__)
+    model_cls = <span class="fn">getattr</span>(module, class_name)
+    <span class="kw">return</span> model_cls(model_config)</code></pre>
+
+<h3>想加新模型？两步</h3>
+<ol>
+<li>在 <code>models/</code> 下写一个新文件（比如 <code>dbrx.py</code>），实现 <code>DbrxForCausalLM(BaseLLMModel)</code></li>
+<li>在 <code>register.py</code> 加一行 <code>"DbrxForCausalLM": (".dbrx", "DbrxForCausalLM")</code></li>
+</ol>
+
+<p>如果权重名字跟 mini-sglang 已有模型不一致（比如用 <code>attention.wq</code> 而不是 <code>self_attn.q_proj</code>），还要扩展 <code>_SPLIT_DIM_0</code>/<code>_MERGE_GROUPS</code>。</p>
+</div>
+
+<!-- ============ 8 ============ -->
+<h2 id="tips"><span class="step">PART 8</span>实战技巧与常见坑</h2>
+
+<div class="card">
+<h3>ModelScope 做 HF 镜像</h3>
+<pre><code><span class="com"># 中国大陆网络访问 HF 慢的话：</span>
+python -m minisgl --model "Qwen/Qwen3-32B" --model-source modelscope</code></pre>
+<p><code>download_hf_weight</code> 会去 <code>modelscope</code> 下载相同仓库。对 Qwen、ChatGLM、Yi 等国产模型特别方便。</p>
+
+<h3>dummy weights 跑调试</h3>
+<pre><code><span class="com"># 启动时跳过真实权重加载，用 randn 填充</span>
+python -m minisgl --model "Qwen/Qwen3-0.6B" --use-dummy-weight</code></pre>
+<p>适合测试启动流程 / CUDA Graph capture / 调度逻辑——模型输出是垃圾但不影响系统行为。</p>
+
+<h3>常见 "key mismatch" 错误</h3>
+<table>
+<tr><th>错误</th><th>原因</th><th>解法</th></tr>
+<tr><td>Missing key: ...qkv_proj.weight</td><td>权重没合并成功（merge_buf 没攒齐）</td><td>检查 safetensors 里是否真的有 q/k/v 三个</td></tr>
+<tr><td>Unexpected key: vision_tower.*</td><td>Mistral3 等 VLM 的视觉分支</td><td>已自动过滤，不会报错。若其他 VLM 报错，加前缀到跳过列表</td></tr>
+<tr><td>Shape mismatch</td><td>HF 版本更新了权重维度</td><td>检查 config.json 的 num_kv_heads / num_attention_heads 跟代码预期</td></tr>
+<tr><td>Incomplete merge groups</td><td>模型中缺失某个 proj（比如只有 q/v 没有 k）</td><td>mini-sglang 不支持，需要改 _MERGE_GROUPS 逻辑</td></tr>
+</table>
+
+<h3>验证加载是否正确的小技巧</h3>
+<pre><code><span class="com"># 在 engine/engine.py 的 load_state_dict 前后打 log</span>
+<span class="kw">for</span> k, v <span class="kw">in</span> state_dict.<span class="fn">items</span>():
+    <span class="kw">print</span>(f<span class="str">"{k}: shape={v.shape}, dtype={v.dtype}, device={v.device}, norm={v.norm().item():.4f}"</span>)
+<span class="com"># 正常应该看到 norm 在 0.01 ~ 10 之间。如果特别大或特别小，可能切错了</span></code></pre>
+
+<h3>同一份 HF 权重，TP 1/2/4 切出来会一样吗？</h3>
+<div class="callout warn">
+不会——<u>切出来的 local tensor 不同，但装进 local Linear 后数学上等价</u>。
+<ul class="tight">
+  <li>TP=1: 每卡持有完整 W，output = X·W</li>
+  <li>TP=2: 每卡持有 W/2, 两卡 output 拼接 / 求和后等于 X·W</li>
+  <li>TP=4: 同理</li>
+</ul>
+所以同一个模型在 TP=1 和 TP=4 下<strong>输出 token 是完全一致的</strong>（浮点误差内）。这是验证 TP 实现正确性的最好方法。
+</div>
+</div>
+
+<!-- ============ Summary ============ -->
+<h2>总结：权重加载的 4 个关键步骤</h2>
+<div class="card">
+<ol class="tight">
+  <li><strong>找文件</strong>：download_hf_weight → glob 出所有 .safetensors</li>
+  <li><strong>流式读 + 当场 shard</strong>：safetensors.safe_open 逐个读 tensor，_shard_tensor 按规则切自己那份</li>
+  <li><strong>合并</strong>：q/k/v → qkv_proj（必须）；gate/up → gate_up_proj；MoE 再做一层 expert 堆叠</li>
+  <li><strong>yield</strong>：给 Engine 装进 model.load_state_dict</li>
+</ol>
+
+<p><strong>整个过程核心优势：</strong>CPU 峰值内存 ≈ 最大单个 tensor（几百 MB），而不是全模型大小（几十到一百多 GB）。即使在小内存机器上也能加载超大模型。</p>
+</div>
+
+<div class="foot">
+<a href="index.html" style="color:var(--brand2)">← 回到学习手册首页</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

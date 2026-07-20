@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>内存层次与 HBM · 第一章 04/08</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218;}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}.grid{display:grid;gap:16px}.cols-2{grid-template-columns:1fr 1fr}.cols-3{grid-template-columns:repeat(3,1fr)}@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13px}th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mute);font-weight:500;background:#151a25}.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}.nav{display:flex;justify-content:space-between;margin:40px 0 0;padding-top:20px;border-top:1px solid var(--line);font-size:13px}.nav a{color:var(--brand2);text-decoration:none}.nav a:hover{color:var(--brand)}.num-big{font-size:22px;color:var(--brand);font-family:"SF Mono",monospace;font-weight:600}.chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);color:var(--brand2);padding:2px 8px;border-radius:6px;font-size:11.5px;font-family:"SF Mono",monospace;margin:2px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>内存层次与 HBM · GPU 真正的“地形图” <span class="tag">第一章 · 04/08</span></h1>
+<div class="sub">LLM 推理不是“算力不够”，大多数时候是“数据搬不过来”。本篇把 Register、Shared Memory、L1、L2、HBM、NVLink 的容量/延迟/带宽放在一张地图上，解释为什么 decode memory-bound、为什么 FlashAttention 要把数据困在片上、为什么 KV Cache 是服务系统的第一等公民。</div>
+
+<div class="toc">
+  <a href="#map">§1 内存金字塔</a>
+  <a href="#numbers">§2 数字直觉</a>
+  <a href="#coalescing">§3 Coalescing</a>
+  <a href="#hbm">§4 HBM 内部结构</a>
+  <a href="#l2">§5 L2/L1/SMEM</a>
+  <a href="#kv">§6 KV Cache 视角</a>
+  <a href="#opt">§7 优化套路</a>
+  <a href="#takeaway">§8 带走的八句话</a>
+</div>
+
+<h2 id="map"><span class="step">§1</span>内存金字塔：越近越快，越近越小</h2>
+<div class="card">
+<p>GPU 上的数据搬运不是“从显存读到 ALU”这么简单。一次矩阵乘法通常经历：</p>
+<pre>HBM → L2 → L1/Shared Memory → Register → Tensor Core/CUDA Core → Register → HBM</pre>
+<p>每一级都有不同的容量、延迟、带宽、可控性。高性能 kernel 的本质就是：<b>把昂贵的 HBM 访问变成便宜的片上复用</b>。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 540" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="12">
+<defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="#1f3328"/><stop offset="1" stop-color="#1b2a3a"/></linearGradient></defs>
+<text x="480" y="28" fill="#6ee7b7" text-anchor="middle" font-size="16">GPU Memory Hierarchy · H100 量级</text>
+<g text-anchor="middle">
+  <rect x="380" y="55" width="200" height="58" rx="8" fill="#213326" stroke="#6ee7b7"/>
+  <text x="480" y="80" fill="#6ee7b7">Register</text><text x="480" y="100" fill="#cbd5e1">~256KB/SM · 1 cycle</text>
+  <rect x="320" y="135" width="320" height="64" rx="8" fill="#1e2d36" stroke="#7dd3fc"/>
+  <text x="480" y="162" fill="#7dd3fc">Shared Memory / L1</text><text x="480" y="183" fill="#cbd5e1">最高 228KB SMEM/SM · ~20-30 cycle</text>
+  <rect x="230" y="225" width="500" height="72" rx="8" fill="#262238" stroke="#a78bfa"/>
+  <text x="480" y="255" fill="#a78bfa">L2 Cache</text><text x="480" y="278" fill="#cbd5e1">50MB(H100) / 192MB(B200) · ~100-200 cycle</text>
+  <rect x="120" y="330" width="720" height="82" rx="8" fill="#39252b" stroke="#fb7185"/>
+  <text x="480" y="363" fill="#fb7185">HBM</text><text x="480" y="388" fill="#cbd5e1">80GB HBM3 · 3.35TB/s · ~400-800 cycle</text>
+  <rect x="60" y="455" width="840" height="54" rx="8" fill="#352b18" stroke="#fbbf24"/>
+  <text x="480" y="478" fill="#fbbf24">Remote GPU Memory</text><text x="480" y="498" fill="#cbd5e1">NVLink/NVSwitch · 900GB/s(H100) · μs 级系统延迟</text>
+</g>
+<g fill="#8b93a7" font-size="11">
+  <text x="690" y="88">由编译器/寄存器分配决定</text>
+  <text x="720" y="168">程序员显式管理：__shared__ / TMA</text>
+  <text x="760" y="262">硬件 cache，跨 SM 共享</text>
+  <text x="850" y="374">真正昂贵：容量大但离算力远</text>
+</g>
+</svg>
+</div>
+
+<div class="callout warn"><b>关键直觉</b>：HBM 带宽看起来很大（TB/s），但 Tensor Core 算得更大（PFLOPS）。H100 FP8 峰值约 1979 TFLOPS，而 HBM 只有 3.35 TB/s。要喂满算力，每 1 Byte 从 HBM 读入后必须被复用几百次。复用不够，就 memory-bound。</div>
+</div>
+
+<h2 id="numbers"><span class="step">§2</span>数字直觉：容量、延迟、带宽一张表</h2>
+<div class="card">
+<table>
+<thead><tr><th>层级</th><th>典型容量</th><th>典型延迟</th><th>典型带宽/吞吐</th><th>谁控制</th><th>LLM 推理中的角色</th></tr></thead>
+<tbody>
+<tr><td>Register</td><td>64K 32-bit reg/SM（≈256KB）</td><td>1 cycle</td><td>每周期多端口读写</td><td>编译器 + occupancy</td><td>accumulator、online softmax 的 max/sum、指针/索引</td></tr>
+<tr><td>Shared Memory</td><td>H100 最高 228KB/SM</td><td>~20-30 cycle</td><td>~十几 TB/s 片上</td><td>程序员显式</td><td>tile 暂存、Q/K/V block、reduce scratchpad</td></tr>
+<tr><td>L1 Cache</td><td>与 SMEM 共享池</td><td>~30 cycle</td><td>片上高带宽</td><td>硬件 + cache hint</td><td>局部 load、只读数据缓存</td></tr>
+<tr><td>L2 Cache</td><td>A100 40MB / H100 50MB / B200 192MB</td><td>~100-200 cycle</td><td>多 TB/s 级片上 NoC</td><td>硬件</td><td>跨 SM 复用、KV hot page、权重 tile 二次命中</td></tr>
+<tr><td>HBM</td><td>H100 80GB HBM3 / H200 141GB HBM3e / B200 192GB HBM3e</td><td>~400-800 cycle</td><td>H100 3.35TB/s，H200 4.8TB/s，B200 8TB/s</td><td>内存控制器</td><td>权重、KV Cache、activation 主存</td></tr>
+<tr><td>Remote HBM</td><td>多卡总显存</td><td>ns-μs 级</td><td>NVLink 900GB/s(H100) / 1.8TB/s(B200)</td><td>NCCL/NVLink</td><td>TP all-reduce、跨 GPU KV/权重访问</td></tr>
+</tbody>
+</table>
+
+<h3>把差距换成人话</h3>
+<pre>如果 Register 访问 = 从桌上拿笔（1 秒）
+Shared Memory      = 去旁边柜子拿（20 秒）
+L2                 = 下楼去仓库（2-3 分钟）
+HBM                = 开车去外地取货（10 分钟）
+Remote HBM         = 跨城调货（更慢，还要排队）</pre>
+<p>所以所有高性能 GPU kernel 都在做同一件事：<b>一次从远处取货，尽量在桌上/柜子里重复使用。</b></p>
+</div>
+
+<h2 id="coalescing"><span class="step">§3</span>Coalescing：32 个线程要像“一排人一起取货”</h2>
+<div class="card">
+<p>HBM 不是按单个 thread 访问的。warp 的 32 个 lane 发出的地址会被硬件合并成 32B/64B/128B transaction。理想情况：</p>
+<pre>lane0 读 A[0]
+lane1 读 A[1]
+...
+lane31 读 A[31]
+→ 32 × 4B = 128B，正好一个连续事务</pre>
+
+<div class="grid cols-2">
+<div>
+<h3>理想：连续 128B</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 480 170" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="10">
+<text x="20" y="25" fill="#6ee7b7">coalesced: 1 transaction</text>
+<g>
+  <rect x="20" y="50" width="400" height="38" fill="#1f3328" stroke="#6ee7b7" rx="4"/>
+  <text x="220" y="74" fill="#6ee7b7" text-anchor="middle">128B contiguous cache line</text>
+</g>
+<g fill="#7dd3fc">
+  <text x="20" y="122">lane0</text><text x="84" y="122">lane1</text><text x="148" y="122">...</text><text x="340" y="122">lane31</text>
+</g>
+<g stroke="#7dd3fc"><line x1="36" y1="112" x2="36" y2="88"/><line x1="100" y1="112" x2="48" y2="88"/><line x1="360" y1="112" x2="408" y2="88"/></g>
+</svg>
+</div>
+</div>
+<div>
+<h3>糟糕：stride / random</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 480 170" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="10">
+<text x="20" y="25" fill="#f87171">uncoalesced: many transactions</text>
+<g fill="#39252b" stroke="#f87171">
+  <rect x="20" y="50" width="50" height="34" rx="4"/><rect x="120" y="50" width="50" height="34" rx="4"/><rect x="250" y="50" width="50" height="34" rx="4"/><rect x="380" y="50" width="50" height="34" rx="4"/>
+</g>
+<g fill="#f87171"><text x="45" y="72" text-anchor="middle">A[0]</text><text x="145" y="72" text-anchor="middle">A[64]</text><text x="275" y="72" text-anchor="middle">A[5]</text><text x="405" y="72" text-anchor="middle">A[999]</text></g>
+<text x="20" y="122" fill="#8b93a7">同一 warp 的地址散落：每个 cache line 都要单独取</text>
+<text x="20" y="145" fill="#f87171">有效带宽可能跌到峰值的 1/10 以下</text>
+</svg>
+</div>
+</div>
+</div>
+
+<h3>LLM 里的典型 coalescing 问题</h3>
+<ul class="tight">
+<li><b>权重矩阵布局</b>：GEMM kernel 要保证连续 lane 读连续 K 维或 N 维，避免 transpose 后 stride 访问。</li>
+<li><b>KV Cache layout</b>：paged attention 中 page/block 的内部布局会直接影响 K/V load 是否连续。</li>
+<li><b>GQA/MQA</b>：多个 query head 共享 KV head，读 K/V 时更容易出现复用，但也要小心 head 维度 stride。</li>
+<li><b>Sampling logits</b>：vocab 维通常连续，适合 warp/block 分片 reduce；如果按 batch major 错排，会让每个 batch 的 top-k 访问碎裂。</li>
+</ul>
+</div>
+
+<h2 id="hbm"><span class="step">§4</span>HBM：不是“一条大内存”，而是很多 bank/channel 并行</h2>
+<div class="card">
+<p>HBM（High Bandwidth Memory）通过 2.5D 封装放在 GPU die 旁边：多层 DRAM die 垂直堆叠，通过 TSV 连接到底部 logic die，再通过硅中介层（interposer）连到 GPU。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 920 370" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="12">
+<text x="460" y="28" fill="#6ee7b7" text-anchor="middle" font-size="16">HBM stack + GPU die · 2.5D 封装</text>
+<rect x="250" y="250" width="420" height="48" fill="#263445" stroke="#7dd3fc" rx="6"/>
+<text x="460" y="280" fill="#7dd3fc" text-anchor="middle">Silicon Interposer · 超宽并行布线</text>
+<rect x="360" y="80" width="200" height="145" fill="#0f1218" stroke="#6ee7b7" rx="8"/>
+<text x="460" y="155" fill="#6ee7b7" text-anchor="middle">GPU die</text>
+<text x="460" y="176" fill="#8b93a7" text-anchor="middle">SM + L2 + Memory Controller</text>
+<g transform="translate(90,70)">
+  <rect x="0" y="0" width="120" height="25" fill="#3a2a4d" stroke="#a78bfa"/><rect x="0" y="28" width="120" height="25" fill="#3a2a4d" stroke="#a78bfa"/><rect x="0" y="56" width="120" height="25" fill="#3a2a4d" stroke="#a78bfa"/><rect x="0" y="84" width="120" height="25" fill="#3a2a4d" stroke="#a78bfa"/><rect x="0" y="112" width="120" height="25" fill="#3a2a4d" stroke="#a78bfa"/>
+  <text x="60" y="-12" fill="#a78bfa" text-anchor="middle">HBM Stack</text><text x="60" y="155" fill="#8b93a7" text-anchor="middle">多层 DRAM die</text>
+</g>
+<g transform="translate(710,70)">
+  <rect x="0" y="0" width="120" height="25" fill="#3a2a4d" stroke="#a78bfa"/><rect x="0" y="28" width="120" height="25" fill="#3a2a4d" stroke="#a78bfa"/><rect x="0" y="56" width="120" height="25" fill="#3a2a4d" stroke="#a78bfa"/><rect x="0" y="84" width="120" height="25" fill="#3a2a4d" stroke="#a78bfa"/><rect x="0" y="112" width="120" height="25" fill="#3a2a4d" stroke="#a78bfa"/>
+  <text x="60" y="-12" fill="#a78bfa" text-anchor="middle">HBM Stack</text><text x="60" y="155" fill="#8b93a7" text-anchor="middle">很多 channel/bank</text>
+</g>
+<g stroke="#fbbf24" stroke-width="2" stroke-dasharray="5 4"><path d="M210 195 C290 240 340 250 370 250"/><path d="M710 195 C630 240 580 250 550 250"/></g>
+<text x="460" y="335" fill="#fbbf24" text-anchor="middle">带宽来自“极宽总线 × 多 stack × 多 channel 并行”，不是单条线跑得特别快</text>
+</svg>
+</div>
+
+<h3>为什么 HBM 适合 GPU</h3>
+<ul class="tight">
+<li><b>宽</b>：HBM 的 I/O 位宽远大于 GDDR，单次能搬更多 bit。</li>
+<li><b>近</b>：和 GPU die 同封装，线路短，能耗低。</li>
+<li><b>并行</b>：多 stack、多 channel、多 bank 可以同时服务很多 SM 的请求。</li>
+</ul>
+<div class="callout bad"><b>但 HBM 仍然很慢</b>：它的延迟仍是几百 cycle。HBM 的强项是吞吐，不是单次访问延迟。所以 GPU 不能像 CPU 一样等一次 load 返回；它必须靠大量 warp、异步拷贝、tile 复用把延迟藏起来。</div>
+</div>
+
+<h2 id="l2"><span class="step">§5</span>L2 / L1 / Shared Memory：片上才是真战场</h2>
+<div class="card">
+<h3>L2：全 GPU 共享的“中转仓”</h3>
+<p>L2 cache 连接所有 SM、HBM memory controller、NVLink copy engine。它是跨 SM 数据复用的唯一大容量片上缓存。</p>
+<ul class="tight">
+<li>H100 L2 约 50MB；B200 增到约 192MB，意义巨大：更多 KV hot page、权重 tile、activation 能在片上停留。</li>
+<li>L2 命中能把几百 cycle 的 HBM load 降到 ~100-200 cycle，且省掉 HBM 带宽。</li>
+<li>多 CTA 访问同一权重 tile 时，L2 命中率决定 GEMV/decode 的有效带宽。</li>
+</ul>
+
+<h3>Shared Memory：程序员可控的 L1</h3>
+<p>Shared Memory 是每个 SM 内的一块 SRAM，生命周期属于 thread block/cluster。它最大的价值是：<b>你知道它里面有什么、什么时候被覆盖、如何被复用</b>。</p>
+<pre>extern __shared__ half smem[];
+// 典型 tile 流程：
+// 1. 从 HBM/L2 把 A_tile/B_tile 搬到 smem
+// 2. __syncthreads()
+// 3. 多个 warp 从 smem 反复读，喂 Tensor Core
+// 4. 下一 tile 覆盖 smem</pre>
+
+<h3>Bank conflict：SMEM 也会堵车</h3>
+<p>Shared Memory 被切成多个 bank。若一个 warp 多个 lane 同时访问同一 bank 的不同地址，硬件要串行服务，形成 bank conflict。</p>
+<table>
+<thead><tr><th>访问形态</th><th>结果</th><th>常见修复</th></tr></thead>
+<tbody>
+<tr><td><code>smem[lane]</code></td><td>32 lane 分布到 32 bank，理想</td><td>无需处理</td></tr>
+<tr><td><code>smem[lane * 32]</code></td><td>全落同一 bank，32-way conflict</td><td>padding：<code>stride = 33</code></td></tr>
+<tr><td>矩阵转置读写</td><td>列访问常冲突</td><td>swizzle layout / XOR mapping</td></tr>
+<tr><td>wgmma matrix tile</td><td>对齐/布局错误会严重降速</td><td>使用 CUTLASS/CuTe layout 原语</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="kv"><span class="step">§6</span>从 KV Cache 看内存层次：decode 为什么卡在 HBM</h2>
+<div class="card">
+<p>LLM decode 每生成一个 token，需要读历史所有 token 的 K/V。对于 batch 内每个请求：</p>
+<pre>Q: 当前 token，一小块，通常在 register/smem 内
+K/V: 历史上下文，长度 = context_len，放在 HBM 的 KV Cache
+Attention: scores = Q · K^T，然后 weighted sum V</pre>
+
+<h3>一个具体算例</h3>
+<pre>模型: 32 层，GQA: num_kv_heads=8，head_dim=128，dtype=FP16
+每 token KV = 2(K,V) × 32层 × 8 heads × 128 × 2B
+             = 131,072 B = 128 KB/token
+
+若上下文 8K tokens：
+单请求 KV = 8192 × 128KB = 1GB
+每 decode 一步至少要扫描相当一部分历史 K/V
+→ 这不是算力问题，是“每步都要从 HBM 翻旧账”</pre>
+
+<div class="callout warn"><b>Paged Attention 的意义</b>：它不让 KV Cache 必须连续分配，而是按 page/block 管理。但 page table 只解决“显存碎片与调度复用”，不消灭读 K/V 的 HBM 流量。因此 paged attention 仍需要 layout、coalescing、block sparse、prefix cache、spec decode 等手段继续降流量。</div>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 940 310" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="470" y="26" fill="#6ee7b7" text-anchor="middle" font-size="15">Decode step 的数据流：小 Q 拉动大 KV</text>
+<rect x="70" y="70" width="130" height="55" rx="8" fill="#1f3328" stroke="#6ee7b7"/>
+<text x="135" y="94" fill="#6ee7b7" text-anchor="middle">Q 当前 token</text><text x="135" y="114" fill="#cbd5e1" text-anchor="middle">register/smem</text>
+<rect x="330" y="55" width="250" height="85" rx="8" fill="#39252b" stroke="#fb7185"/>
+<text x="455" y="88" fill="#fb7185" text-anchor="middle">K Cache 历史 tokens</text><text x="455" y="112" fill="#cbd5e1" text-anchor="middle">HBM pages · 大量读取</text>
+<rect x="330" y="180" width="250" height="85" rx="8" fill="#39252b" stroke="#fb7185"/>
+<text x="455" y="213" fill="#fb7185" text-anchor="middle">V Cache 历史 tokens</text><text x="455" y="237" fill="#cbd5e1" text-anchor="middle">HBM pages · 大量读取</text>
+<rect x="710" y="100" width="150" height="90" rx="8" fill="#1e2d36" stroke="#7dd3fc"/>
+<text x="785" y="132" fill="#7dd3fc" text-anchor="middle">Attention</text><text x="785" y="154" fill="#cbd5e1" text-anchor="middle">online softmax</text><text x="785" y="176" fill="#cbd5e1" text-anchor="middle">输出 token</text>
+<g stroke="#fbbf24" stroke-width="2" marker-end="url(#m)"><defs><marker id="m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#fbbf24"/></marker></defs><path d="M200 98 C260 95 280 92 330 92"/><path d="M580 98 C650 100 670 120 710 135"/><path d="M580 220 C650 215 670 175 710 155"/></g>
+<text x="80" y="260" fill="#8b93a7">Q 很小，可留在片上</text><text x="320" y="290" fill="#f87171">K/V 很大，每步读历史 → decode memory-bound</text>
+</svg>
+</div>
+</div>
+
+<h2 id="opt"><span class="step">§7</span>优化套路：减少 HBM 字节、提高片上复用、隐藏延迟</h2>
+<div class="card">
+<table>
+<thead><tr><th>套路</th><th>核心动作</th><th>典型技术</th><th>解决什么瓶颈</th></tr></thead>
+<tbody>
+<tr><td>减少读的字节数</td><td>让每步从 HBM 读更少</td><td>GQA/MQA、KV quant、sliding window、spec decode、prefix cache</td><td>decode HBM bandwidth</td></tr>
+<tr><td>增加复用次数</td><td>一个 tile 读入后被多次使用</td><td>tiling、FlashAttention、persistent kernel</td><td>GEMM/attention 算术强度</td></tr>
+<tr><td>让访问连续</td><td>warp lane 读连续地址</td><td>layout 设计、vectorized load、page 内连续 head_dim</td><td>有效带宽</td></tr>
+<tr><td>显式片上缓存</td><td>把热数据放 SMEM/register</td><td>cp.async、TMA、double buffer</td><td>HBM/L2 latency</td></tr>
+<tr><td>异步化</td><td>搬运和计算重叠</td><td>cp.async pipeline、wgmma async、CUDA Graph</td><td>stall 和 launch overhead</td></tr>
+<tr><td>跨卡就近</td><td>避免远程 HBM</td><td>TP shard、all-reduce、NVLink-aware placement</td><td>multi-GPU communication</td></tr>
+</tbody>
+</table>
+
+<h3>判断一个 kernel 是不是 memory-bound</h3>
+<pre>算术强度 AI = FLOPs / Bytes_from_HBM
+若 AI &lt; 峰值算力 / 峰值带宽 → memory-bound
+
+H100 FP16 Tensor Core: ~989 TFLOPS
+HBM: 3.35 TB/s
+ridge point ≈ 989 / 3.35 ≈ 295 FLOP/Byte
+
+decode GEMV 通常 AI 只有 1~10 FLOP/Byte
+→ 离 295 太远，必然 memory-bound</pre>
+</div>
+
+<h2 id="takeaway"><span class="step">§8</span>带走的八句话</h2>
+<div class="card">
+<div class="callout">
+<ol>
+<li><b>GPU 内存层次是性能地图</b>：Register/SMEM 是片上，HBM 是片外；片外访问再宽也慢。</li>
+<li><b>HBM 强在吞吐，不强在延迟</b>：几百 cycle 延迟必须靠多 warp、异步拷贝、tile 复用隐藏。</li>
+<li><b>Tensor Core 太快，HBM 相对太慢</b>：要喂满 PFLOPS，1 Byte 必须复用数百次。</li>
+<li><b>Coalescing 是基础税</b>：warp 内连续 128B 是理想，random/stride 访问会把有效带宽打穿。</li>
+<li><b>Shared Memory 是程序员可控缓存</b>：快，但要处理 bank conflict、容量、同步。</li>
+<li><b>L2 是跨 SM 的中转仓</b>：B200 大幅扩大 L2，正是为了提高热数据命中。</li>
+<li><b>KV Cache 是 decode 的 HBM 税</b>：上下文越长，每步翻旧账越重。</li>
+<li><b>所有推理优化最终都能归类到三件事</b>：少搬、复用、重叠。</li>
+</ol>
+</div>
+</div>
+
+<div class="nav">
+<a href="03-warp-execution.html">← 上一章：Warp 执行模型</a>
+<a href="05-tensor-core-deep.html">下一章：Tensor Core 深度 →</a>
+</div>
+<div class="foot">第一章 · GPU 硬件深度 · 04/08</div>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

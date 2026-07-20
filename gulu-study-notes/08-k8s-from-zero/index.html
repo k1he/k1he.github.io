@@ -1,0 +1,299 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>K8S 从零到一 · 大规模推理部署基础设施</title>
+<style>
+:root{
+  --bg:#0a0c10;--panel:#12151c;--ink:#e8eaf0;--mute:#7b839a;--line:#1e2330;
+  --brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--purple:#c084fc;
+  --red:#f87171;--orange:#fb923c;
+  --radius:14px;
+}
+*{box-sizing:border-box;margin:0;padding:0}
+html{scroll-behavior:smooth}
+body{background:var(--bg);color:var(--ink);font:14px/1.7 -apple-system,"PingFang SC","Noto Sans SC",sans-serif;min-height:100vh}
+
+.wrap{max-width:1100px;margin:0 auto;padding:48px 24px 80px}
+header{text-align:center;margin-bottom:48px}
+header h1{font-size:clamp(28px,5vw,42px);font-weight:700;background:linear-gradient(135deg,var(--brand),var(--brand2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+header .sub{color:var(--mute);font-size:14px;margin-top:8px;max-width:600px;margin-inline:auto}
+
+.progress-bar{background:var(--line);border-radius:99px;height:6px;margin:24px auto 0;max-width:400px;overflow:hidden}
+.progress-fill{height:100%;background:linear-gradient(90deg,var(--brand),var(--brand2));border-radius:99px;transition:width .4s ease}
+.progress-text{text-align:center;color:var(--mute);font-size:12px;margin-top:6px}
+
+.filters{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-bottom:32px}
+.filters button{background:var(--panel);border:1px solid var(--line);color:var(--mute);padding:6px 16px;border-radius:99px;font-size:12px;cursor:pointer;transition:all .15s}
+.filters button:hover,.filters button.active{border-color:var(--brand);color:var(--brand);background:#162924}
+
+.roadmap{display:flex;gap:12px;overflow-x:auto;padding:16px 0 24px;margin-bottom:32px;scrollbar-width:thin}
+.roadmap::-webkit-scrollbar{height:4px}
+.roadmap::-webkit-scrollbar-thumb{background:var(--line);border-radius:2px}
+.phase-pill{flex-shrink:0;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:12px 20px;min-width:140px;text-align:center;cursor:pointer;transition:all .15s}
+.phase-pill:hover{border-color:var(--brand);transform:translateY(-2px)}
+.phase-pill .num{font-size:11px;color:var(--brand);letter-spacing:1px;font-family:"SF Mono",monospace}
+.phase-pill .name{font-size:14px;font-weight:600;margin-top:4px}
+.phase-pill .time{font-size:11px;color:var(--mute);margin-top:2px}
+.phase-arrow{display:flex;align-items:center;color:var(--line);font-size:20px;flex-shrink:0}
+
+.section{margin-bottom:40px}
+.section-header{display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:12px;border-bottom:1px solid var(--line)}
+.section-header .icon{width:36px;height:36px;border-radius:10px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0}
+.section-header h2{font-size:18px;font-weight:600}
+.section-header .count{font-size:12px;color:var(--mute);margin-left:auto;background:var(--panel);padding:2px 10px;border-radius:99px;border:1px solid var(--line)}
+
+.cards{display:grid;gap:12px}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:var(--radius);padding:20px 24px;display:grid;grid-template-columns:auto 1fr auto;align-items:center;gap:16px;text-decoration:none;color:inherit;transition:all .15s;position:relative}
+.card:hover{border-color:var(--brand);transform:translateY(-1px);box-shadow:0 4px 20px rgba(110,231,183,.06)}
+.card.completed{opacity:.6}
+.card.completed::after{content:"";position:absolute;inset:0;border-radius:var(--radius)}
+
+.card .check{width:22px;height:22px;border-radius:6px;border:2px solid var(--line);display:flex;align-items:center;justify-content:center;cursor:pointer;transition:all .15s;flex-shrink:0}
+.card .check:hover{border-color:var(--brand)}
+.card.completed .check{background:var(--brand);border-color:var(--brand)}
+.card.completed .check::after{content:"\2713";color:var(--bg);font-size:13px;font-weight:700}
+
+.card .content{min-width:0}
+.card .title{font-size:15px;font-weight:600;margin-bottom:4px}
+.card .desc{color:var(--mute);font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+
+.card .meta{display:flex;flex-direction:column;align-items:flex-end;gap:4px;flex-shrink:0}
+.card .time-tag{font-size:11px;color:var(--mute);white-space:nowrap}
+.card .diff{display:flex;gap:2px}
+.card .diff span{width:8px;height:8px;border-radius:2px;background:var(--line)}
+.card .diff span.on{background:var(--warn)}
+
+.tags{display:flex;gap:4px;margin-top:6px;flex-wrap:wrap}
+.tags span{font-size:10.5px;padding:1px 8px;border-radius:99px;border:1px solid var(--line);color:var(--mute)}
+
+footer{text-align:center;color:var(--mute);font-size:12px;margin-top:48px;padding-top:24px;border-top:1px solid var(--line)}
+footer a{color:var(--brand);text-decoration:none}
+
+@media(max-width:640px){
+  .card{grid-template-columns:auto 1fr;gap:12px}
+  .card .meta{display:none}
+  .wrap{padding:24px 16px 60px}
+}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>K8S 从零到一</h1>
+  <div class="sub">大规模推理部署的基础设施层 · 15 篇系统学习 · 从架构原理到生产加固</div>
+  <div class="progress-bar"><div class="progress-fill" id="progressFill" style="width:0%"></div></div>
+  <div class="progress-text" id="progressText">0 / 15 已完成</div>
+</header>
+
+<!-- Roadmap -->
+<div class="roadmap">
+  <div class="phase-pill" onclick="scrollToSection('sec-1')"><div class="num">第一层</div><div class="name">核心机制</div><div class="time">~5h · 5 篇</div></div>
+  <div class="phase-arrow">→</div>
+  <div class="phase-pill" onclick="scrollToSection('sec-2')"><div class="num">第二层</div><div class="name">调度与资源</div><div class="time">~4h · 3 篇</div></div>
+  <div class="phase-arrow">→</div>
+  <div class="phase-pill" onclick="scrollToSection('sec-3')"><div class="num">第三层</div><div class="name">网络深入</div><div class="time">~4h · 3 篇</div></div>
+  <div class="phase-arrow">→</div>
+  <div class="phase-pill" onclick="scrollToSection('sec-4')"><div class="num">第四层</div><div class="name">扩展与运维</div><div class="time">~4h · 4 篇</div></div>
+</div>
+
+<!-- Filters -->
+<div class="filters">
+  <button class="active" data-filter="all">全部</button>
+  <button data-filter="todo">未完成</button>
+  <button data-filter="done">已完成</button>
+  <button data-filter="beginner">入门 ★</button>
+  <button data-filter="intermediate">进阶 ★★</button>
+  <button data-filter="advanced">高级 ★★★</button>
+</div>
+
+<!-- Section 1: Core Mechanisms -->
+<div class="section" id="sec-1">
+  <div class="section-header">
+    <div class="icon" style="background:#172033;color:var(--brand2)">1</div>
+    <h2>核心机制</h2>
+    <div class="count">5 篇 · ~5h</div>
+  </div>
+  <div class="cards">
+    <a href="01-architecture.html" class="card" data-id="k1" data-diff="2">
+      <div class="check" onclick="toggleDone(event,'k1')"></div>
+      <div class="content"><div class="title">集群架构 · 控制平面 + 数据平面</div><div class="desc">apiserver / etcd / scheduler / controller-manager / kubelet 四大件</div><div class="tags"><span>API Server</span><span>etcd</span><span>Watch</span></div></div>
+      <div class="meta"><div class="time-tag">50min</div><div class="diff"><span class="on"></span><span class="on"></span><span></span><span></span></div></div>
+    </a>
+    <a href="02-pod-lifecycle.html" class="card" data-id="k2" data-diff="2">
+      <div class="check" onclick="toggleDone(event,'k2')"></div>
+      <div class="content"><div class="title">Pod 生命周期 · 从创建到销毁</div><div class="desc">5 阶段 / initContainer / 三种探针 / 优雅下线</div><div class="tags"><span>Probe</span><span>preStop</span><span>CrashLoopBackOff</span></div></div>
+      <div class="meta"><div class="time-tag">50min</div><div class="diff"><span class="on"></span><span class="on"></span><span></span><span></span></div></div>
+    </a>
+    <a href="03-workload-controllers.html" class="card" data-id="k3" data-diff="2">
+      <div class="check" onclick="toggleDone(event,'k3')"></div>
+      <div class="content"><div class="title">工作负载控制器 · Deployment / StatefulSet / DaemonSet / Job</div><div class="desc">什么场景用什么 · 滚动更新 · 有序启停 · 决策树</div><div class="tags"><span>Deployment</span><span>StatefulSet</span><span>rollout</span></div></div>
+      <div class="meta"><div class="time-tag">60min</div><div class="diff"><span class="on"></span><span class="on"></span><span></span><span></span></div></div>
+    </a>
+    <a href="04-service-and-networking.html" class="card" data-id="k4" data-diff="2">
+      <div class="check" onclick="toggleDone(event,'k4')"></div>
+      <div class="content"><div class="title">Service 与网络基础 · 四种类型 / kube-proxy / DNS</div><div class="desc">ClusterIP / NodePort / LoadBalancer / DNS 解析链路</div><div class="tags"><span>Service</span><span>kube-proxy</span><span>CoreDNS</span></div></div>
+      <div class="meta"><div class="time-tag">60min</div><div class="diff"><span class="on"></span><span class="on"></span><span></span><span></span></div></div>
+    </a>
+    <a href="05-storage.html" class="card" data-id="k5" data-diff="2">
+      <div class="check" onclick="toggleDone(event,'k5')"></div>
+      <div class="content"><div class="title">存储 · PV / PVC / StorageClass / CSI</div><div class="desc">本地盘 vs 网络盘 · 模型权重加载方案对比</div><div class="tags"><span>PV/PVC</span><span>NVMe</span><span>GooseFS</span></div></div>
+      <div class="meta"><div class="time-tag">50min</div><div class="diff"><span class="on"></span><span class="on"></span><span></span><span></span></div></div>
+    </a>
+  </div>
+</div>
+
+<!-- Section 2: Scheduling & Resources -->
+<div class="section" id="sec-2">
+  <div class="section-header">
+    <div class="icon" style="background:#1f1a14;color:var(--orange)">2</div>
+    <h2>调度与资源</h2>
+    <div class="count">3 篇 · ~4h</div>
+  </div>
+  <div class="cards">
+    <a href="06-scheduler-deep.html" class="card" data-id="k6" data-diff="3">
+      <div class="check" onclick="toggleDone(event,'k6')"></div>
+      <div class="content"><div class="title">调度器深入 · Filter → Score → 绑定</div><div class="desc">Affinity / Taint / TopologySpread / 抢占机制</div><div class="tags"><span>Filter/Score</span><span>binpack</span><span>Preemption</span></div></div>
+      <div class="meta"><div class="time-tag">70min</div><div class="diff"><span class="on"></span><span class="on"></span><span class="on"></span><span></span></div></div>
+    </a>
+    <a href="07-resource-model.html" class="card" data-id="k7" data-diff="2">
+      <div class="check" onclick="toggleDone(event,'k7')"></div>
+      <div class="content"><div class="title">资源模型 · requests / limits / QoS / OOM</div><div class="desc">三种 QoS 等级 · OOM Kill 顺序 · LimitRange / ResourceQuota</div><div class="tags"><span>QoS</span><span>OOM</span><span>GPU 资源</span></div></div>
+      <div class="meta"><div class="time-tag">50min</div><div class="diff"><span class="on"></span><span class="on"></span><span></span><span></span></div></div>
+    </a>
+    <a href="08-gpu-device-plugin.html" class="card" data-id="k8" data-diff="3">
+      <div class="check" onclick="toggleDone(event,'k8')"></div>
+      <div class="content"><div class="title">GPU 资源管理 · Device Plugin / MIG / Time-Slicing</div><div class="desc">NVIDIA device plugin 注册流程 · MIG 切分 · 多租户共享</div><div class="tags"><span>Device Plugin</span><span>MIG</span><span>GPU Operator</span></div></div>
+      <div class="meta"><div class="time-tag">60min</div><div class="diff"><span class="on"></span><span class="on"></span><span class="on"></span><span></span></div></div>
+    </a>
+  </div>
+</div>
+
+<!-- Section 3: Networking Deep -->
+<div class="section" id="sec-3">
+  <div class="section-header">
+    <div class="icon" style="background:#1a1a2e;color:var(--purple)">3</div>
+    <h2>网络深入</h2>
+    <div class="count">3 篇 · ~4h</div>
+  </div>
+  <div class="cards">
+    <a href="09-cni-deep.html" class="card" data-id="k9" data-diff="3">
+      <div class="check" onclick="toggleDone(event,'k9')"></div>
+      <div class="content"><div class="title">容器网络深入 · CNI / veth / Overlay vs Underlay</div><div class="desc">veth pair + bridge · VXLAN vs BGP · Calico vs Cilium</div><div class="tags"><span>CNI</span><span>Overlay</span><span>Calico</span></div></div>
+      <div class="meta"><div class="time-tag">60min</div><div class="diff"><span class="on"></span><span class="on"></span><span class="on"></span><span></span></div></div>
+    </a>
+    <a href="10-ingress-and-gateway.html" class="card" data-id="k10" data-diff="2">
+      <div class="check" onclick="toggleDone(event,'k10')"></div>
+      <div class="content"><div class="title">Ingress 与 Gateway API · 七层路由</div><div class="desc">多模型路由 / TLS 终止 / 灰度发布 / 限流</div><div class="tags"><span>Ingress</span><span>Gateway API</span><span>灰度</span></div></div>
+      <div class="meta"><div class="time-tag">50min</div><div class="diff"><span class="on"></span><span class="on"></span><span></span><span></span></div></div>
+    </a>
+    <a href="11-rdma-and-hostnetwork.html" class="card" data-id="k11" data-diff="3">
+      <div class="check" onclick="toggleDone(event,'k11')"></div>
+      <div class="content"><div class="title">高性能网络 · hostNetwork / RDMA / SR-IOV</div><div class="desc">NCCL 跨节点通信 · Multus 多网卡 · LWS 网络配置</div><div class="tags"><span>RDMA</span><span>SR-IOV</span><span>NCCL</span></div></div>
+      <div class="meta"><div class="time-tag">60min</div><div class="diff"><span class="on"></span><span class="on"></span><span class="on"></span><span></span></div></div>
+    </a>
+  </div>
+</div>
+
+<!-- Section 4: Extensions & Operations -->
+<div class="section" id="sec-4">
+  <div class="section-header">
+    <div class="icon" style="background:#14251f;color:var(--brand)">4</div>
+    <h2>扩展与运维</h2>
+    <div class="count">4 篇 · ~4h</div>
+  </div>
+  <div class="cards">
+    <a href="12-hpa-vpa-karpenter.html" class="card" data-id="k12" data-diff="3">
+      <div class="check" onclick="toggleDone(event,'k12')"></div>
+      <div class="content"><div class="title">自动扩缩容 · HPA / VPA / Karpenter</div><div class="desc">自定义指标 HPA · 节点自动供给 · 弹性方案设计</div><div class="tags"><span>HPA</span><span>Karpenter</span><span>自定义指标</span></div></div>
+      <div class="meta"><div class="time-tag">60min</div><div class="diff"><span class="on"></span><span class="on"></span><span class="on"></span><span></span></div></div>
+    </a>
+    <a href="13-operator-and-crd.html" class="card" data-id="k13" data-diff="3">
+      <div class="check" onclick="toggleDone(event,'k13')"></div>
+      <div class="content"><div class="title">Operator 模式 · CRD + Controller 扩展 K8S</div><div class="desc">Reconcile 循环 · LWS 深度解读 · 多机推理编排</div><div class="tags"><span>CRD</span><span>Operator</span><span>LWS</span></div></div>
+      <div class="meta"><div class="time-tag">60min</div><div class="diff"><span class="on"></span><span class="on"></span><span class="on"></span><span></span></div></div>
+    </a>
+    <a href="14-observability.html" class="card" data-id="k14" data-diff="2">
+      <div class="check" onclick="toggleDone(event,'k14')"></div>
+      <div class="content"><div class="title">可观测性 · 监控 / 日志 / 事件排障</div><div class="desc">Prometheus + Grafana · 推理 SLI/SLO · 排障决策树</div><div class="tags"><span>Prometheus</span><span>SLI/SLO</span><span>排障</span></div></div>
+      <div class="meta"><div class="time-tag">50min</div><div class="diff"><span class="on"></span><span class="on"></span><span></span><span></span></div></div>
+    </a>
+    <a href="15-production-hardening.html" class="card" data-id="k15" data-diff="3">
+      <div class="check" onclick="toggleDone(event,'k15')"></div>
+      <div class="content"><div class="title">生产加固 · RBAC / NetworkPolicy / PDB / 安全上下文</div><div class="desc">最小权限 · 网络白名单 · 优雅下线 · 生产 Checklist</div><div class="tags"><span>RBAC</span><span>PDB</span><span>SecurityContext</span></div></div>
+      <div class="meta"><div class="time-tag">60min</div><div class="diff"><span class="on"></span><span class="on"></span><span class="on"></span><span></span></div></div>
+    </a>
+  </div>
+</div>
+
+<footer>
+  <p>K8S 从零到一 · 进度保存在浏览器 localStorage · <a href="../index.html">← 返回 Mini-SGLang 学习手册</a></p>
+</footer>
+
+</div>
+
+<script>
+const STORAGE_KEY = 'k8s-from-zero-progress';
+
+function getProgress() {
+  try { return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}; } catch { return {}; }
+}
+
+function saveProgress(p) {
+  localStorage.setItem(STORAGE_KEY, JSON.stringify(p));
+}
+
+function toggleDone(e, id) {
+  e.preventDefault();
+  e.stopPropagation();
+  const p = getProgress();
+  p[id] = !p[id];
+  saveProgress(p);
+  render();
+}
+
+function render() {
+  const p = getProgress();
+  const cards = document.querySelectorAll('.card[data-id]');
+  let done = 0, total = cards.length;
+  cards.forEach(card => {
+    const id = card.dataset.id;
+    if (p[id]) { card.classList.add('completed'); done++; }
+    else { card.classList.remove('completed'); }
+  });
+  const pct = total ? Math.round(done / total * 100) : 0;
+  document.getElementById('progressFill').style.width = pct + '%';
+  document.getElementById('progressText').textContent = `${done} / ${total} 已完成 (${pct}%)`;
+}
+
+document.querySelectorAll('.filters button').forEach(btn => {
+  btn.addEventListener('click', () => {
+    document.querySelectorAll('.filters button').forEach(b => b.classList.remove('active'));
+    btn.classList.add('active');
+    const filter = btn.dataset.filter;
+    const p = getProgress();
+    document.querySelectorAll('.card[data-id]').forEach(card => {
+      const id = card.dataset.id;
+      const diff = parseInt(card.dataset.diff);
+      let show = true;
+      if (filter === 'done') show = !!p[id];
+      else if (filter === 'todo') show = !p[id];
+      else if (filter === 'beginner') show = diff <= 1;
+      else if (filter === 'intermediate') show = diff === 2;
+      else if (filter === 'advanced') show = diff >= 3;
+      card.style.display = show ? '' : 'none';
+    });
+  });
+});
+
+function scrollToSection(id) {
+  document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+}
+
+render();
+</script>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

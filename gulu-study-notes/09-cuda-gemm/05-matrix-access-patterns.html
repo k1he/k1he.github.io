@@ -1,0 +1,1375 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C4 · 矩阵访问模式 · Coalescing 与 Tiling 基础</title>
+<style>
+:root {
+  --bg-primary: #0d1117;
+  --bg-secondary: #161b22;
+  --bg-tertiary: #21262d;
+  --bg-code: #1c2128;
+  --text-primary: #e6edf3;
+  --text-secondary: #8b949e;
+  --text-muted: #6e7681;
+  --accent-blue: #58a6ff;
+  --accent-green: #3fb950;
+  --accent-orange: #d29922;
+  --accent-red: #f85149;
+  --accent-purple: #bc8cff;
+  --accent-cyan: #39c5cf;
+  --border-color: #30363d;
+  --border-subtle: #21262d;
+  --shadow: 0 8px 24px rgba(0,0,0,0.4);
+}
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans SC', sans-serif;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+  line-height: 1.7;
+  padding: 0;
+}
+
+.container {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 3rem 2rem;
+}
+
+/* Header */
+header {
+  text-align: center;
+  margin-bottom: 4rem;
+  padding-bottom: 2rem;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.tag {
+  display: inline-block;
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-purple));
+  color: #fff;
+  font-size: 0.75rem;
+  font-weight: 600;
+  padding: 0.3rem 0.8rem;
+  border-radius: 12px;
+  letter-spacing: 0.5px;
+  margin-bottom: 1rem;
+}
+
+h1 {
+  font-size: 2.2rem;
+  font-weight: 700;
+  margin-bottom: 1rem;
+  background: linear-gradient(135deg, var(--accent-blue), var(--accent-cyan));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.subtitle {
+  font-size: 1rem;
+  color: var(--text-secondary);
+  max-width: 700px;
+  margin: 0 auto;
+  line-height: 1.8;
+}
+
+/* Sections */
+section {
+  margin-bottom: 3.5rem;
+}
+
+h2 {
+  font-size: 1.4rem;
+  font-weight: 600;
+  color: var(--accent-blue);
+  margin-bottom: 1.2rem;
+  padding-bottom: 0.5rem;
+  border-bottom: 1px solid var(--border-subtle);
+}
+
+h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  color: var(--accent-cyan);
+  margin: 1.5rem 0 0.8rem;
+}
+
+p {
+  margin-bottom: 1rem;
+  color: var(--text-primary);
+}
+
+.highlight {
+  background: rgba(88, 166, 255, 0.1);
+  border-left: 3px solid var(--accent-blue);
+  padding: 1rem 1.2rem;
+  border-radius: 0 8px 8px 0;
+  margin: 1.2rem 0;
+}
+
+.highlight p {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.warning {
+  background: rgba(248, 81, 73, 0.1);
+  border-left: 3px solid var(--accent-red);
+  padding: 1rem 1.2rem;
+  border-radius: 0 8px 8px 0;
+  margin: 1.2rem 0;
+}
+
+.warning p {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+.insight {
+  background: rgba(63, 185, 80, 0.1);
+  border-left: 3px solid var(--accent-green);
+  padding: 1rem 1.2rem;
+  border-radius: 0 8px 8px 0;
+  margin: 1.2rem 0;
+}
+
+.insight p {
+  margin: 0;
+  color: var(--text-primary);
+}
+
+/* Code blocks */
+pre {
+  background: var(--bg-code);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 1.2rem 1.5rem;
+  overflow-x: auto;
+  margin: 1rem 0 1.5rem;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+code {
+  font-family: 'JetBrains Mono', 'Fira Code', 'SF Mono', monospace;
+  font-size: 0.85rem;
+}
+
+p code, li code, td code {
+  background: var(--bg-tertiary);
+  padding: 0.15rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.82rem;
+  color: var(--accent-orange);
+}
+
+.comment { color: var(--text-muted); }
+.keyword { color: var(--accent-purple); }
+.type { color: var(--accent-cyan); }
+.string { color: var(--accent-green); }
+.number { color: var(--accent-orange); }
+.func { color: var(--accent-blue); }
+
+/* SVG diagrams */
+.diagram-container {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 1.5rem;
+  margin: 1.5rem 0;
+  text-align: center;
+  overflow-x: auto;
+}
+
+.diagram-container svg {
+  max-width: 100%;
+  height: auto;
+}
+
+/* Tables */
+table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1.2rem 0;
+  font-size: 0.9rem;
+}
+
+th {
+  background: var(--bg-tertiary);
+  color: var(--accent-blue);
+  font-weight: 600;
+  padding: 0.8rem 1rem;
+  text-align: left;
+  border-bottom: 2px solid var(--border-color);
+}
+
+td {
+  padding: 0.7rem 1rem;
+  border-bottom: 1px solid var(--border-subtle);
+  color: var(--text-primary);
+}
+
+tr:hover td {
+  background: rgba(88, 166, 255, 0.03);
+}
+
+/* Lists */
+ul, ol {
+  margin: 0.8rem 0 1.2rem 1.5rem;
+  color: var(--text-primary);
+}
+
+li {
+  margin-bottom: 0.4rem;
+}
+
+/* Performance stats */
+.perf-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1rem;
+  margin: 1.2rem 0;
+}
+
+.perf-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 8px;
+  padding: 1.2rem;
+  text-align: center;
+}
+
+.perf-card .value {
+  font-size: 1.8rem;
+  font-weight: 700;
+  margin-bottom: 0.3rem;
+}
+
+.perf-card .label {
+  font-size: 0.85rem;
+  color: var(--text-secondary);
+}
+
+.perf-card.good { border-color: var(--accent-green); }
+.perf-card.bad { border-color: var(--accent-red); }
+.perf-card.good .value { color: var(--accent-green); }
+.perf-card.bad .value { color: var(--accent-red); }
+
+/* Takeaway */
+.takeaway {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 1.5rem 2rem;
+  margin: 2rem 0;
+}
+
+.takeaway h2 {
+  border-bottom: none;
+  padding-bottom: 0;
+  margin-bottom: 1rem;
+}
+
+.takeaway ol {
+  margin-left: 1.2rem;
+}
+
+.takeaway li {
+  margin-bottom: 0.6rem;
+  line-height: 1.6;
+}
+
+/* Footer */
+footer {
+  text-align: center;
+  padding-top: 2rem;
+  border-top: 1px solid var(--border-color);
+  color: var(--text-muted);
+  font-size: 0.85rem;
+}
+
+/* Responsive */
+@media (max-width: 640px) {
+  .container { padding: 1.5rem 1rem; }
+  h1 { font-size: 1.6rem; }
+  .perf-grid { grid-template-columns: 1fr; }
+  pre { font-size: 0.78rem; padding: 1rem; }
+}
+</style>
+</head>
+<body>
+<div class="container">
+
+<header>
+  <div class="tag">CUDA GEMM 系列 · 5/15</div>
+  <h1>C4 · 矩阵访问模式 · Coalescing 与 Tiling 基础</h1>
+  <p class="subtitle">在进入 GEMM 之前，必须理解 coalesced memory access 和 tile-based 数据加载——这两个概念决定了你的 kernel 是跑满带宽还是浪费 90% 的 HBM。</p>
+</header>
+
+<!-- §1 Coalesced Access 深入 -->
+<section>
+<h2>§1 Coalesced Access 深入</h2>
+
+<p><strong>回顾：</strong>同一 warp 的 32 个 threads 如果访问 128 bytes 连续内存 → 1 次事务（transaction）。</p>
+
+<h3>Case Study：矩阵行访问 vs 列访问</h3>
+
+<pre><code><span class="comment">// 矩阵 A[M][N], row-major, 存储为 A[row*N + col]</span>
+
+<span class="comment">// Case 1: 行方向访问 (coalesced ✓)</span>
+<span class="comment">// warp 中的 threads: col = 0,1,2,...,31 (同一行不同列)</span>
+<span class="type">float</span> val = A[row * N + threadIdx.x];
+<span class="comment">// 地址: row*N+0, row*N+1, ..., row*N+31 → 连续! 1 transaction</span>
+
+<span class="comment">// Case 2: 列方向访问 (strided ✗)</span>
+<span class="comment">// warp 中的 threads: row = 0,1,2,...,31 (同一列不同行)</span>
+<span class="type">float</span> val = A[threadIdx.x * N + col];
+<span class="comment">// 地址: 0*N+col, 1*N+col, ..., 31*N+col → 间隔 N! 32 transactions</span></code></pre>
+
+<!-- SVG: Coalesced vs Strided -->
+<div class="diagram-container">
+<svg viewBox="0 0 800 440" xmlns="http://www.w3.org/2000/svg">
+  <!-- Title -->
+  <text x="400" y="25" text-anchor="middle" fill="#e6edf3" font-size="14" font-weight="600">Row-Major 矩阵内存布局 — Coalesced vs Strided 访问</text>
+
+  <!-- === CASE 1: COALESCED === -->
+  <text x="50" y="60" fill="#3fb950" font-size="12" font-weight="600">Case 1: 行方向访问 (Coalesced ✓)</text>
+  <text x="50" y="78" fill="#8b949e" font-size="10">同一 warp 的 32 threads 读同一行的连续列</text>
+
+  <!-- Memory row visualization -->
+  <g transform="translate(50, 90)">
+    <text x="-5" y="17" text-anchor="end" fill="#6e7681" font-size="9">row r:</text>
+    <!-- Cells accessed by T0..T7 (representative) -->
+    <rect x="0" y="0" width="28" height="28" rx="3" fill="#1f4a2e" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="14" y="18" text-anchor="middle" fill="#3fb950" font-size="8" font-weight="600">T0</text>
+    <rect x="30" y="0" width="28" height="28" rx="3" fill="#1f4a2e" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="44" y="18" text-anchor="middle" fill="#3fb950" font-size="8" font-weight="600">T1</text>
+    <rect x="60" y="0" width="28" height="28" rx="3" fill="#1f4a2e" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="74" y="18" text-anchor="middle" fill="#3fb950" font-size="8" font-weight="600">T2</text>
+    <rect x="90" y="0" width="28" height="28" rx="3" fill="#1f4a2e" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="104" y="18" text-anchor="middle" fill="#3fb950" font-size="8" font-weight="600">T3</text>
+    <rect x="120" y="0" width="28" height="28" rx="3" fill="#1f4a2e" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="134" y="18" text-anchor="middle" fill="#3fb950" font-size="8" font-weight="600">T4</text>
+    <rect x="150" y="0" width="28" height="28" rx="3" fill="#1f4a2e" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="164" y="18" text-anchor="middle" fill="#3fb950" font-size="8" font-weight="600">T5</text>
+    <rect x="180" y="0" width="28" height="28" rx="3" fill="#1f4a2e" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="194" y="18" text-anchor="middle" fill="#3fb950" font-size="8" font-weight="600">T6</text>
+    <rect x="210" y="0" width="28" height="28" rx="3" fill="#1f4a2e" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="224" y="18" text-anchor="middle" fill="#3fb950" font-size="8" font-weight="600">T7</text>
+    <text x="248" y="18" fill="#3fb950" font-size="11">···</text>
+    <rect x="270" y="0" width="32" height="28" rx="3" fill="#1f4a2e" stroke="#3fb950" stroke-width="1.5"/>
+    <text x="286" y="18" text-anchor="middle" fill="#3fb950" font-size="8" font-weight="600">T31</text>
+
+    <!-- Bracket underneath -->
+    <path d="M 0 34 L 0 38 L 150 38 M 150 38 L 302 38 L 302 34" stroke="#3fb950" stroke-width="1" fill="none"/>
+    <line x1="150" y1="38" x2="150" y2="42" stroke="#3fb950" stroke-width="1"/>
+    <text x="150" y="54" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="600">128 bytes 连续 → 1 次内存事务</text>
+  </g>
+
+  <!-- Right side: address formula -->
+  <g transform="translate(440, 85)">
+    <rect x="0" y="0" width="310" height="65" rx="6" fill="#161b22" stroke="#3fb950" stroke-width="1"/>
+    <text x="15" y="20" fill="#3fb950" font-size="10" font-weight="600">地址计算:</text>
+    <text x="15" y="38" fill="#8b949e" font-size="9" font-family="monospace">T0: A[r*N + 0]  = base + 0</text>
+    <text x="15" y="52" fill="#8b949e" font-size="9" font-family="monospace">T1: A[r*N + 1]  = base + 4 bytes</text>
+    <text x="160" y="38" fill="#8b949e" font-size="9" font-family="monospace">...</text>
+    <text x="160" y="52" fill="#8b949e" font-size="9" font-family="monospace">T31: base + 124 bytes</text>
+  </g>
+
+  <!-- Separator -->
+  <line x1="50" y1="175" x2="750" y2="175" stroke="#30363d" stroke-width="1"/>
+
+  <!-- === CASE 2: STRIDED === -->
+  <text x="50" y="200" fill="#f85149" font-size="12" font-weight="600">Case 2: 列方向访问 (Strided ✗)</text>
+  <text x="50" y="218" fill="#8b949e" font-size="10">同一 warp 的 32 threads 读不同行的同一列</text>
+
+  <!-- Matrix grid showing column access -->
+  <g transform="translate(50, 230)">
+    <!-- Column headers -->
+    <text x="30" y="-5" fill="#6e7681" font-size="8">col 0</text>
+    <text x="60" y="-5" fill="#6e7681" font-size="8">col 1</text>
+    <text x="90" y="-5" fill="#f85149" font-size="8" font-weight="600">col c</text>
+    <text x="120" y="-5" fill="#6e7681" font-size="8">col 3</text>
+    <text x="150" y="-5" fill="#6e7681" font-size="8">···</text>
+
+    <!-- Row 0 -->
+    <text x="-5" y="17" text-anchor="end" fill="#6e7681" font-size="8">row 0:</text>
+    <rect x="0" y="2" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+    <rect x="30" y="2" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+    <rect x="60" y="2" width="25" height="22" rx="2" fill="#4a1f1f" stroke="#f85149" stroke-width="1.5"/>
+    <text x="72" y="17" text-anchor="middle" fill="#f85149" font-size="7" font-weight="600">T0</text>
+    <rect x="90" y="2" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+    <rect x="120" y="2" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+
+    <!-- Row 1 -->
+    <text x="-5" y="42" text-anchor="end" fill="#6e7681" font-size="8">row 1:</text>
+    <rect x="0" y="27" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+    <rect x="30" y="27" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+    <rect x="60" y="27" width="25" height="22" rx="2" fill="#4a1f1f" stroke="#f85149" stroke-width="1.5"/>
+    <text x="72" y="42" text-anchor="middle" fill="#f85149" font-size="7" font-weight="600">T1</text>
+    <rect x="90" y="27" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+    <rect x="120" y="27" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+
+    <!-- Row 2 -->
+    <text x="-5" y="67" text-anchor="end" fill="#6e7681" font-size="8">row 2:</text>
+    <rect x="0" y="52" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+    <rect x="30" y="52" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+    <rect x="60" y="52" width="25" height="22" rx="2" fill="#4a1f1f" stroke="#f85149" stroke-width="1.5"/>
+    <text x="72" y="67" text-anchor="middle" fill="#f85149" font-size="7" font-weight="600">T2</text>
+    <rect x="90" y="52" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+    <rect x="120" y="52" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+
+    <!-- Row 3 -->
+    <text x="-5" y="92" text-anchor="end" fill="#6e7681" font-size="8">row 3:</text>
+    <rect x="0" y="77" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+    <rect x="30" y="77" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+    <rect x="60" y="77" width="25" height="22" rx="2" fill="#4a1f1f" stroke="#f85149" stroke-width="1.5"/>
+    <text x="72" y="92" text-anchor="middle" fill="#f85149" font-size="7" font-weight="600">T3</text>
+    <rect x="90" y="77" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+    <rect x="120" y="77" width="25" height="22" rx="2" fill="#21262d" stroke="#30363d"/>
+
+    <!-- Dots -->
+    <text x="72" y="112" text-anchor="middle" fill="#f85149" font-size="10">⋮</text>
+
+    <!-- Stride annotation -->
+    <path d="M 90 12 C 105 12, 105 37, 90 37" stroke="#f85149" stroke-width="1" fill="none" stroke-dasharray="3,2"/>
+    <text x="112" y="28" fill="#f85149" font-size="8">stride = N</text>
+  </g>
+
+  <!-- Right side: strided address info -->
+  <g transform="translate(440, 230)">
+    <rect x="0" y="0" width="310" height="120" rx="6" fill="#161b22" stroke="#f85149" stroke-width="1"/>
+    <text x="15" y="20" fill="#f85149" font-size="10" font-weight="600">地址计算:</text>
+    <text x="15" y="38" fill="#8b949e" font-size="9" font-family="monospace">T0: A[0*N + c] = base + 0</text>
+    <text x="15" y="53" fill="#8b949e" font-size="9" font-family="monospace">T1: A[1*N + c] = base + N*4 bytes</text>
+    <text x="15" y="68" fill="#8b949e" font-size="9" font-family="monospace">T2: A[2*N + c] = base + 2N*4 bytes</text>
+    <text x="15" y="83" fill="#8b949e" font-size="9" font-family="monospace">T3: A[3*N + c] = base + 3N*4 bytes</text>
+    <text x="15" y="98" fill="#6e7681" font-size="9">...</text>
+    <text x="15" y="113" fill="#f85149" font-size="9" font-weight="600">每对相邻地址间隔 N×4 bytes → 32 次事务!</text>
+  </g>
+
+  <!-- Summary box -->
+  <rect x="50" y="375" width="700" height="55" rx="8" fill="#161b22" stroke="#30363d"/>
+  <text x="400" y="397" text-anchor="middle" fill="#3fb950" font-size="11">✓ Coalesced (行访问): 32 threads → 128B 连续 → <tspan font-weight="700">1 transaction</tspan></text>
+  <text x="400" y="418" text-anchor="middle" fill="#f85149" font-size="11">✗ Strided (列访问): 32 threads → 间隔 N×4B → <tspan font-weight="700">最多 32 transactions</tspan></text>
+
+  <!-- Arrow markers -->
+  <defs>
+    <marker id="arrowGreen" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M 0 0 L 8 3 L 0 6 Z" fill="#3fb950"/>
+    </marker>
+  </defs>
+</svg>
+</div>
+
+<h3>性能影响</h3>
+
+<div class="perf-grid">
+  <div class="perf-card good">
+    <div class="value">~2 TB/s</div>
+    <div class="label">Coalesced 有效带宽 (A100)</div>
+  </div>
+  <div class="perf-card bad">
+    <div class="value">~60 GB/s</div>
+    <div class="label">Strided (stride=N) 有效带宽</div>
+  </div>
+</div>
+
+<div class="warning">
+<p><strong>30 倍性能差距！</strong>仅仅因为访问模式不同。这就是为什么理解 coalescing 如此重要。</p>
+</div>
+</section>
+
+<!-- §2 矩阵乘法的访问模式问题 -->
+<section>
+<h2>§2 矩阵乘法的访问模式问题</h2>
+
+<pre><code><span class="comment">// C[i][j] = Σ_k A[i][k] * B[k][j]</span>
+<span class="comment">//</span>
+<span class="comment">// 对于 C 的一行 (固定 i)，不同 j:</span>
+<span class="comment">//   A[i][k]: 同一行, 对 k 循环 → 读 A 的一行 (coalesced if threads span k)</span>
+<span class="comment">//   B[k][j]: 不同行同一列 → 读 B 的一列 (NOT coalesced!)</span></code></pre>
+
+<div class="diagram-container">
+<svg viewBox="0 0 750 300" xmlns="http://www.w3.org/2000/svg">
+  <!-- Matrix A -->
+  <text x="100" y="25" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="600">矩阵 A [M×K]</text>
+  <rect x="30" y="35" width="140" height="120" rx="4" fill="none" stroke="#58a6ff" stroke-width="1.5"/>
+  <!-- Row highlight -->
+  <rect x="30" y="65" width="140" height="20" rx="2" fill="rgba(63,185,80,0.2)" stroke="#3fb950" stroke-width="1"/>
+  <text x="100" y="79" text-anchor="middle" fill="#3fb950" font-size="10">A[i][0..K-1] → 行读取 ✓</text>
+  <text x="100" y="130" text-anchor="middle" fill="#8b949e" font-size="9">row-major: 连续内存</text>
+
+  <!-- × -->
+  <text x="210" y="100" text-anchor="middle" fill="#e6edf3" font-size="20">×</text>
+
+  <!-- Matrix B -->
+  <text x="350" y="25" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="600">矩阵 B [K×N]</text>
+  <rect x="270" y="35" width="160" height="120" rx="4" fill="none" stroke="#58a6ff" stroke-width="1.5"/>
+  <!-- Column highlight -->
+  <rect x="300" y="35" width="20" height="120" rx="2" fill="rgba(248,81,73,0.2)" stroke="#f85149" stroke-width="1"/>
+  <text x="310" y="170" text-anchor="middle" fill="#f85149" font-size="10">B[0..K-1][j]</text>
+  <text x="310" y="185" text-anchor="middle" fill="#f85149" font-size="10">↑ 列读取 ✗ (strided!)</text>
+
+  <!-- = -->
+  <text x="470" y="100" text-anchor="middle" fill="#e6edf3" font-size="20">=</text>
+
+  <!-- Matrix C -->
+  <text x="600" y="25" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="600">矩阵 C [M×N]</text>
+  <rect x="520" y="35" width="160" height="120" rx="4" fill="none" stroke="#58a6ff" stroke-width="1.5"/>
+  <!-- Single element highlight -->
+  <rect x="555" y="65" width="20" height="20" rx="2" fill="rgba(188,140,255,0.3)" stroke="#bc8cff" stroke-width="1.5"/>
+  <text x="565" y="79" text-anchor="middle" fill="#bc8cff" font-size="9">C[i][j]</text>
+
+  <!-- Problem statement -->
+  <rect x="50" y="220" width="650" height="60" rx="8" fill="#161b22" stroke="#f85149" stroke-width="1"/>
+  <text x="375" y="245" text-anchor="middle" fill="#e6edf3" font-size="11" font-weight="600">Naive GEMM 的问题：每个 thread 算一个 C[i][j]</text>
+  <text x="375" y="265" text-anchor="middle" fill="#f85149" font-size="11">对 B 的 K 方向访问是 strided 的 (每次跳一行) → 性能极差!</text>
+</svg>
+</div>
+
+<div class="warning">
+<p>这就是为什么 naive GEMM（每 thread 算一个 C 元素）对 B 的访问是 strided 的——性能极差。</p>
+</div>
+</section>
+
+<!-- §3 解决方案: Tiling + Shared Memory -->
+<section>
+<h2>§3 解决方案: Tiling + Shared Memory</h2>
+
+<h3>核心思路</h3>
+<ol>
+  <li>一个 block 的所有 threads <strong>协作</strong>把 tile 从 global memory 加载到 shared memory</li>
+  <li>加载时保证 <strong>coalesced</strong></li>
+  <li>从 shared memory 读取时没有 coalescing 问题（shared memory 是 bank-based，延迟极低）</li>
+</ol>
+
+<div class="diagram-container">
+<svg viewBox="0 0 800 350" xmlns="http://www.w3.org/2000/svg">
+  <!-- Global Memory Box -->
+  <rect x="50" y="30" width="250" height="120" rx="8" fill="#161b22" stroke="#58a6ff" stroke-width="1.5"/>
+  <text x="175" y="55" text-anchor="middle" fill="#58a6ff" font-size="12" font-weight="600">Global Memory (HBM)</text>
+  <text x="175" y="80" text-anchor="middle" fill="#8b949e" font-size="10">高带宽 但 高延迟 (~400 cycles)</text>
+
+  <!-- A_tile inside global -->
+  <rect x="70" y="90" width="90" height="45" rx="4" fill="rgba(63,185,80,0.15)" stroke="#3fb950"/>
+  <text x="115" y="117" text-anchor="middle" fill="#3fb950" font-size="10">A_tile [BM×BK]</text>
+
+  <!-- B_tile inside global -->
+  <rect x="180" y="90" width="90" height="45" rx="4" fill="rgba(210,153,34,0.15)" stroke="#d29922"/>
+  <text x="225" y="117" text-anchor="middle" fill="#d29922" font-size="10">B_tile [BK×BN]</text>
+
+  <!-- Arrow: Global → Shared -->
+  <path d="M 300 95 L 420 95" stroke="#3fb950" stroke-width="2" fill="none" marker-end="url(#arrowG)"/>
+  <text x="360" y="82" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="600">Coalesced!</text>
+  <text x="360" y="115" text-anchor="middle" fill="#8b949e" font-size="9">所有 threads 协作加载</text>
+
+  <!-- Shared Memory Box -->
+  <rect x="420" y="30" width="200" height="120" rx="8" fill="#161b22" stroke="#bc8cff" stroke-width="1.5"/>
+  <text x="520" y="55" text-anchor="middle" fill="#bc8cff" font-size="12" font-weight="600">Shared Memory (SRAM)</text>
+  <text x="520" y="80" text-anchor="middle" fill="#8b949e" font-size="10">低延迟 (~20 cycles) bank-based</text>
+
+  <!-- Shared tiles -->
+  <rect x="435" y="90" width="80" height="45" rx="4" fill="rgba(63,185,80,0.15)" stroke="#3fb950"/>
+  <text x="475" y="117" text-anchor="middle" fill="#3fb950" font-size="9">A_shared</text>
+  <rect x="525" y="90" width="80" height="45" rx="4" fill="rgba(210,153,34,0.15)" stroke="#d29922"/>
+  <text x="565" y="117" text-anchor="middle" fill="#d29922" font-size="9">B_shared</text>
+
+  <!-- Arrow: Shared → Register -->
+  <path d="M 520 155 L 520 200" stroke="#bc8cff" stroke-width="2" fill="none" marker-end="url(#arrowP)"/>
+  <text x="565" y="180" fill="#bc8cff" font-size="9">每个 thread 随意读</text>
+  <text x="565" y="194" fill="#8b949e" font-size="9">(无 coalescing 约束)</text>
+
+  <!-- Register/Compute Box -->
+  <rect x="420" y="205" width="200" height="60" rx="8" fill="#161b22" stroke="#d29922" stroke-width="1.5"/>
+  <text x="520" y="232" text-anchor="middle" fill="#d29922" font-size="12" font-weight="600">Compute (Registers)</text>
+  <text x="520" y="252" text-anchor="middle" fill="#8b949e" font-size="10">C_reg += A_shared × B_shared</text>
+
+  <!-- __syncthreads marker -->
+  <rect x="50" y="175" width="320" height="30" rx="6" fill="rgba(57,197,207,0.1)" stroke="#39c5cf" stroke-dasharray="4,3"/>
+  <text x="210" y="195" text-anchor="middle" fill="#39c5cf" font-size="10" font-weight="600">__syncthreads() — 确保加载完成后再计算</text>
+
+  <!-- K-loop annotation -->
+  <rect x="50" y="280" width="700" height="55" rx="8" fill="#161b22" stroke="#30363d"/>
+  <text x="400" y="303" text-anchor="middle" fill="#e6edf3" font-size="11" font-weight="600">K-Loop: 重复 ⌈K/BK⌉ 次</text>
+  <text x="400" y="323" text-anchor="middle" fill="#8b949e" font-size="10">加载下一个 tile → __syncthreads → 计算 → 累加到 C_reg → 加载下一个...</text>
+
+  <!-- Defs -->
+  <defs>
+    <marker id="arrowG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M 0 0 L 8 3 L 0 6 Z" fill="#3fb950"/>
+    </marker>
+    <marker id="arrowP" markerWidth="8" markerHeight="6" refX="4" refY="6" orient="auto">
+      <path d="M 0 0 L 4 6 L 8 0 Z" fill="#bc8cff"/>
+    </marker>
+  </defs>
+</svg>
+</div>
+
+<div class="insight">
+<p><strong>关键洞察：</strong>Shared memory 是 "中转站"——把不友好的 global memory 访问模式转换为对硬件友好的模式。加载时 coalesced，使用时自由。</p>
+</div>
+</section>
+
+<!-- §4 协作加载 -->
+<section>
+<h2>§4 协作加载 (Cooperative Loading)</h2>
+
+<pre><code><span class="comment">// Block size: (16, 16) = 256 threads</span>
+<span class="comment">// 要加载 A_tile[BLOCK_M=64][BLOCK_K=64] = 4096 elements</span>
+<span class="comment">// 256 threads, 每个 thread 加载 4096/256 = 16 个元素</span>
+
+<span class="keyword">__shared__</span> <span class="type">float</span> A_shared[<span class="number">64</span>][<span class="number">64</span>];
+
+<span class="comment">// 线程编号（展平）</span>
+<span class="type">int</span> tid = threadIdx.y * blockDim.x + threadIdx.x;  <span class="comment">// 0~255</span>
+
+<span class="comment">// 每个 thread 加载 16 个连续元素</span>
+<span class="type">int</span> elements_per_thread = (<span class="number">64</span> * <span class="number">64</span>) / (blockDim.x * blockDim.y);  <span class="comment">// 16</span>
+<span class="keyword">for</span> (<span class="type">int</span> i = <span class="number">0</span>; i < elements_per_thread; i++) {
+    <span class="type">int</span> linear_idx = tid * elements_per_thread + i;
+    <span class="type">int</span> smem_row = linear_idx / <span class="number">64</span>;
+    <span class="type">int</span> smem_col = linear_idx % <span class="number">64</span>;
+    <span class="type">int</span> global_row = blockIdx.y * <span class="number">64</span> + smem_row;
+    <span class="type">int</span> global_col = k_start + smem_col;
+    A_shared[smem_row][smem_col] = A[global_row * K + global_col];
+}
+<span class="func">__syncthreads</span>();</code></pre>
+
+<div class="highlight">
+<p><strong>关键：</strong><code>tid * 16 + i</code> 产生连续的 <code>linear_idx</code> → 映射到连续的 <code>global_col</code> → 同一 warp 内的 threads 访问连续内存地址 → <strong>coalesced!</strong></p>
+</div>
+
+<h3>更优的加载方式：让 warp 内 threads 同步访问连续地址</h3>
+
+<pre><code><span class="comment">// 改进: 让同一 warp 在同一轮加载中访问连续地址</span>
+<span class="keyword">for</span> (<span class="type">int</span> i = <span class="number">0</span>; i < elements_per_thread; i++) {
+    <span class="type">int</span> linear_idx = i * blockDim.x * blockDim.y + tid;  <span class="comment">// ← 关键改动!</span>
+    <span class="type">int</span> smem_row = linear_idx / <span class="number">64</span>;
+    <span class="type">int</span> smem_col = linear_idx % <span class="number">64</span>;
+    <span class="type">int</span> global_row = blockIdx.y * <span class="number">64</span> + smem_row;
+    <span class="type">int</span> global_col = k_start + smem_col;
+    A_shared[smem_row][smem_col] = A[global_row * K + global_col];
+}
+<span class="comment">// 现在 warp 0 (tid=0~31) 在 i=0 时:</span>
+<span class="comment">//   linear_idx = 0, 1, 2, ..., 31</span>
+<span class="comment">//   smem_col = 0, 1, 2, ..., 31 → 连续! Coalesced! ✓</span></code></pre>
+
+<div class="diagram-container">
+<svg viewBox="0 0 750 180" xmlns="http://www.w3.org/2000/svg">
+  <text x="375" y="20" text-anchor="middle" fill="#e6edf3" font-size="12" font-weight="600">协作加载: Warp 内 threads 在每轮 i 中访问连续地址</text>
+
+  <!-- Iteration i=0 -->
+  <text x="50" y="50" fill="#58a6ff" font-size="10" font-weight="600">i=0 时:</text>
+  <rect x="50" y="58" width="650" height="35" rx="6" fill="#161b22" stroke="#3fb950"/>
+  <text x="60" y="78" fill="#8b949e" font-size="9">Warp 0:</text>
+  <text x="120" y="78" fill="#3fb950" font-size="9" font-family="monospace">addr[0] addr[1] addr[2] addr[3] ... addr[31]</text>
+  <text x="500" y="78" fill="#3fb950" font-size="9" font-weight="600">← 连续! 1 transaction</text>
+
+  <!-- Iteration i=1 -->
+  <text x="50" y="112" fill="#58a6ff" font-size="10" font-weight="600">i=1 时:</text>
+  <rect x="50" y="120" width="650" height="35" rx="6" fill="#161b22" stroke="#3fb950"/>
+  <text x="60" y="140" fill="#8b949e" font-size="9">Warp 0:</text>
+  <text x="120" y="140" fill="#3fb950" font-size="9" font-family="monospace">addr[256] addr[257] addr[258] ... addr[287]</text>
+  <text x="500" y="140" fill="#3fb950" font-size="9" font-weight="600">← 连续! 1 transaction</text>
+
+  <text x="375" y="172" text-anchor="middle" fill="#8b949e" font-size="9">每轮 i 中，同一 warp 的 32 threads 产生连续 linear_idx → 映射到连续全局地址</text>
+</svg>
+</div>
+</section>
+
+<!-- §5 Tile 映射可视化 -->
+<section>
+<h2>§5 Tile 映射可视化</h2>
+
+<div class="diagram-container">
+<svg viewBox="0 0 800 500" xmlns="http://www.w3.org/2000/svg">
+  <!-- Matrix A -->
+  <text x="120" y="25" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="600">矩阵 A [M×K]</text>
+
+  <rect x="30" y="35" width="180" height="240" rx="4" fill="none" stroke="#58a6ff" stroke-width="1"/>
+  <!-- Row labels -->
+  <text x="20" y="75" text-anchor="end" fill="#6e7681" font-size="9">0</text>
+  <text x="20" y="135" text-anchor="end" fill="#6e7681" font-size="9">64</text>
+  <text x="20" y="195" text-anchor="end" fill="#6e7681" font-size="9">128</text>
+  <text x="20" y="255" text-anchor="end" fill="#6e7681" font-size="9">192</text>
+  <!-- Col labels -->
+  <text x="30" y="32" fill="#6e7681" font-size="9">0</text>
+  <text x="90" y="32" fill="#6e7681" font-size="9">BK</text>
+  <text x="150" y="32" fill="#6e7681" font-size="9">2BK</text>
+
+  <!-- Tile divisions (dashed) -->
+  <line x1="30" y1="95" x2="210" y2="95" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <line x1="30" y1="155" x2="210" y2="155" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <line x1="30" y1="215" x2="210" y2="215" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <line x1="90" y1="35" x2="90" y2="275" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <line x1="150" y1="35" x2="150" y2="275" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+
+  <!-- Highlighted tile in A: rows 64-128, current k-step -->
+  <rect x="30" y="95" width="60" height="60" rx="3" fill="rgba(63,185,80,0.25)" stroke="#3fb950" stroke-width="2"/>
+  <text x="60" y="125" text-anchor="middle" fill="#3fb950" font-size="9" font-weight="600">A_tile</text>
+  <text x="60" y="140" text-anchor="middle" fill="#3fb950" font-size="8">[64:128,</text>
+  <text x="60" y="152" text-anchor="middle" fill="#3fb950" font-size="8">k:k+BK]</text>
+
+  <!-- K-direction arrow on A -->
+  <path d="M 30 165 L 210 165" stroke="#d29922" stroke-width="1.5" fill="none" marker-end="url(#arrowO)" stroke-dasharray="4,3"/>
+  <text x="120" y="180" text-anchor="middle" fill="#d29922" font-size="9">K 方向滑动 →</text>
+
+  <!-- × symbol -->
+  <text x="240" y="165" fill="#e6edf3" font-size="20">×</text>
+
+  <!-- Matrix B -->
+  <text x="400" y="25" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="600">矩阵 B [K×N]</text>
+
+  <rect x="280" y="35" width="240" height="180" rx="4" fill="none" stroke="#58a6ff" stroke-width="1"/>
+  <!-- Row/Col labels -->
+  <text x="270" y="55" text-anchor="end" fill="#6e7681" font-size="9">0</text>
+  <text x="270" y="95" text-anchor="end" fill="#6e7681" font-size="9">BK</text>
+  <text x="280" y="32" fill="#6e7681" font-size="9">0</text>
+  <text x="340" y="32" fill="#6e7681" font-size="9">64</text>
+  <text x="400" y="32" fill="#6e7681" font-size="9">128</text>
+
+  <!-- Tile divisions (dashed) -->
+  <line x1="280" y1="95" x2="520" y2="95" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <line x1="280" y1="155" x2="520" y2="155" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <line x1="340" y1="35" x2="340" y2="215" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <line x1="400" y1="35" x2="400" y2="215" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <line x1="460" y1="35" x2="460" y2="215" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+
+  <!-- Highlighted tile in B: k:k+BK rows, cols 0-64 -->
+  <rect x="280" y="35" width="60" height="60" rx="3" fill="rgba(210,153,34,0.25)" stroke="#d29922" stroke-width="2"/>
+  <text x="310" y="62" text-anchor="middle" fill="#d29922" font-size="9" font-weight="600">B_tile</text>
+  <text x="310" y="77" text-anchor="middle" fill="#d29922" font-size="8">[k:k+BK,</text>
+  <text x="310" y="89" text-anchor="middle" fill="#d29922" font-size="8">0:64]</text>
+
+  <!-- K-direction arrow on B (vertical) -->
+  <path d="M 350 35 L 350 215" stroke="#d29922" stroke-width="1.5" fill="none" marker-end="url(#arrowO)" stroke-dasharray="4,3"/>
+  <text x="370" y="130" fill="#d29922" font-size="9">K ↓</text>
+
+  <!-- = symbol -->
+  <text x="555" y="165" fill="#e6edf3" font-size="20">=</text>
+
+  <!-- Matrix C -->
+  <text x="680" y="25" text-anchor="middle" fill="#e6edf3" font-size="13" font-weight="600">矩阵 C [M×N]</text>
+
+  <rect x="590" y="35" width="180" height="240" rx="4" fill="none" stroke="#58a6ff" stroke-width="1"/>
+  <!-- Tile divisions -->
+  <line x1="590" y1="95" x2="770" y2="95" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <line x1="590" y1="155" x2="770" y2="155" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <line x1="590" y1="215" x2="770" y2="215" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <line x1="650" y1="35" x2="650" y2="275" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+  <line x1="710" y1="35" x2="710" y2="275" stroke="#30363d" stroke-width="0.5" stroke-dasharray="3,2"/>
+
+  <!-- Highlighted output tile -->
+  <rect x="590" y="95" width="60" height="60" rx="3" fill="rgba(188,140,255,0.25)" stroke="#bc8cff" stroke-width="2"/>
+  <text x="620" y="122" text-anchor="middle" fill="#bc8cff" font-size="9" font-weight="600">C_tile</text>
+  <text x="620" y="137" text-anchor="middle" fill="#bc8cff" font-size="8">[64:128,</text>
+  <text x="620" y="149" text-anchor="middle" fill="#bc8cff" font-size="8">0:64]</text>
+
+  <!-- Block assignment -->
+  <rect x="50" y="310" width="700" height="80" rx="8" fill="#161b22" stroke="#30363d"/>
+  <text x="400" y="335" text-anchor="middle" fill="#bc8cff" font-size="11" font-weight="600">Block (by=1, bx=0) 负责: C[64:128, 0:64]</text>
+  <text x="400" y="358" text-anchor="middle" fill="#8b949e" font-size="10">需要: A[64:128, 0:K] 的所有数据 和 B[0:K, 0:64] 的所有数据</text>
+  <text x="400" y="378" text-anchor="middle" fill="#d29922" font-size="10">K-Loop: 每步加载 A[64:128, k:k+BK] + B[k:k+BK, 0:64] → shared → 计算 → k += BK</text>
+
+  <!-- K-loop pseudocode -->
+  <rect x="50" y="410" width="700" height="80" rx="8" fill="#161b22" stroke="#3fb950" stroke-dasharray="4,3"/>
+  <text x="400" y="435" text-anchor="middle" fill="#3fb950" font-size="11" font-weight="600">K-Loop 伪代码:</text>
+  <text x="100" y="458" fill="#8b949e" font-size="10" font-family="monospace">for (k = 0; k &lt; K; k += BK) {</text>
+  <text x="120" y="475" fill="#8b949e" font-size="10" font-family="monospace">  load A_tile, B_tile → shared;  __syncthreads();  compute;  __syncthreads();</text>
+  <text x="100" y="488" fill="#8b949e" font-size="10" font-family="monospace">}</text>
+
+  <defs>
+    <marker id="arrowO" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+      <path d="M 0 0 L 8 3 L 0 6 Z" fill="#d29922"/>
+    </marker>
+  </defs>
+</svg>
+</div>
+</section>
+
+<!-- §6 边界处理 -->
+<section>
+<h2>§6 边界处理</h2>
+
+<p>当 M、N、K 不能被 tile 大小整除时，越界访问会导致 segfault 或读取垃圾数据。必须做边界检查：</p>
+
+<pre><code><span class="comment">// 安全加载 (处理 M/N/K 不整除的情况)</span>
+<span class="type">int</span> global_row = blockIdx.y * BLOCK_M + smem_row;
+<span class="type">int</span> global_col = k_start + smem_col;
+
+<span class="keyword">if</span> (global_row < M && global_col < K) {
+    A_shared[smem_row][smem_col] = A[global_row * K + global_col];
+} <span class="keyword">else</span> {
+    A_shared[smem_row][smem_col] = <span class="number">0.0f</span>;  <span class="comment">// padding with 0</span>
+}</code></pre>
+
+<div class="highlight">
+<p><strong>对比 Triton：</strong><code>tl.load(ptr, mask=..., other=0.0)</code> 一行搞定。CUDA 需要手动 if-else，但本质是同一件事——超出边界的位置填 0，不影响乘法累加结果。</p>
+</div>
+</section>
+
+<!-- §7 对比 Triton 的 tl.load -->
+<section>
+<h2>§7 对比 Triton 的 tl.load</h2>
+
+<table>
+<thead>
+<tr><th>特性</th><th>Triton</th><th>CUDA</th></tr>
+</thead>
+<tbody>
+<tr>
+  <td>加载语法</td>
+  <td><code>tl.load(ptr + offs, mask=m, other=0)</code></td>
+  <td><code>if (valid) smem[r][c] = global[idx]; else smem[r][c] = 0;</code></td>
+</tr>
+<tr>
+  <td>Coalescing</td>
+  <td>编译器自动优化</td>
+  <td>手动保证访问模式</td>
+</tr>
+<tr>
+  <td>Shared Memory</td>
+  <td>编译器管理</td>
+  <td>手动 <code>__shared__</code> 声明</td>
+</tr>
+<tr>
+  <td>同步</td>
+  <td>无需 <code>__syncthreads</code></td>
+  <td>必须手动同步</td>
+</tr>
+<tr>
+  <td>抽象级别</td>
+  <td>Tile 级别 (高)</td>
+  <td>Thread 级别 (低)</td>
+</tr>
+<tr>
+  <td>灵活性</td>
+  <td>受限于编译器能力</td>
+  <td>完全控制每个细节</td>
+</tr>
+</tbody>
+</table>
+
+<div class="insight">
+<p><strong>取舍：</strong>Triton 让你用 10 行代码写出接近 cuBLAS 80% 性能的 kernel；CUDA 让你花 200 行代码达到 95%+。真正的极致优化仍然需要 CUDA。</p>
+</div>
+</section>
+
+<!-- §8 完整示例：矩阵转置 -->
+<section>
+<h2>§8 完整示例：矩阵转置（Shared Memory 优化）</h2>
+
+<p>矩阵转置是理解 coalesced access + shared memory tiling 的经典案例。下面用<strong>交互式动画</strong>对比 Naive 版本和优化版本，你可以逐步观察每个 thread 的内存访问模式。</p>
+
+<!-- Interactive Transpose Comparison -->
+<div id="transpose-demo" style="margin:1.5rem 0">
+
+<!-- Controls -->
+<div style="display:flex;gap:12px;align-items:center;margin-bottom:16px;flex-wrap:wrap">
+  <button id="btn-prev" style="background:var(--bg-tertiary);border:1px solid var(--border-color);color:var(--text-primary);padding:8px 16px;border-radius:8px;cursor:pointer;font-size:13px">← Prev</button>
+  <button id="btn-next" style="background:linear-gradient(135deg,var(--accent-blue),var(--accent-purple));border:none;color:#fff;padding:8px 20px;border-radius:8px;cursor:pointer;font-size:13px;font-weight:600">Next →</button>
+  <button id="btn-reset" style="background:var(--bg-tertiary);border:1px solid var(--border-color);color:var(--text-secondary);padding:8px 16px;border-radius:8px;cursor:pointer;font-size:13px">Reset</button>
+  <span id="step-label" style="color:var(--accent-cyan);font-size:13px;font-weight:600;margin-left:auto;font-family:monospace">Step 0/4</span>
+</div>
+
+<!-- Side by side panels -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+
+<!-- LEFT: Naive -->
+<div style="background:var(--bg-secondary);border:1px solid var(--accent-red);border-radius:12px;padding:16px;position:relative">
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+  <span style="background:rgba(248,81,73,0.2);color:var(--accent-red);padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600">NAIVE</span>
+  <span style="color:var(--text-secondary);font-size:12px">读 coalesced，写 strided</span>
+</div>
+<canvas id="canvas-naive" width="380" height="400" style="width:100%;border-radius:8px;background:#0d1117"></canvas>
+<div id="naive-info" style="margin-top:10px;font-size:11px;color:var(--text-secondary);font-family:monospace;min-height:40px"></div>
+</div>
+
+<!-- RIGHT: Optimized -->
+<div style="background:var(--bg-secondary);border:1px solid var(--accent-green);border-radius:12px;padding:16px;position:relative">
+<div style="display:flex;align-items:center;gap:8px;margin-bottom:12px">
+  <span style="background:rgba(63,185,80,0.2);color:var(--accent-green);padding:2px 8px;border-radius:6px;font-size:11px;font-weight:600">OPTIMIZED</span>
+  <span style="color:var(--text-secondary);font-size:12px">读写都 coalesced (via shared memory)</span>
+</div>
+<canvas id="canvas-opt" width="380" height="400" style="width:100%;border-radius:8px;background:#0d1117"></canvas>
+<div id="opt-info" style="margin-top:10px;font-size:11px;color:var(--text-secondary);font-family:monospace;min-height:40px"></div>
+</div>
+
+</div>
+
+<!-- Narration -->
+<div id="narration" style="background:rgba(88,166,255,0.08);border-left:3px solid var(--accent-blue);padding:12px 16px;border-radius:0 8px 8px 0;margin-top:16px;font-size:13px;color:var(--text-primary);min-height:50px">
+点击 <b>Next →</b> 开始逐步对比 Naive 和 Optimized 矩阵转置的内存访问模式。
+</div>
+
+<!-- Transaction counter -->
+<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px">
+<div style="background:var(--bg-secondary);border:1px solid var(--accent-red);border-radius:8px;padding:12px;text-align:center">
+  <div id="naive-txn" style="font-size:24px;font-weight:700;color:var(--accent-red)">—</div>
+  <div style="font-size:11px;color:var(--text-secondary)">Naive: Memory Transactions</div>
+</div>
+<div style="background:var(--bg-secondary);border:1px solid var(--accent-green);border-radius:8px;padding:12px;text-align:center">
+  <div id="opt-txn" style="font-size:24px;font-weight:700;color:var(--accent-green)">—</div>
+  <div style="font-size:11px;color:var(--text-secondary)">Optimized: Memory Transactions</div>
+</div>
+</div>
+
+</div>
+
+<script>
+(function() {
+  const GRID = 8; // 8x8 matrix for visualization
+  const CELL = 36;
+  const PAD = 30;
+  const WARP_SIZE = 8; // show 8 threads for visual clarity (representing warp concept)
+
+  const colors = {
+    bg: '#0d1117', cell: '#161b22', border: '#30363d',
+    read: '#3fb950', write: '#d29922', strided: '#f85149',
+    shared: '#bc8cff', highlight: '#58a6ff', text: '#e6edf3', mute: '#6e7681'
+  };
+
+  let step = 0;
+  const maxStep = 4;
+  const naiveCanvas = document.getElementById('canvas-naive');
+  const optCanvas = document.getElementById('canvas-opt');
+  const ctxN = naiveCanvas.getContext('2d');
+  const ctxO = optCanvas.getContext('2d');
+
+  const narrations = [
+    '初始状态：输入矩阵 8×8，我们要转置到输出矩阵。观察 Warp 中 8 个 thread (T0-T7) 如何访问内存。',
+    '<b>Step 1 — 读入 (Global Memory Read):</b><br>两种方案的读入都是 <span style="color:#3fb950">coalesced</span>：T0-T7 读同一行的连续列 → 地址连续 → <b>1 次 transaction</b>。',
+    '<b>Step 2 — Naive 直接写出 vs Optimized 写入 Shared Memory:</b><br>Naive: 直接写到输出矩阵的对应列 → 地址间隔 N → <span style="color:#f85149">strided! 8 次 transactions</span>。<br>Optimized: 写入 shared memory tile[ty][tx] → SRAM 无 coalescing 问题 → <span style="color:#3fb950">无额外开销</span>。',
+    '<b>Step 3 — Optimized 从 Shared Memory 读出并写入 Global Memory:</b><br>从 tile[<b>tx</b>][ty] 读取（交换了下标 = 转置），然后写入输出矩阵。<br>关键：新的 threadIdx.x 映射到输出的连续列 → <span style="color:#3fb950">写出也是 coalesced! 1 次 transaction</span>。',
+    '<b>总结对比：</b><br>Naive: 读 1 txn + 写 8 txn = <span style="color:#f85149">9 transactions</span><br>Optimized: 读 1 txn + smem 写 0 + smem 读 0 + 写 1 txn = <span style="color:#3fb950">2 transactions</span><br><b>4.5× 更少的内存事务 → 接近理论带宽上限!</b>'
+  ];
+
+  function drawGrid(ctx, x0, y0, label, highlights, arrowType) {
+    ctx.fillStyle = colors.mute;
+    ctx.font = '10px monospace';
+    ctx.textAlign = 'center';
+    ctx.fillText(label, x0 + GRID*CELL/2, y0 - 8);
+
+    for (let r = 0; r < GRID; r++) {
+      for (let c = 0; c < GRID; c++) {
+        const x = x0 + c * CELL;
+        const y = y0 + r * CELL;
+        let fill = colors.cell;
+        let stroke = colors.border;
+        let lw = 0.5;
+        let textColor = colors.mute;
+        let cellText = '';
+
+        // Check highlights
+        if (highlights) {
+          for (const h of highlights) {
+            if (h.row === r && h.col === c) {
+              fill = h.fill || colors.cell;
+              stroke = h.stroke || colors.border;
+              lw = h.lw || 1.5;
+              textColor = h.textColor || colors.text;
+              cellText = h.text || '';
+              break;
+            }
+          }
+        }
+
+        ctx.fillStyle = fill;
+        ctx.strokeStyle = stroke;
+        ctx.lineWidth = lw;
+        ctx.beginPath();
+        ctx.roundRect(x, y, CELL-2, CELL-2, 3);
+        ctx.fill();
+        ctx.stroke();
+
+        if (cellText) {
+          ctx.fillStyle = textColor;
+          ctx.font = 'bold 9px monospace';
+          ctx.textAlign = 'center';
+          ctx.fillText(cellText, x + CELL/2 - 1, y + CELL/2 + 3);
+        }
+      }
+    }
+
+    // Row/col labels
+    ctx.fillStyle = colors.mute;
+    ctx.font = '9px monospace';
+    ctx.textAlign = 'right';
+    for (let r = 0; r < GRID; r++) {
+      ctx.fillText(r.toString(), x0 - 4, y0 + r*CELL + CELL/2 + 3);
+    }
+    ctx.textAlign = 'center';
+    for (let c = 0; c < GRID; c++) {
+      ctx.fillText(c.toString(), x0 + c*CELL + CELL/2 - 1, y0 + GRID*CELL + 14);
+    }
+
+    // Draw arrows showing access pattern
+    if (arrowType === 'row') {
+      // Coalesced: horizontal arrow
+      ctx.strokeStyle = colors.read;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([]);
+      ctx.beginPath();
+      ctx.moveTo(x0, y0 - 3);
+      ctx.lineTo(x0 + GRID*CELL - 10, y0 - 3);
+      ctx.stroke();
+      ctx.fillStyle = colors.read;
+      ctx.beginPath();
+      ctx.moveTo(x0 + GRID*CELL - 10, y0 - 7);
+      ctx.lineTo(x0 + GRID*CELL, y0 - 3);
+      ctx.lineTo(x0 + GRID*CELL - 10, y0 + 1);
+      ctx.fill();
+    } else if (arrowType === 'col') {
+      // Strided: vertical arrow
+      ctx.strokeStyle = colors.strided;
+      ctx.lineWidth = 2;
+      ctx.setLineDash([4, 3]);
+      ctx.beginPath();
+      ctx.moveTo(x0 - 8, y0);
+      ctx.lineTo(x0 - 8, y0 + GRID*CELL - 10);
+      ctx.stroke();
+      ctx.setLineDash([]);
+      ctx.fillStyle = colors.strided;
+      ctx.beginPath();
+      ctx.moveTo(x0 - 12, y0 + GRID*CELL - 10);
+      ctx.lineTo(x0 - 8, y0 + GRID*CELL);
+      ctx.lineTo(x0 - 4, y0 + GRID*CELL - 10);
+      ctx.fill();
+    }
+  }
+
+  function makeHighlights(row, cols, color, prefix) {
+    return cols.map((c, i) => ({
+      row, col: c,
+      fill: color + '30', stroke: color, lw: 2,
+      textColor: color, text: prefix + i
+    }));
+  }
+
+  function makeColHighlights(col, rows, color, prefix) {
+    return rows.map((r, i) => ({
+      row: r, col,
+      fill: color + '30', stroke: color, lw: 2,
+      textColor: color, text: prefix + i
+    }));
+  }
+
+  function clearCanvas(ctx, canvas) {
+    ctx.fillStyle = colors.bg;
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+  }
+
+  function render() {
+    clearCanvas(ctxN, naiveCanvas);
+    clearCanvas(ctxO, optCanvas);
+
+    const ROW = 2; // The row being processed by the warp
+    const threads = [0,1,2,3,4,5,6,7];
+    const naiveInfo = document.getElementById('naive-info');
+    const optInfo = document.getElementById('opt-info');
+    const naiveTxn = document.getElementById('naive-txn');
+    const optTxn = document.getElementById('opt-txn');
+
+    if (step === 0) {
+      // Initial state - show both input matrices
+      drawGrid(ctxN, PAD, PAD, 'Input Matrix (8×8)', null, null);
+      drawGrid(ctxO, PAD, PAD, 'Input Matrix (8×8)', null, null);
+      naiveInfo.textContent = 'out[col][row] = in[row][col]  (直接写)';
+      optInfo.textContent = 'tile[ty][tx] = in[y][x]; out[y\'][x\'] = tile[tx][ty]';
+      naiveTxn.textContent = '—';
+      optTxn.textContent = '—';
+    }
+    else if (step === 1) {
+      // Step 1: Both read row 2 - coalesced
+      const readHL = makeHighlights(ROW, threads, colors.read, 'T');
+      drawGrid(ctxN, PAD, PAD, 'Input: READ row ' + ROW + ' (coalesced ✓)', readHL, 'row');
+      drawGrid(ctxO, PAD, PAD, 'Input: READ row ' + ROW + ' (coalesced ✓)', readHL, 'row');
+      naiveInfo.innerHTML = 'T0-T7 读 in[2][0..7]<br>地址连续: base+0, +4, +8, ... +28<br><span style="color:#3fb950">→ 1 transaction</span>';
+      optInfo.innerHTML = 'T0-T7 读 in[2][0..7]<br>地址连续: base+0, +4, +8, ... +28<br><span style="color:#3fb950">→ 1 transaction</span>';
+      naiveTxn.textContent = '1';
+      optTxn.textContent = '1';
+    }
+    else if (step === 2) {
+      // Step 2: Naive writes to column (strided!) / Opt writes to shared mem
+      // Naive: write to out[col=0..7][row=2] → strided addresses
+      const writeHL = makeColHighlights(ROW, threads, colors.strided, 'T');
+      drawGrid(ctxN, PAD, PAD, 'Output: WRITE col ' + ROW + ' (STRIDED ✗)', writeHL, 'col');
+
+      // Opt: write to shared memory tile[2][0..7] - no coalescing issue
+      const smemHL = makeHighlights(ROW, threads, colors.shared, 'T');
+      drawGrid(ctxO, PAD, PAD, 'Shared Mem: WRITE tile[' + ROW + '][0..7]', smemHL, null);
+
+      naiveInfo.innerHTML = 'T0 写 out[0][2], T1 写 out[1][2], ...<br>地址: base+2×4, base+(N+2)×4, base+(2N+2)×4...<br><span style="color:#f85149">间隔 N×4=32 bytes → 8 transactions!</span>';
+      optInfo.innerHTML = 'T0-T7 写 tile[2][0..7] (SRAM)<br>Shared memory 无 coalescing 要求<br><span style="color:#3fb950">→ 0 global memory transactions</span>';
+      naiveTxn.textContent = '1 + 8 = 9';
+      optTxn.textContent = '1 + 0';
+    }
+    else if (step === 3) {
+      // Step 3: Optimized reads from shared mem (transposed) and writes coalesced
+      // Show shared memory read: tile[0..7][2] (column read, but SRAM)
+      const smemReadHL = threads.map((t, i) => ({
+        row: t, col: ROW,
+        fill: colors.shared + '30', stroke: colors.shared, lw: 2,
+        textColor: colors.shared, text: 'T' + i
+      }));
+      drawGrid(ctxO, PAD, 20, 'Shared: READ tile[0..7][' + ROW + '] (转置读)', smemReadHL, null);
+
+      // Then write to output row (coalesced!)
+      const outHL = makeHighlights(ROW, threads, colors.write, 'T');
+      // Draw small output below
+      ctxO.fillStyle = colors.mute;
+      ctxO.font = '10px monospace';
+      ctxO.textAlign = 'left';
+      ctxO.fillText('↓ 然后写入 Output row ' + ROW + ' (coalesced ✓)', PAD, GRID*CELL + 50);
+
+      // Draw mini output grid
+      for (let c = 0; c < GRID; c++) {
+        const x = PAD + c * CELL;
+        const y = GRID*CELL + 58;
+        ctxO.fillStyle = colors.write + '30';
+        ctxO.strokeStyle = colors.write;
+        ctxO.lineWidth = 1.5;
+        ctxO.beginPath();
+        ctxO.roundRect(x, y, CELL-2, CELL-2, 3);
+        ctxO.fill();
+        ctxO.stroke();
+        ctxO.fillStyle = colors.write;
+        ctxO.font = 'bold 9px monospace';
+        ctxO.textAlign = 'center';
+        ctxO.fillText('T' + c, x + CELL/2 - 1, y + CELL/2 + 3);
+      }
+
+      // Naive: already done (show result)
+      clearCanvas(ctxN, naiveCanvas);
+      ctxN.fillStyle = colors.strided;
+      ctxN.font = 'bold 14px -apple-system, sans-serif';
+      ctxN.textAlign = 'center';
+      ctxN.fillText('Naive 已完成', naiveCanvas.width/2, 80);
+      ctxN.fillStyle = colors.mute;
+      ctxN.font = '12px -apple-system, sans-serif';
+      ctxN.fillText('读: 1 txn (coalesced)', naiveCanvas.width/2, 120);
+      ctxN.fillText('写: 8 txn (strided!)', naiveCanvas.width/2, 145);
+      ctxN.fillStyle = colors.strided;
+      ctxN.font = 'bold 20px monospace';
+      ctxN.fillText('Total: 9 transactions', naiveCanvas.width/2, 200);
+
+      // Draw a sad face diagram for naive
+      ctxN.fillStyle = colors.mute;
+      ctxN.font = '11px monospace';
+      ctxN.textAlign = 'left';
+      ctxN.fillText('out[0][2] ← T0  addr: base + 2*4', 40, 260);
+      ctxN.fillText('out[1][2] ← T1  addr: base + (N+2)*4', 40, 278);
+      ctxN.fillText('out[2][2] ← T2  addr: base + (2N+2)*4', 40, 296);
+      ctxN.fillStyle = colors.strided;
+      ctxN.fillText('  ↑ 每个地址间隔 N*4 bytes!', 40, 318);
+
+      naiveInfo.innerHTML = '<span style="color:#f85149">完成! 总计 9 次 global memory transactions</span>';
+      optInfo.innerHTML = '从 tile[0..7][2] 读 → 写入 out[2][0..7]<br>threadIdx.x=0..7 → 连续列<br><span style="color:#3fb950">→ 写也是 coalesced: 1 transaction</span>';
+      naiveTxn.textContent = '9';
+      optTxn.textContent = '1 + 0 + 1 = 2';
+    }
+    else if (step === 4) {
+      // Summary comparison
+      clearCanvas(ctxN, naiveCanvas);
+      clearCanvas(ctxO, optCanvas);
+
+      // Naive summary
+      ctxN.fillStyle = colors.strided;
+      ctxN.font = 'bold 16px -apple-system, sans-serif';
+      ctxN.textAlign = 'center';
+      ctxN.fillText('❌ Naive Transpose', naiveCanvas.width/2, 50);
+
+      ctxN.font = '12px -apple-system, sans-serif';
+      ctxN.fillStyle = colors.text;
+      ctxN.fillText('out[col*M + row] = in[row*N + col]', naiveCanvas.width/2, 90);
+
+      ctxN.fillStyle = colors.mute;
+      ctxN.font = '11px monospace';
+      ctxN.textAlign = 'left';
+      const naiveLines = [
+        ['Global Read:  in[row][col]', colors.read, '1 txn (coalesced ✓)'],
+        ['Global Write: out[col][row]', colors.strided, '8 txn (STRIDED ✗)'],
+        ['', '', ''],
+        ['Total per warp iteration:', colors.text, '9 transactions'],
+        ['Effective bandwidth:', colors.strided, '~200 GB/s (A100)'],
+      ];
+      naiveLines.forEach(([left, color, right], i) => {
+        const y = 130 + i * 24;
+        ctxN.fillStyle = color;
+        ctxN.fillText(left, 30, y);
+        ctxN.fillStyle = color;
+        ctxN.textAlign = 'right';
+        ctxN.fillText(right, naiveCanvas.width - 30, y);
+        ctxN.textAlign = 'left';
+      });
+
+      // Draw strided pattern illustration
+      ctxN.strokeStyle = colors.strided;
+      ctxN.lineWidth = 1;
+      ctxN.setLineDash([3, 3]);
+      for (let i = 0; i < 5; i++) {
+        const x = 60 + i * 55;
+        const y1 = 280;
+        const y2 = 360;
+        ctxN.beginPath();
+        ctxN.moveTo(x, y1);
+        ctxN.lineTo(x, y2);
+        ctxN.stroke();
+        ctxN.fillStyle = colors.strided;
+        ctxN.font = '9px monospace';
+        ctxN.textAlign = 'center';
+        ctxN.fillText('T'+i, x, y1 - 5);
+        ctxN.fillText('+'+i+'N', x, y2 + 12);
+      }
+      ctxN.setLineDash([]);
+      ctxN.fillStyle = colors.strided;
+      ctxN.font = '10px sans-serif';
+      ctxN.textAlign = 'center';
+      ctxN.fillText('写入地址不连续 (间隔 N)', naiveCanvas.width/2, 390);
+
+      // Optimized summary
+      ctxO.fillStyle = colors.read;
+      ctxO.font = 'bold 16px -apple-system, sans-serif';
+      ctxO.textAlign = 'center';
+      ctxO.fillText('✅ Optimized (Shared Memory)', optCanvas.width/2, 50);
+
+      ctxO.font = '12px -apple-system, sans-serif';
+      ctxO.fillStyle = colors.text;
+      ctxO.fillText('tile[ty][tx]=in[y][x]; out[y\'][x\']=tile[tx][ty]', optCanvas.width/2, 90);
+
+      ctxO.fillStyle = colors.mute;
+      ctxO.font = '11px monospace';
+      ctxO.textAlign = 'left';
+      const optLines = [
+        ['Global Read:  in[row][col]', colors.read, '1 txn (coalesced ✓)'],
+        ['SMEM Write:   tile[ty][tx]', colors.shared, '0 txn (SRAM)'],
+        ['SMEM Read:    tile[tx][ty]', colors.shared, '0 txn (SRAM)'],
+        ['Global Write: out[y\'][x\']', colors.read, '1 txn (coalesced ✓)'],
+        ['Total per warp iteration:', colors.text, '2 transactions'],
+        ['Effective bandwidth:', colors.read, '~1.8 TB/s (A100)'],
+      ];
+      optLines.forEach(([left, color, right], i) => {
+        const y = 120 + i * 22;
+        ctxO.fillStyle = color;
+        ctxO.fillText(left, 20, y);
+        ctxO.fillStyle = color;
+        ctxO.textAlign = 'right';
+        ctxO.fillText(right, optCanvas.width - 20, y);
+        ctxO.textAlign = 'left';
+      });
+
+      // Draw coalesced pattern illustration
+      ctxO.strokeStyle = colors.read;
+      ctxO.lineWidth = 2;
+      ctxO.beginPath();
+      ctxO.moveTo(40, 310);
+      ctxO.lineTo(340, 310);
+      ctxO.stroke();
+      for (let i = 0; i < 8; i++) {
+        const x = 55 + i * 38;
+        ctxO.fillStyle = colors.read + '40';
+        ctxO.strokeStyle = colors.read;
+        ctxO.lineWidth = 1.5;
+        ctxO.beginPath();
+        ctxO.roundRect(x - 14, 295, 28, 30, 4);
+        ctxO.fill();
+        ctxO.stroke();
+        ctxO.fillStyle = colors.read;
+        ctxO.font = 'bold 9px monospace';
+        ctxO.textAlign = 'center';
+        ctxO.fillText('T'+i, x, 314);
+      }
+      ctxO.fillStyle = colors.read;
+      ctxO.font = '10px sans-serif';
+      ctxO.textAlign = 'center';
+      ctxO.fillText('写入地址连续 → 1 transaction!', optCanvas.width/2, 350);
+
+      // Speedup
+      ctxO.fillStyle = colors.read;
+      ctxO.font = 'bold 18px monospace';
+      ctxO.fillText('4.5× fewer transactions!', optCanvas.width/2, 385);
+
+      naiveInfo.innerHTML = '<span style="color:#f85149">Naive: 每 warp 需 9 次 global memory transactions</span>';
+      optInfo.innerHTML = '<span style="color:#3fb950">Optimized: 每 warp 只需 2 次 → 接近理论带宽上限</span>';
+      naiveTxn.textContent = '9';
+      naiveTxn.style.color = colors.strided;
+      optTxn.textContent = '2';
+      optTxn.style.color = colors.read;
+    }
+
+    document.getElementById('step-label').textContent = `Step ${step}/${maxStep}`;
+    document.getElementById('narration').innerHTML = narrations[step];
+  }
+
+  document.getElementById('btn-next').addEventListener('click', () => {
+    if (step < maxStep) { step++; render(); }
+  });
+  document.getElementById('btn-prev').addEventListener('click', () => {
+    if (step > 0) { step--; render(); }
+  });
+  document.getElementById('btn-reset').addEventListener('click', () => {
+    step = 0; render();
+  });
+
+  // Initial render
+  render();
+})();
+</script>
+
+<h3>源码对照</h3>
+<pre><code><span class="keyword">#define</span> TILE <span class="number">32</span>
+
+<span class="keyword">__global__</span> <span class="type">void</span> <span class="func">transpose_optimized</span>(<span class="type">float</span>* out, <span class="keyword">const</span> <span class="type">float</span>* in, <span class="type">int</span> M, <span class="type">int</span> N) {
+    <span class="keyword">__shared__</span> <span class="type">float</span> tile[TILE][TILE + <span class="number">1</span>];  <span class="comment">// +1 padding 避免 bank conflict</span>
+
+    <span class="type">int</span> x = blockIdx.x * TILE + threadIdx.x;  <span class="comment">// 输入列</span>
+    <span class="type">int</span> y = blockIdx.y * TILE + threadIdx.y;  <span class="comment">// 输入行</span>
+
+    <span class="comment">// Step 1: 读入 → coalesced (同一 warp 的 threads 读同一行的连续列)</span>
+    <span class="keyword">if</span> (x < N && y < M)
+        tile[threadIdx.y][threadIdx.x] = in[y * N + x];
+    <span class="func">__syncthreads</span>();
+
+    <span class="comment">// Step 2: 写出 → 坐标交换，但 threadIdx.x 仍映射到连续输出列 → coalesced!</span>
+    x = blockIdx.y * TILE + threadIdx.x;  <span class="comment">// 输出列 = 原来的行方向</span>
+    y = blockIdx.x * TILE + threadIdx.y;  <span class="comment">// 输出行 = 原来的列方向</span>
+    <span class="keyword">if</span> (x < M && y < N)
+        out[y * M + x] = tile[threadIdx.x][threadIdx.y];  <span class="comment">// tx/ty 交换 = 转置!</span>
+}</code></pre>
+
+<h3>为什么 <code>TILE+1</code> Padding?</h3>
+<p>Shared memory 由 32 个 bank 组成，每个 bank 宽 4 bytes。<code>tile[32][32]</code> 中，同一列的元素落在同一 bank → bank conflict。<code>tile[32][33]</code> 让每行偏移 1 个 float，使列访问分散到不同 bank → 无 conflict。</p>
+
+<div class="insight">
+<p><strong>关键洞察：</strong>Shared memory 让"转置"发生在 SRAM 里（零开销），读和写 Global Memory 时都保持 coalesced。这就是 shared memory tiling 的威力——把不友好的访问模式<b>隐藏</b>在片上高速缓存中。</p>
+</div>
+</section>
+
+<!-- §9 带走 -->
+<section>
+<div class="takeaway">
+<h2>§9 带走</h2>
+<ol>
+  <li><strong>Coalesced access：</strong>同一 warp 访问连续地址 → 1 次内存事务（否则最多 32 次）</li>
+  <li><strong>矩阵列访问天然不 coalesced</strong> → 需要 shared memory 中转</li>
+  <li><strong>协作加载：</strong>block 内所有 threads 分工加载 tile → shared → 自由读取</li>
+  <li><strong><code>__syncthreads()</code></strong> 确保加载完成后再计算（忘了加 = 经典 bug）</li>
+  <li><strong>"load → shared → compute" 模式就是 GEMM 的核心</strong>——后续的所有优化（向量化加载、double buffering、warp tiling）都建立在此之上</li>
+</ol>
+</div>
+</section>
+
+<footer>
+  C4 · 矩阵访问模式 — CUDA GEMM 系列 5/15
+</footer>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

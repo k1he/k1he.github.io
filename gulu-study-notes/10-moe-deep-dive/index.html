@@ -1,0 +1,144 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>SGLang MoE 源码深读</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--purple);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--purple);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+@media (max-width:900px){.cols-2{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--purple);color:var(--purple)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+.path{color:var(--mute);font-size:11px;font-family:"SF Mono",monospace}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--purple)}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+</style>
+</head><body><div class="wrap">
+
+<h1>SGLang MoE 源码深读<span class="tag">MoE · 0/7</span></h1>
+<div class="sub">7 章按"原理 → 架构 → 源码逐层 → 性能优化"结构编写，以 Qwen3-MoE / DeepSeek-V3 为蓝本，深入 SGLang 的 MoE 实现。</div>
+
+<div class="toc">
+<a href="#overview">学习路径</a>
+<a href="#source">源码索引</a>
+</div>
+
+<div class="card" id="overview">
+<p>Mixture of Experts (MoE) 是当前大模型扩容的核心范式——用 <b>稀疏激活</b> 在不增加每个 token 计算量的前提下，将模型参数量提升 4-16 倍。SGLang 对 MoE 有完整的生产级实现：从 router topk、fused expert GEMM 到 Expert Parallelism (DeepEP / Mooncake)。</p>
+
+<p><b>学习路径：</b></p>
+<ol>
+<li>先看 <b>01 MoE 原理</b> 理解稀疏激活的本质、为什么比 Dense 模型更难 serve</li>
+<li>再看 <b>02 架构总览</b> 建立 SGLang MoE 的全景骨架（5 层抽象）</li>
+<li>然后按 <b>03 → 04 → 05</b> 顺序逐层深入：TopK / Router → FusedMoE Layer → Triton Kernel</li>
+<li><b>06 Expert Parallelism</b> 讲多卡分布式 MoE（DeepEP / All-to-All）</li>
+<li>最后 <b>07</b> 覆盖生产调优和性能分析</li>
+</ol>
+</div>
+
+<div class="grid cols-2" style="gap:14px;margin-top:20px">
+<a href="01-moe-fundamentals.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer;transition:all .2s"
+     onmouseover="this.style.borderColor='var(--purple)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--purple);margin-top:0">01 · MoE 原理与动机</h3>
+<p style="color:var(--mute);font-size:13px">稀疏 vs 稠密、Gate 函数、Top-K 路由、负载均衡 Loss、为什么 MoE 推理比 Dense 更难（显存带宽、All-to-All 通信）。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">📐 Token 路由可视化 + 负载分布直方图</p>
+</div>
+</a>
+<a href="02-architecture-overview.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--purple)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--purple);margin-top:0">02 · SGLang MoE 架构总览</h3>
+<p style="color:var(--mute);font-size:13px">5 层抽象：Model → SparseMoeBlock → TopK → FusedMoE → TokenDispatcher。数据流向、权重布局、TP/EP 切分策略。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">🏗️ 5 层架构图 + 数据流 SVG</p>
+</div>
+</a>
+<a href="03-topk-and-router.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--purple)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--purple);margin-top:0">03 · TopK & Router 源码</h3>
+<p style="color:var(--mute);font-size:13px">topk.py 三种输出格式、fused_moe_router_cudacore Triton kernel（logit softcap + bias + topk-in-one-kernel）、grouped topk for DeepSeek。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">🔢 Softmax TopK 动画 + kernel 参数拆解</p>
+</div>
+</a>
+<a href="04-fused-moe-layer.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--purple)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--purple);margin-top:0">04 · FusedMoE Layer 源码</h3>
+<p style="color:var(--mute);font-size:13px">layer.py 的 FusedMoE 类：权重创建、dispatch → run_moe_core → combine 三步 forward、w13/w2 权重映射、CUDA Graph 兼容。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">📦 forward 三步骤流程图 + 权重张量 shape 可视化</p>
+</div>
+</a>
+<a href="05-triton-kernel.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--purple)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--purple);margin-top:0">05 · Fused MoE Triton Kernel</h3>
+<p style="color:var(--mute);font-size:13px">fused_experts_impl：moe_align_block_size 排序 → invoke_fused_moe_kernel (up GEMM) → act_and_mul → down GEMM → combine reduce。64K chunk 策略。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">⚡ Kernel 执行流水线图 + Block 分配示意</p>
+</div>
+</a>
+<a href="06-expert-parallelism.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--purple)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--purple);margin-top:0">06 · Expert Parallelism (EP)</h3>
+<p style="color:var(--mute);font-size:13px">TokenDispatcher 抽象、DeepEP Normal/Low-Latency 两种模式、Mooncake All-to-All、FlashInfer dispatcher、EPLB 动态负载均衡。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">🌐 EP 通信拓扑图 + All-to-All 数据流演示</p>
+</div>
+</a>
+<a href="07-production-tuning.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--purple)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--purple);margin-top:0">07 · 生产调优与性能分析</h3>
+<p style="color:var(--mute);font-size:13px">MoE runner backend 选择（Triton/CUTLASS/FlashInfer）、autotuning config、Overlap 策略、MoE padding、FP8 量化、EP + TP 组合调参。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">📊 Benchmark 对比表 + 调参 checklist</p>
+</div>
+</a>
+</div>
+
+<h2 id="source"><span class="step">REF</span>源码索引（全章参考）</h2>
+<div class="card">
+<table>
+<tr><th>层</th><th>路径</th><th>核心</th></tr>
+<tr><td>Model 层 (Qwen3-MoE)</td><td class="path">python/sglang/srt/models/qwen3_moe.py</td><td>Qwen3MoeSparseMoeBlock.forward</td></tr>
+<tr><td>Model 层 (DeepSeek-V2)</td><td class="path">python/sglang/srt/models/deepseek_v2.py</td><td>DeepseekV2MoE (grouped topk)</td></tr>
+<tr><td>TopK 路由</td><td class="path">python/sglang/srt/layers/moe/topk.py</td><td>TopK / fused_topk / fused_topk_deepseek</td></tr>
+<tr><td>Router Kernel</td><td class="path">python/sglang/srt/layers/moe/router.py</td><td>fused_moe_router_cudacore_kernel (Triton)</td></tr>
+<tr><td>FusedMoE Layer</td><td class="path">python/sglang/srt/layers/moe/fused_moe_triton/layer.py</td><td>FusedMoE.__init__ / forward_impl</td></tr>
+<tr><td>Fused Expert Impl</td><td class="path">python/sglang/srt/layers/moe/fused_moe_triton/fused_moe.py</td><td>fused_experts_impl (64K chunk)</td></tr>
+<tr><td>Triton Kernel</td><td class="path">python/sglang/srt/layers/moe/fused_moe_triton/fused_moe_triton_kernels.py</td><td>fused_moe_kernel / invoke_fused_moe_kernel</td></tr>
+<tr><td>Token Dispatcher</td><td class="path">python/sglang/srt/layers/moe/token_dispatcher/</td><td>standard.py / deepep.py / flashinfer.py</td></tr>
+<tr><td>EP Wrapper</td><td class="path">python/sglang/srt/layers/moe/ep_moe/layer.py</td><td>get_moe_impl_class / EPMoE forward</td></tr>
+<tr><td>MoE Align</td><td class="path">python/sglang/srt/layers/moe/fused_moe_triton/moe_align_block_size.py</td><td>moe_align_block_size</td></tr>
+<tr><td>MoE Config</td><td class="path">python/sglang/srt/layers/moe/__init__.py</td><td>initialize_moe_config / MoeRunnerBackend</td></tr>
+<tr><td>EPLB</td><td class="path">python/sglang/srt/eplb/</td><td>expert_location.py / expert_distribution.py</td></tr>
+<tr><td>Quantization (FP8)</td><td class="path">python/sglang/srt/layers/quantization/fp8.py</td><td>Fp8MoEMethod</td></tr>
+</table>
+</div>
+
+<div class="nav"><a href="../index.html">← 返回总目录</a><a href="01-moe-fundamentals.html">开始：MoE 原理 →</a></div>
+<div class="foot">SGLang MoE Deep Dive · 原理 → 架构 → 源码 → 性能</div>
+</div>  <script src="../course-nav.js"></script>
+</body></html>

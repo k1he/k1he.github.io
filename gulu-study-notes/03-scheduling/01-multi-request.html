@@ -1,0 +1,1404 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>04 · 多请求调度与时序剖析</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --code:#0f1218;--R1:#fbbf24;--R2:#7dd3fc;--R3:#a78bfa;--R4:#f87171;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.65 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:30px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:28px}
+h2{font-size:20px;margin:36px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h3{font-size:16px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:14px 0 6px;color:#fbbf24}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:18px;margin:14px 0}
+.grid{display:grid;gap:16px}
+.grid.cols-2{grid-template-columns:1fr 1fr}
+.grid.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.grid.cols-2,.grid.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;font-size:12px}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:12px 14px;overflow:auto;line-height:1.55}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:#1f2430;color:#cbd5e1;border:1px solid var(--line);margin-right:6px}
+.b-brand{background:rgba(110,231,183,.12);color:var(--brand);border-color:rgba(110,231,183,.3)}
+.b-info{background:rgba(125,211,252,.12);color:var(--brand2);border-color:rgba(125,211,252,.3)}
+.b-warn{background:rgba(251,191,36,.12);color:var(--warn);border-color:rgba(251,191,36,.3)}
+.b-r1{background:rgba(251,191,36,.16);color:var(--R1);border-color:rgba(251,191,36,.4)}
+.b-r2{background:rgba(125,211,252,.16);color:var(--R2);border-color:rgba(125,211,252,.4)}
+.b-r3{background:rgba(167,139,250,.16);color:var(--R3);border-color:rgba(167,139,250,.4)}
+.b-r4{background:rgba(248,113,113,.16);color:var(--R4);border-color:rgba(248,113,113,.4)}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:3px 0}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:14px;overflow:auto}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.foot{color:var(--mute);font-size:12px;margin-top:40px;text-align:center}
+a{color:var(--brand2);text-decoration:none}a:hover{text-decoration:underline}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+th,td{padding:8px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:12.5px}
+th{color:var(--mute);font-weight:500}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px}
+.tlbar{display:flex;align-items:center;height:24px;border-radius:4px;color:#0b0d12;font-size:11px;font-weight:600;justify-content:center}
+.tl-row{display:grid;grid-template-columns:80px 1fr;gap:8px;align-items:center;margin:6px 0}
+.tl-row .lbl{color:var(--mute);font-size:12px;font-family:"SF Mono",monospace}
+.tl-grid{display:grid;gap:2px}
+.legend{display:flex;flex-wrap:wrap;gap:8px;margin:8px 0 12px}
+.legend .lg{display:inline-flex;align-items:center;gap:6px;font-size:12px;color:#cbd5e1}
+.legend .sw{width:14px;height:14px;border-radius:3px}
+
+/* ===== Animation Demo Styles ===== */
+.demo{background:#0f1218;border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}
+.demo-title{font-size:16px;font-weight:600;color:var(--brand);margin:0 0 4px;display:flex;align-items:center;gap:8px}
+.demo-sub{color:var(--mute);font-size:12.5px;margin-bottom:14px}
+.demo-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
+.demo-btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:7px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:all .12s;display:inline-flex;align-items:center;gap:6px}
+.demo-btn:hover{border-color:var(--brand);color:var(--brand)}
+.demo-btn.primary{background:var(--brand);color:var(--bg);border-color:var(--brand);font-weight:600}
+.demo-btn.primary:hover{background:#5cd6a4;color:var(--bg)}
+.demo-btn:disabled{opacity:.4;cursor:not-allowed}
+.demo-step{font-family:"SF Mono",monospace;font-size:12px;color:var(--mute);margin-left:auto;background:#1a1f2b;padding:4px 10px;border-radius:6px;border:1px solid var(--line)}
+.demo-stage{background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px;min-height:200px;overflow:hidden;position:relative}
+.demo-narration{background:rgba(110,231,183,.08);border-left:3px solid var(--brand);padding:10px 14px;border-radius:0 8px 8px 0;margin-top:12px;color:#cbd5e1;font-size:13px;min-height:42px;transition:all .3s}
+
+/* GPU timeline animation */
+.gpu-track{display:flex;height:46px;background:#0a0d12;border:1px solid var(--line);border-radius:6px;position:relative;overflow:hidden}
+.gpu-tick{position:absolute;top:0;bottom:0;width:1px;background:#262b38}
+.gpu-block{position:absolute;top:4px;bottom:4px;border-radius:4px;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:600;color:#0b0d12;transition:all .35s ease;overflow:hidden;white-space:nowrap}
+.req-list{display:flex;flex-direction:column;gap:6px;margin-top:10px}
+.req-row{display:grid;grid-template-columns:80px 1fr 100px;gap:10px;align-items:center;padding:6px 8px;background:#0a0d12;border:1px solid var(--line);border-radius:6px;font-size:12px}
+.req-row .req-name{font-weight:600;font-family:"SF Mono",monospace}
+.req-row .req-bar{height:14px;background:#1a1f2b;border-radius:3px;position:relative;overflow:hidden}
+.req-row .req-fill{position:absolute;left:0;top:0;bottom:0;border-radius:3px;transition:width .4s ease}
+.req-row .req-info{font-family:"SF Mono",monospace;font-size:11px;color:var(--mute);text-align:right}
+
+/* Radix tree visualization */
+.radix-stage{display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start}
+.radix-tree-wrap{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:12px;min-height:300px;position:relative}
+.radix-info{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12.5px;color:#cbd5e1}
+.metric{display:flex;justify-content:space-between;padding:6px 0;border-bottom:1px dashed var(--line)}
+.metric:last-child{border-bottom:none}
+.metric-k{color:var(--mute)}
+.metric-v{font-family:"SF Mono",monospace;color:var(--brand);font-weight:600}
+.savings{margin-top:10px;padding:10px;background:rgba(110,231,183,.1);border-radius:6px;border:1px solid rgba(110,231,183,.3);text-align:center;font-size:13px;color:var(--brand)}
+
+/* Chunked prefill */
+.chunk-stage{display:flex;flex-direction:column;gap:12px}
+.token-strip{display:flex;flex-wrap:nowrap;height:30px;background:#0a0d12;border:1px solid var(--line);border-radius:6px;overflow:hidden;position:relative}
+.token-cell{flex:1;border-right:1px solid #1a1f2b;display:flex;align-items:center;justify-content:center;font-size:9px;color:#6b7280;transition:all .3s}
+.token-cell.cached{background:rgba(52,211,153,.4);color:#0b0d12;font-weight:600}
+.token-cell.computing{background:rgba(251,191,36,.7);color:#0b0d12;animation:pulse 1s ease-in-out infinite}
+.token-cell.done{background:rgba(125,211,252,.3)}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+
+/* Continuous batching tracks */
+.cb-tracks{display:flex;flex-direction:column;gap:4px;margin-top:8px}
+.cb-track-row{display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center}
+.cb-track-row .lbl{font-family:"SF Mono",monospace;font-size:11px;color:var(--mute)}
+.cb-track{height:34px;background:#0a0d12;border:1px solid var(--line);border-radius:5px;position:relative;overflow:hidden}
+.cb-seg{position:absolute;top:3px;bottom:3px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0b0d12;transition:all .35s}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>多请求调度与时序剖析 <span class="tag">04</span></h1>
+<div class="sub">同时来 4 个请求：从队列里到 CUDA Graph 的详细剧本 · 含 Continuous Batching、Radix 命中、Chunked Prefill、Overlap Scheduling 全部场景</div>
+
+<div class="toc">
+  <a href="#scenario">场景</a>
+  <a href="#manager-state">三个 Manager 协同</a>
+  <a href="#anim">🎬 动画演示</a>
+  <a href="#timeline">时序图</a>
+  <a href="#step">逐 Iteration 源码追踪</a>
+  <a href="#chunked">Chunked Prefill 子场景</a>
+  <a href="#oom">OOM 与回退</a>
+  <a href="#perf">throughput 推算</a>
+</div>
+
+<!-- ========== Scenario ========== -->
+<h2 id="scenario">一、场景设定（最能展现调度能力的组合）</h2>
+<div class="card">
+<table>
+<tr><th>请求</th><th>到达时刻</th><th>prompt 特征</th><th>input_len</th><th>max_tokens</th><th>说明</th></tr>
+<tr><td><span class="badge b-r1">R1</span></td><td>t=0 ms</td><td>普通短 prompt</td><td>30</td><td>40</td><td>第一个，触发 prefill</td></tr>
+<tr><td><span class="badge b-r2">R2</span></td><td>t=2 ms</td><td>共享 R1 system prompt 前 20 token</td><td>50</td><td>40</td><td>测试 Radix Cache 命中</td></tr>
+<tr><td><span class="badge b-r3">R3</span></td><td>t=4 ms</td><td>独立 prompt</td><td>80</td><td>40</td><td>测试并发 batch</td></tr>
+<tr><td><span class="badge b-r4">R4</span></td><td>t=6 ms</td><td>超长 prompt（&gt; max_extend_tokens / 2）</td><td>10000</td><td>40</td><td>触发 Chunked Prefill</td></tr>
+</table>
+
+<p><strong>启动配置（默认）：</strong></p>
+<ul class="tight">
+  <li><code>--model "Qwen/Qwen3-0.6B" --tp 1</code></li>
+  <li><code>max_extend_tokens = 8192</code>（prefill batch token budget）</li>
+  <li><code>cache_type = "radix"</code>，<code>page_size = 1</code></li>
+  <li><code>cuda_graph_max_bs = 256</code>，cuda_graph_bs = [1,2,4,8,16,...,256]</li>
+  <li><code>max_running_req = 256</code>（默认）</li>
+  <li>overlap scheduling 默认开启</li>
+</ul>
+</div>
+
+<!-- ========== Manager State ========== -->
+<h2 id="manager-state">二、三个 Manager 的协同模型</h2>
+
+<p style="color:var(--mute);font-size:13px;margin-top:6px">
+请求的状态机是 <strong>Pending → Prefill batch → Decode running set</strong>。下面这张图展示 4 个并发请求 R1~R4 在系统中的位置，以及四个 Manager 之间的数据流向。
+</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1480 760" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <defs>
+    <marker id="ax1" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#7dd3fc"/></marker>
+    <marker id="ax2" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#fbbf24"/></marker>
+    <marker id="ax3" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#fb7185"/></marker>
+    <marker id="ax4" viewBox="0 0 12 12" refX="11" refY="6" markerWidth="8" markerHeight="8" orient="auto"><path d="M0,0 L12,6 L0,12 z" fill="#34d399"/></marker>
+  </defs>
+
+  <!-- ============== ZMQ Inbox ============== -->
+  <g>
+    <rect x="20" y="40" width="220" height="430" rx="12" fill="#0f1218" stroke="#3b82f6" stroke-width="1.5"/>
+    <text x="130" y="72" text-anchor="middle" fill="#7dd3fc" font-size="15" font-weight="700">ZMQ Inbox</text>
+    <text x="130" y="92" text-anchor="middle" fill="#8b93a7" font-size="11.5">_recv_from_tokenizer.get()</text>
+
+    <rect x="40" y="120" width="180" height="42" fill="#2a1f0b" stroke="#fbbf24" rx="5"/>
+    <text x="130" y="138" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">UserMsg(R1)</text>
+    <text x="130" y="153" text-anchor="middle" fill="#8b93a7" font-size="11">ids=30</text>
+
+    <rect x="40" y="178" width="180" height="42" fill="#0b1f2a" stroke="#7dd3fc" rx="5"/>
+    <text x="130" y="196" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="600">UserMsg(R2)</text>
+    <text x="130" y="211" text-anchor="middle" fill="#8b93a7" font-size="11">ids=50</text>
+
+    <rect x="40" y="236" width="180" height="42" fill="#1a0f2a" stroke="#a78bfa" rx="5"/>
+    <text x="130" y="254" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="600">UserMsg(R3)</text>
+    <text x="130" y="269" text-anchor="middle" fill="#8b93a7" font-size="11">ids=80</text>
+
+    <rect x="40" y="294" width="180" height="42" fill="#2a0f0f" stroke="#f87171" rx="5"/>
+    <text x="130" y="312" text-anchor="middle" fill="#f87171" font-size="12" font-weight="600">UserMsg(R4)</text>
+    <text x="130" y="327" text-anchor="middle" fill="#8b93a7" font-size="11">ids=10000 (long)</text>
+
+    <text x="130" y="380" text-anchor="middle" fill="#cbd5e1" font-size="11">tokenizer 推过来</text>
+    <text x="130" y="398" text-anchor="middle" fill="#cbd5e1" font-size="11">的已分词请求</text>
+    <text x="130" y="430" text-anchor="middle" fill="#3b82f6" font-size="11" font-weight="600">scheduler 在</text>
+    <text x="130" y="448" text-anchor="middle" fill="#3b82f6" font-size="11" font-weight="600">overlap_loop 里 drain</text>
+  </g>
+
+  <!-- ============== PrefillManager ============== -->
+  <g>
+    <rect x="320" y="40" width="320" height="430" rx="12" fill="#0f1218" stroke="#6ee7b7" stroke-width="1.5"/>
+    <text x="480" y="72" text-anchor="middle" fill="#6ee7b7" font-size="15" font-weight="700">PrefillManager</text>
+    <text x="480" y="92" text-anchor="middle" fill="#8b93a7" font-size="11.5">pending_list: List[PendingReq]</text>
+
+    <rect x="340" y="115" width="280" height="52" fill="#0a1812" stroke="#fbbf24" stroke-width="1" rx="5"/>
+    <text x="480" y="135" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">PendingReq R1 · input_len=30</text>
+    <text x="480" y="155" text-anchor="middle" fill="#8b93a7" font-size="11">chunked_req=None</text>
+
+    <rect x="340" y="175" width="280" height="52" fill="#0a1812" stroke="#7dd3fc" stroke-width="1" rx="5"/>
+    <text x="480" y="195" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="600">PendingReq R2 · input_len=50</text>
+    <text x="480" y="215" text-anchor="middle" fill="#8b93a7" font-size="11">chunked_req=None</text>
+
+    <rect x="340" y="235" width="280" height="52" fill="#0a1812" stroke="#a78bfa" stroke-width="1" rx="5"/>
+    <text x="480" y="255" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="600">PendingReq R3 · input_len=80</text>
+    <text x="480" y="275" text-anchor="middle" fill="#8b93a7" font-size="11">chunked_req=None</text>
+
+    <rect x="340" y="295" width="280" height="52" fill="#0a1812" stroke="#f87171" stroke-width="1.5" rx="5"/>
+    <text x="480" y="315" text-anchor="middle" fill="#f87171" font-size="12" font-weight="600">PendingReq R4 · input_len=10000</text>
+    <text x="480" y="335" text-anchor="middle" fill="#fbbf24" font-size="11">chunked_req=ChunkedReq (8160 done)</text>
+
+    <rect x="340" y="380" width="280" height="64" fill="#1a1f2b" stroke="#6ee7b7" stroke-dasharray="4 3" rx="5"/>
+    <text x="480" y="402" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">schedule_next_batch(budget)</text>
+    <text x="480" y="422" text-anchor="middle" fill="#cbd5e1" font-size="11">→ Batch(phase=&quot;prefill&quot;, reqs=[...])</text>
+    <text x="480" y="438" text-anchor="middle" fill="#8b93a7" font-size="10.5">PrefillAdder 装箱 + Radix 命中检查</text>
+  </g>
+
+  <!-- ============== DecodeManager ============== -->
+  <g>
+    <rect x="720" y="40" width="320" height="200" rx="12" fill="#0f1218" stroke="#a78bfa" stroke-width="1.5"/>
+    <text x="880" y="72" text-anchor="middle" fill="#a78bfa" font-size="15" font-weight="700">DecodeManager</text>
+    <text x="880" y="92" text-anchor="middle" fill="#8b93a7" font-size="11.5">running_reqs: Set[Req]</text>
+
+    <rect x="740" y="110" width="280" height="32" fill="#1a0f2a" stroke="#a78bfa" rx="5"/>
+    <text x="880" y="131" text-anchor="middle" fill="#fbbf24" font-size="11.5">Req R1 · device_len=42 / max=70</text>
+
+    <rect x="740" y="148" width="280" height="32" fill="#1a0f2a" stroke="#a78bfa" rx="5"/>
+    <text x="880" y="169" text-anchor="middle" fill="#7dd3fc" font-size="11.5">Req R2 · device_len=53 / max=90</text>
+
+    <rect x="740" y="186" width="280" height="32" fill="#1a0f2a" stroke="#a78bfa" rx="5"/>
+    <text x="880" y="207" text-anchor="middle" fill="#a78bfa" font-size="11.5">Req R3 · device_len=83 / max=120</text>
+  </g>
+
+  <!-- ============== TableManager ============== -->
+  <g>
+    <rect x="720" y="270" width="320" height="200" rx="12" fill="#0f1218" stroke="#fb7185" stroke-width="1.5"/>
+    <text x="880" y="302" text-anchor="middle" fill="#fb7185" font-size="15" font-weight="700">TableManager</text>
+    <text x="880" y="322" text-anchor="middle" fill="#8b93a7" font-size="11.5">_free_slots: List[int] · 256 个槽位</text>
+
+    <rect x="740" y="340" width="280" height="120" fill="#0a0d12" stroke="#fb7185" rx="5"/>
+    <text x="880" y="362" text-anchor="middle" fill="#fb7185" font-size="11.5" font-weight="600">page_table[req_idx, pos] = page#</text>
+    <text x="760" y="386" fill="#fbbf24" font-size="11.5" font-family="SF Mono">R1 → table_idx=0</text>
+    <text x="760" y="406" fill="#7dd3fc" font-size="11.5" font-family="SF Mono">R2 → table_idx=1</text>
+    <text x="760" y="426" fill="#a78bfa" font-size="11.5" font-family="SF Mono">R3 → table_idx=2</text>
+    <text x="760" y="446" fill="#f87171" font-size="11.5" font-family="SF Mono">R4 → table_idx=3</text>
+  </g>
+
+  <!-- ============== CacheManager ============== -->
+  <g>
+    <rect x="1120" y="40" width="340" height="430" rx="12" fill="#0f1218" stroke="#34d399" stroke-width="1.5"/>
+    <text x="1290" y="72" text-anchor="middle" fill="#34d399" font-size="15" font-weight="700">CacheManager</text>
+    <text x="1290" y="92" text-anchor="middle" fill="#8b93a7" font-size="11.5">RadixPrefixCache + free_slots(GPU)</text>
+
+    <!-- Radix Tree -->
+    <text x="1290" y="120" text-anchor="middle" fill="#34d399" font-size="11.5" font-weight="600">前缀树（部分）</text>
+
+    <circle cx="1290" cy="148" r="14" fill="#1a1f2b" stroke="#34d399" stroke-width="1.5"/>
+    <text x="1290" y="152" text-anchor="middle" fill="#cbd5e1" font-size="10" font-weight="600">root</text>
+
+    <line x1="1280" y1="160" x2="1200" y2="195" stroke="#4b5563" stroke-width="1.2"/>
+    <line x1="1300" y1="160" x2="1380" y2="195" stroke="#4b5563" stroke-width="1.2"/>
+
+    <rect x="1140" y="200" width="120" height="50" fill="#0f2a1f" stroke="#34d399" rx="5"/>
+    <text x="1200" y="220" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600">prefix_R1R2</text>
+    <text x="1200" y="238" text-anchor="middle" fill="#fbbf24" font-size="10.5">len=20, ref=2</text>
+
+    <rect x="1320" y="200" width="120" height="50" fill="#0f2a1f" stroke="#34d399" rx="5"/>
+    <text x="1380" y="220" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600">R3 prefix</text>
+    <text x="1380" y="238" text-anchor="middle" fill="#a78bfa" font-size="10.5">len=80, ref=1</text>
+
+    <line x1="1180" y1="250" x2="1140" y2="285" stroke="#4b5563" stroke-width="1.2"/>
+    <line x1="1220" y1="250" x2="1260" y2="285" stroke="#4b5563" stroke-width="1.2"/>
+
+    <rect x="1080" y="290" width="120" height="50" fill="#0f2a1f" stroke="#34d399" rx="5"/>
+    <text x="1140" y="310" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600">R1 tail</text>
+    <text x="1140" y="328" text-anchor="middle" fill="#fbbf24" font-size="10.5">len=10, ref=1</text>
+
+    <rect x="1220" y="290" width="120" height="50" fill="#0f2a1f" stroke="#34d399" rx="5"/>
+    <text x="1280" y="310" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600">R2 tail</text>
+    <text x="1280" y="328" text-anchor="middle" fill="#7dd3fc" font-size="10.5">len=30, ref=1</text>
+
+    <!-- info block -->
+    <rect x="1140" y="360" width="300" height="100" fill="#0a0d12" stroke="#34d399" stroke-dasharray="3 3" rx="5"/>
+    <text x="1290" y="380" text-anchor="middle" fill="#34d399" font-size="11.5" font-weight="600">size_info</text>
+    <text x="1160" y="402" fill="#8b93a7" font-size="11" font-family="SF Mono">evictable_size: 0  ← 全锁住</text>
+    <text x="1160" y="420" fill="#8b93a7" font-size="11" font-family="SF Mono">protected_size: 140 token KV</text>
+    <text x="1160" y="438" fill="#8b93a7" font-size="11" font-family="SF Mono">available = evictable + free_pages</text>
+    <text x="1160" y="456" fill="#cbd5e1" font-size="10.5">evict() 按 timestamp 最小堆淘汰</text>
+  </g>
+
+  <!-- ================ 横向通道：箭头都走顶部和底部，避开卡片中央 ================ -->
+
+  <!-- ① ZMQ → PrefillManager (中间高度，简短水平) -->
+  <line x1="240" y1="200" x2="320" y2="200" stroke="#7dd3fc" stroke-width="2.2" marker-end="url(#ax1)"/>
+  <text x="280" y="190" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">add_one_req</text>
+
+  <!-- ② PrefillManager → DecodeManager (走顶部通道：底部 schedule_next_batch 出发，绕到 Decode 顶部) -->
+  <path d="M 580 380 L 580 28 L 880 28 L 880 40" fill="none" stroke="#fbbf24" stroke-width="2.2" marker-end="url(#ax2)" stroke-dasharray="6 4"/>
+  <rect x="630" y="14" width="200" height="22" fill="#0b0d12" stroke="#fbbf24" rx="4"/>
+  <text x="730" y="29" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">prefill 完 → batch.reqs 入 decode</text>
+
+  <!-- ③ PrefillManager → TableManager (底部走，分配 table_idx) -->
+  <path d="M 580 410 L 580 510 L 880 510 L 880 470" fill="none" stroke="#fb7185" stroke-width="2.2" marker-end="url(#ax3)"/>
+  <rect x="640" y="500" width="180" height="22" fill="#0b0d12" stroke="#fb7185" rx="4"/>
+  <text x="730" y="515" text-anchor="middle" fill="#fb7185" font-size="11" font-weight="600">allocate(table_idx)</text>
+
+  <!-- ④ PrefillManager ↔ CacheManager (顶部走，match/cache_req) -->
+  <path d="M 600 380 L 600 564 L 1290 564 L 1290 470" fill="none" stroke="#34d399" stroke-width="2.2" marker-end="url(#ax4)" stroke-dasharray="6 4"/>
+  <rect x="900" y="554" width="220" height="22" fill="#0b0d12" stroke="#34d399" rx="4"/>
+  <text x="1010" y="569" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600">match_req / cache_req</text>
+
+  <!-- ============== Legend ============== -->
+  <g transform="translate(20, 600)">
+    <rect x="0" y="0" width="1440" height="140" fill="#0a0d12" stroke="#262b38" rx="10"/>
+    <text x="20" y="26" fill="#cbd5e1" font-size="13" font-weight="700">数据流向图例</text>
+
+    <line x1="20" y1="48" x2="60" y2="48" stroke="#7dd3fc" stroke-width="2.2" marker-end="url(#ax1)"/>
+    <text x="70" y="52" fill="#cbd5e1" font-size="12">① <tspan fill="#7dd3fc" font-weight="600">add_one_req</tspan> · 收到 UserMsg → 包成 PendingReq 入队</text>
+
+    <line x1="20" y1="74" x2="60" y2="74" stroke="#fbbf24" stroke-width="2.2" stroke-dasharray="6 4" marker-end="url(#ax2)"/>
+    <text x="70" y="78" fill="#cbd5e1" font-size="12">② <tspan fill="#fbbf24" font-weight="600">batch.reqs (after prefill)</tspan> · _forward 末尾 filter_reqs 把 prefill 完的 req 加入 running_reqs</text>
+
+    <line x1="20" y1="100" x2="60" y2="100" stroke="#fb7185" stroke-width="2.2" marker-end="url(#ax3)"/>
+    <text x="70" y="104" fill="#cbd5e1" font-size="12">③ <tspan fill="#fb7185" font-weight="600">allocate(table_idx)</tspan> · PrefillAdder 给新请求分配槽位号</text>
+
+    <line x1="20" y1="126" x2="60" y2="126" stroke="#34d399" stroke-width="2.2" stroke-dasharray="6 4" marker-end="url(#ax4)"/>
+    <text x="70" y="130" fill="#cbd5e1" font-size="12">④ <tspan fill="#34d399" font-weight="600">match_req / cache_req</tspan> · 装箱时 Radix 查命中；prefill 完插入树；ref_count 锁/解锁</text>
+  </g>
+</svg>
+</div>
+
+<div class="callout warn">
+<strong>读这张图的核心要点：</strong>
+<ul class="tight">
+  <li>请求的状态机：<code>ZMQ Inbox</code> → <code>PrefillManager.pending_list</code> → <code>Batch(phase=&quot;prefill&quot;)</code> → <code>DecodeManager.running_reqs</code> → 完成回收</li>
+  <li><strong>TableManager</strong> 维护"槽位号"——每个活跃请求拿到一个 <code>table_idx</code>，对应 page_table 里的一行</li>
+  <li><strong>CacheManager</strong> 维护"前缀复用 + 物理页池"——Radix 树用 ref_count 锁住正在用的前缀，evict 不会动它</li>
+  <li><strong>DecodeManager</strong> 只是个 Set，<u>filter_reqs 把 prefill 完的请求"过户"进来</u>，schedule 时一锅端</li>
+  <li>三者相互引用 ref_count + table_idx，<strong>没有任何全局锁</strong>——因为整个 scheduler 是单线程主循环</li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<!-- ========== ANIMATED DEMOS（三个交互式动画演示）========== -->
+<!-- ============================================================ -->
+<h2 id="anim">🎬 三个动态演示</h2>
+<p style="color:var(--mute);font-size:13.5px">下面三个动画把"连续批处理"、"Radix 命中"、"Chunked Prefill"做成可交互的 demo，点 <span class="badge b-brand">▶ 播放</span> 看它们一步步运行。每一步都有文字解说，帮你建立直觉。</p>
+
+<!-- ========== Demo 1: Continuous Batching ========== -->
+<div class="demo">
+<div class="demo-title">🔄 演示 ① · Continuous Batching</div>
+<div class="demo-sub">对比"传统静态批处理（等齐了一起算完）"和"continuous batching（请求随时进出，每步重新组 batch）"</div>
+
+<div class="demo-controls">
+  <button class="demo-btn primary" id="cb-play">▶ 播放</button>
+  <button class="demo-btn" id="cb-reset">↻ 重置</button>
+  <span class="demo-step" id="cb-step">step 0 / 12</span>
+</div>
+
+<div class="demo-stage">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+
+    <!-- Static batching -->
+    <div>
+      <div style="font-size:13px;color:var(--bad);font-weight:600;margin-bottom:6px">❌ 传统静态批处理</div>
+      <div style="font-size:11.5px;color:var(--mute);margin-bottom:8px">所有请求齐头并进，最长的拖死最短的</div>
+      <div class="cb-tracks" id="cb-static-tracks"></div>
+      <div style="margin-top:8px;font-size:11.5px;color:var(--mute)">
+        总耗时：<span id="cb-static-time" style="color:var(--bad);font-weight:600">— ms</span> ·
+        GPU 利用率：<span id="cb-static-util" style="color:var(--bad);font-weight:600">— %</span>
+      </div>
+    </div>
+
+    <!-- Continuous batching -->
+    <div>
+      <div style="font-size:13px;color:var(--brand);font-weight:600;margin-bottom:6px">✅ Continuous Batching</div>
+      <div style="font-size:11.5px;color:var(--mute);margin-bottom:8px">请求完成即退出 batch，立刻有新请求填空位</div>
+      <div class="cb-tracks" id="cb-dyn-tracks"></div>
+      <div style="margin-top:8px;font-size:11.5px;color:var(--mute)">
+        总耗时：<span id="cb-dyn-time" style="color:var(--brand);font-weight:600">— ms</span> ·
+        GPU 利用率：<span id="cb-dyn-util" style="color:var(--brand);font-weight:600">— %</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="demo-narration" id="cb-narration">点击 ▶ 播放，观察右边请求 R3、R4 是怎么"插队"进来的，对比左边四个请求要全部等齐。</div>
+</div>
+
+<!-- ========== Demo 2: Radix Cache Hit ========== -->
+<div class="demo">
+<div class="demo-title">🌲 演示 ② · Radix Cache 前缀命中</div>
+<div class="demo-sub">两个请求共享 system prompt 时，第二个请求的 prefill 直接复用第一个请求的 KV，<u>那部分计算被省掉</u></div>
+
+<div class="demo-controls">
+  <button class="demo-btn primary" id="rx-play">▶ 播放</button>
+  <button class="demo-btn" id="rx-reset">↻ 重置</button>
+  <span class="demo-step" id="rx-step">step 0 / 5</span>
+</div>
+
+<div class="demo-stage">
+  <div class="radix-stage">
+    <!-- Tree side -->
+    <div class="radix-tree-wrap">
+      <div style="font-size:12px;color:var(--brand);font-weight:600;margin-bottom:8px">Radix Tree 状态</div>
+      <svg id="rx-tree" viewBox="0 0 360 280" style="width:100%;height:280px"></svg>
+    </div>
+
+    <!-- Info side -->
+    <div>
+      <div class="radix-info">
+        <div style="font-size:12px;color:var(--brand);font-weight:600;margin-bottom:8px">本步操作</div>
+        <div id="rx-action" style="font-family:'SF Mono',monospace;font-size:11.5px;color:#cbd5e1;min-height:40px;background:#0f1218;padding:8px;border-radius:6px;border:1px solid var(--line)">等待开始...</div>
+
+        <div style="margin-top:12px">
+          <div class="metric"><span class="metric-k">R1 input_len</span><span class="metric-v">100 token (含 80 system prompt)</span></div>
+          <div class="metric"><span class="metric-k">R2 input_len</span><span class="metric-v">120 token (含同样 80 system prompt)</span></div>
+          <div class="metric"><span class="metric-k">R1 cached_len（命中）</span><span class="metric-v" id="rx-r1-cached">—</span></div>
+          <div class="metric"><span class="metric-k">R2 cached_len（命中）</span><span class="metric-v" id="rx-r2-cached">—</span></div>
+          <div class="metric"><span class="metric-k">R1 实际算 token 数</span><span class="metric-v" id="rx-r1-extend">—</span></div>
+          <div class="metric"><span class="metric-k">R2 实际算 token 数</span><span class="metric-v" id="rx-r2-extend">—</span></div>
+        </div>
+
+        <div class="savings" id="rx-savings">还没有节省</div>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="demo-narration" id="rx-narration">第一个请求会把 system prompt 插入 Radix Tree。当第二个请求带相同的 prompt 来时，可以直接命中，省掉重复计算。</div>
+</div>
+
+<!-- ========== Demo 3: Chunked Prefill ========== -->
+<div class="demo">
+<div class="demo-title">🍕 演示 ③ · Chunked Prefill 长 prompt 切片</div>
+<div class="demo-sub">10000 token 的长 prompt 被切成多个 chunk（每片 ≤ 8192）跨多个 iteration prefill，期间不会一次性吃光显存</div>
+
+<div class="demo-controls">
+  <button class="demo-btn primary" id="ch-play">▶ 播放</button>
+  <button class="demo-btn" id="ch-reset">↻ 重置</button>
+  <span class="demo-step" id="ch-step">step 0 / 6</span>
+</div>
+
+<div class="demo-stage">
+  <div style="display:flex;flex-direction:column;gap:14px">
+
+    <div>
+      <div style="font-size:13px;color:#f87171;font-weight:600;margin-bottom:4px">R4 · 10000 token 长 prompt</div>
+      <div style="font-size:11px;color:var(--mute);margin-bottom:6px">绿=已 cached（KV 已写入）· 黄=本 iter 正在算 · 灰=未算</div>
+      <div class="token-strip" id="ch-strip"></div>
+      <div style="font-size:11.5px;color:var(--mute);margin-top:6px;font-family:'SF Mono',monospace">
+        cached_len = <span id="ch-cached" style="color:var(--brand);font-weight:600">0</span> /
+        device_len = <span id="ch-device" style="color:var(--brand2);font-weight:600">0</span> /
+        total = 10000
+      </div>
+    </div>
+
+    <div>
+      <div style="font-size:13px;color:var(--brand2);font-weight:600;margin-bottom:6px">每个 iteration 的 GPU 占用</div>
+      <div class="cb-tracks" id="ch-iter-tracks"></div>
+    </div>
+
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-top:6px">
+      <div style="background:#0a0d12;border:1px solid var(--line);border-radius:6px;padding:10px;font-size:11.5px;color:#cbd5e1">
+        <div style="color:var(--bad);font-weight:600;margin-bottom:4px">❌ 不切 chunk</div>
+        峰值显存 = 10000 token KV 一次性占满 → <span style="color:var(--bad)">很容易 OOM</span>
+      </div>
+      <div style="background:#0a0d12;border:1px solid var(--line);border-radius:6px;padding:10px;font-size:11.5px;color:#cbd5e1">
+        <div style="color:var(--brand);font-weight:600;margin-bottom:4px">✅ 切 chunk</div>
+        峰值 = 8192 token KV → <span style="color:var(--brand)">分摊到多个 iteration</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+<div class="demo-narration" id="ch-narration">观察 R4 的 token 怎么"一格一格"被填满，每片 chunk 只算 8192 个 token，跨两个 iteration 完成全部 prefill。</div>
+</div>
+
+<script>
+/* ============================================================
+   Demo 1: Continuous Batching animation
+   ============================================================ */
+(function(){
+  const colors = {R1:'#fbbf24', R2:'#7dd3fc', R3:'#a78bfa', R4:'#f87171'};
+  // Each request: arrival, finish duration in iters
+  const reqs = [
+    {name:'R1', color:colors.R1, arrive:0, dur:6},
+    {name:'R2', color:colors.R2, arrive:0, dur:3},
+    {name:'R3', color:colors.R3, arrive:0, dur:4},
+    {name:'R4', color:colors.R4, arrive:2, dur:3},  // arrives later
+  ];
+  const TOTAL_ITERS = 12;
+
+  const staticTracksEl = document.getElementById('cb-static-tracks');
+  const dynTracksEl    = document.getElementById('cb-dyn-tracks');
+  const stepEl         = document.getElementById('cb-step');
+  const narEl          = document.getElementById('cb-narration');
+  const tStaticEl      = document.getElementById('cb-static-time');
+  const uStaticEl      = document.getElementById('cb-static-util');
+  const tDynEl         = document.getElementById('cb-dyn-time');
+  const uDynEl         = document.getElementById('cb-dyn-util');
+
+  function buildTracks(container){
+    container.innerHTML='';
+    reqs.forEach(r=>{
+      const row = document.createElement('div');
+      row.className = 'cb-track-row';
+      row.innerHTML = `<div class="lbl" style="color:${r.color}">${r.name}</div><div class="cb-track" data-name="${r.name}"></div>`;
+      container.appendChild(row);
+    });
+  }
+  buildTracks(staticTracksEl);
+  buildTracks(dynTracksEl);
+
+  let curStep = 0;
+  let timer = null;
+
+  function render(step){
+    // ─── Static batching: all wait for max duration ───
+    // R3 arrives at iter 0, R4 at iter 2 — but静态 batching 必须等齐 R4 才能开始？
+    // 这里我们模拟"等所有请求到齐才开 batch，然后所有请求都跑到最长的那个完成"
+    const staticStart = 2; // wait until R4 arrives
+    const staticDur = 6;   // longest dur
+    reqs.forEach(r=>{
+      const el = staticTracksEl.querySelector(`[data-name="${r.name}"]`);
+      if(!el) return;
+      el.innerHTML = '';
+      // arrival marker
+      if(step >= r.arrive){
+        const arrSeg = document.createElement('div');
+        arrSeg.className = 'cb-seg';
+        const left = (r.arrive / TOTAL_ITERS) * 100;
+        arrSeg.style.left = left + '%';
+        arrSeg.style.width = '14px';
+        arrSeg.style.background = '#374151';
+        arrSeg.style.color = '#9ca3af';
+        arrSeg.style.fontSize = '9px';
+        arrSeg.textContent = 'wait';
+        el.appendChild(arrSeg);
+      }
+      if(step >= staticStart){
+        const seg = document.createElement('div');
+        seg.className = 'cb-seg';
+        const left = (staticStart / TOTAL_ITERS) * 100;
+        const cur = Math.min(step, staticStart + staticDur);
+        const widthIters = cur - staticStart;
+        const widthPct = (widthIters / TOTAL_ITERS) * 100;
+        seg.style.left = left + '%';
+        seg.style.width = widthPct + '%';
+        seg.style.background = r.color;
+        seg.textContent = step >= staticStart + staticDur ? '✓' : 'compute';
+        el.appendChild(seg);
+      }
+    });
+
+    // ─── Continuous batching: each req runs immediately on arrival, exits when done ───
+    reqs.forEach(r=>{
+      const el = dynTracksEl.querySelector(`[data-name="${r.name}"]`);
+      if(!el) return;
+      el.innerHTML = '';
+      if(step >= r.arrive){
+        const seg = document.createElement('div');
+        seg.className = 'cb-seg';
+        const left = (r.arrive / TOTAL_ITERS) * 100;
+        const cur = Math.min(step, r.arrive + r.dur);
+        const widthIters = cur - r.arrive;
+        const widthPct = (widthIters / TOTAL_ITERS) * 100;
+        seg.style.left = left + '%';
+        seg.style.width = widthPct + '%';
+        seg.style.background = r.color;
+        seg.textContent = step >= r.arrive + r.dur ? '✓ done' : 'compute';
+        el.appendChild(seg);
+      }
+    });
+
+    // Stats
+    const staticTotal = staticStart + staticDur;
+    if(step >= staticTotal){
+      tStaticEl.textContent = (staticTotal * 4) + ' ms';
+      // utilization = sum(work) / (slots × iters)
+      const work = reqs.reduce((s,r)=>s+r.dur, 0);
+      const cap = staticTotal * reqs.length;
+      uStaticEl.textContent = Math.round(work*100/cap) + '%';
+    } else {
+      tStaticEl.textContent = '— ms';
+      uStaticEl.textContent = '— %';
+    }
+
+    const dynMax = Math.max(...reqs.map(r=>r.arrive+r.dur));
+    if(step >= dynMax){
+      tDynEl.textContent = (dynMax * 4) + ' ms';
+      const work = reqs.reduce((s,r)=>s+r.dur, 0);
+      const cap = dynMax * reqs.length;
+      uDynEl.textContent = Math.round(work*100/cap) + '%';
+    } else {
+      tDynEl.textContent = '— ms';
+      uDynEl.textContent = '— %';
+    }
+
+    stepEl.textContent = `step ${step} / ${TOTAL_ITERS}`;
+
+    // Narration
+    const narrations = [
+      '⏳ R1/R2/R3 同时到达。静态批处理还在等 R4 到齐...',
+      '⏳ 静态：还在等 R4。Continuous：R1/R2/R3 已经在算了！',
+      '🚀 R4 到达。静态终于可以开始（晚了 2 iter）',
+      '📊 Continuous: R2 即将完成（dur=3）',
+      '✓ R2 完成！Continuous 立刻退出 batch 释放显存',
+      '✓ R4 完成（dur=3）',
+      '✓ R3 完成（dur=4）',
+      '🐢 静态批处理还没结束——所有请求要等最长的那个',
+      '✓ R1 完成。Continuous batching 全部结束！',
+      '🐢 静态：R2/R3/R4 都"被迫陪跑"R1 到现在...',
+      '🐢 静态：还在等...',
+      '✓ 静态批处理终于全部完成。看下方统计：耗时 + 利用率差距巨大。',
+    ];
+    narEl.textContent = narrations[Math.min(step, narrations.length-1)] || narrations[narrations.length-1];
+  }
+
+  render(0);
+
+  document.getElementById('cb-play').addEventListener('click', ()=>{
+    if(timer) return;
+    timer = setInterval(()=>{
+      curStep++;
+      render(curStep);
+      if(curStep >= TOTAL_ITERS){clearInterval(timer); timer=null;}
+    }, 700);
+  });
+  document.getElementById('cb-reset').addEventListener('click', ()=>{
+    if(timer){clearInterval(timer); timer=null;}
+    curStep = 0;
+    render(0);
+  });
+})();
+
+/* ============================================================
+   Demo 2: Radix Cache Hit
+   ============================================================ */
+(function(){
+  const stepEl = document.getElementById('rx-step');
+  const narEl  = document.getElementById('rx-narration');
+  const actionEl = document.getElementById('rx-action');
+  const treeEl = document.getElementById('rx-tree');
+  const r1cached = document.getElementById('rx-r1-cached');
+  const r2cached = document.getElementById('rx-r2-cached');
+  const r1extend = document.getElementById('rx-r1-extend');
+  const r2extend = document.getElementById('rx-r2-extend');
+  const savingsEl = document.getElementById('rx-savings');
+  const TOTAL = 5;
+
+  const NS = 'http://www.w3.org/2000/svg';
+  function el(tag, attrs={}, text){
+    const e = document.createElementNS(NS, tag);
+    for(const k in attrs) e.setAttribute(k, attrs[k]);
+    if(text) e.textContent = text;
+    return e;
+  }
+  function clear(node){ while(node.firstChild) node.removeChild(node.firstChild); }
+
+  // node spec: {x,y,r,label,sub,color,refCount}
+  function drawNode(node){
+    const g = el('g');
+    const c = el('circle', {cx:node.x, cy:node.y, r:node.r||32, fill:node.fill||'#0f2a1f', stroke:node.color||'#34d399', 'stroke-width':2});
+    g.appendChild(c);
+    g.appendChild(el('text', {x:node.x, y:node.y-3, 'text-anchor':'middle', fill:'#cbd5e1', 'font-size':10, 'font-weight':600}, node.label));
+    g.appendChild(el('text', {x:node.x, y:node.y+10, 'text-anchor':'middle', fill:node.color||'#34d399', 'font-size':9}, node.sub));
+    if(node.refCount !== undefined){
+      g.appendChild(el('text', {x:node.x, y:node.y+22, 'text-anchor':'middle', fill:'#fbbf24', 'font-size':8}, `ref=${node.refCount}`));
+    }
+    return g;
+  }
+  function drawEdge(x1,y1,x2,y2, color='#4b5563'){
+    return el('line', {x1,y1,x2,y2, stroke:color, 'stroke-width':1.5});
+  }
+
+  function render(step){
+    clear(treeEl);
+    // Always draw root
+    treeEl.appendChild(drawNode({x:180, y:40, r:22, label:'root', sub:'', color:'#34d399'}));
+
+    let action = '', narr = '', r1c='—', r2c='—', r1e='—', r2e='—', savings='还没有节省';
+
+    if(step >= 1){
+      // step 1: R1 arrives
+      action = 'R1 来了 → cache.match_req(R1) → root 节点，cached_len=0';
+      narr = '① R1 第一个到达，Radix Tree 只有 root，所以 cached_len=0，需要 prefill 全部 100 个 token。';
+      r1c='0'; r1e='100';
+    }
+    if(step >= 2){
+      // step 2: R1 prefill done, insert into tree
+      treeEl.appendChild(drawEdge(180,62, 180,110, '#34d399'));
+      treeEl.appendChild(drawNode({x:180, y:140, r:30, label:'system_prompt', sub:'len=80', color:'#34d399', refCount:1}));
+      treeEl.appendChild(drawEdge(180,170, 180,210, '#34d399'));
+      treeEl.appendChild(drawNode({x:180, y:240, r:28, label:'R1 tail', sub:'len=20', color:'#fbbf24', refCount:1}));
+      action = 'R1 prefill 完 → cache_req(R1) 插入 Radix Tree';
+      narr = '② R1 prefill 完成。它的 100 个 token 被插入 Radix Tree——前 80 个是 system_prompt 节点，后 20 个是 R1 自己的 tail。';
+      r1c='0'; r1e='100';
+    }
+    if(step >= 3){
+      // step 3: R2 arrives, walks tree
+      action = 'R2 来了 → cache.match_req(R2) → 走 Radix Tree';
+      narr = '③ R2 到达。它的 input_ids 前 80 个 token 跟 system_prompt 完全一样，所以 Radix Tree 游走时直接命中这个节点。';
+      r1c='0'; r1e='100'; r2c='80'; r2e='40';
+    }
+    if(step >= 4){
+      // step 4: R2 hit, ref_count of system_prompt becomes 2
+      clear(treeEl);
+      treeEl.appendChild(drawNode({x:180, y:40, r:22, label:'root', sub:'', color:'#34d399'}));
+      treeEl.appendChild(drawEdge(180,62, 180,110, '#34d399'));
+      treeEl.appendChild(drawNode({x:180, y:140, r:30, label:'system_prompt', sub:'len=80', color:'#34d399', refCount:2, fill:'#1f3328'}));
+      treeEl.appendChild(drawEdge(180,170, 100,210, '#34d399'));
+      treeEl.appendChild(drawEdge(180,170, 260,210, '#34d399'));
+      treeEl.appendChild(drawNode({x:100, y:240, r:24, label:'R1 tail', sub:'len=20', color:'#fbbf24', refCount:1}));
+      treeEl.appendChild(drawNode({x:260, y:240, r:24, label:'R2 (待算)', sub:'len=40', color:'#7dd3fc', refCount:0}));
+      action = 'R2 命中 system_prompt 节点 → ref_count: 1→2，<u>R2 只需算 40 个 token</u>';
+      narr = '④ system_prompt 的 ref_count 涨到 2（被两个 req 共享）。R2 现在只需要 prefill 后面 40 个 token，省掉了 80 token 的计算！';
+      r1c='0'; r1e='100'; r2c='80'; r2e='40';
+    }
+    if(step >= 5){
+      // step 5: R2 prefill done, insert R2 tail
+      clear(treeEl);
+      treeEl.appendChild(drawNode({x:180, y:40, r:22, label:'root', sub:'', color:'#34d399'}));
+      treeEl.appendChild(drawEdge(180,62, 180,110, '#34d399'));
+      treeEl.appendChild(drawNode({x:180, y:140, r:30, label:'system_prompt', sub:'len=80', color:'#34d399', refCount:2, fill:'#1f3328'}));
+      treeEl.appendChild(drawEdge(180,170, 100,210, '#34d399'));
+      treeEl.appendChild(drawEdge(180,170, 260,210, '#34d399'));
+      treeEl.appendChild(drawNode({x:100, y:240, r:24, label:'R1 tail', sub:'len=20', color:'#fbbf24', refCount:1}));
+      treeEl.appendChild(drawNode({x:260, y:240, r:24, label:'R2 tail', sub:'len=40', color:'#7dd3fc', refCount:1, fill:'#0b1f2a'}));
+      action = 'R2 prefill 完 → cache_req(R2) 把 R2 tail 插入树';
+      narr = '⑤ R2 prefill 完成，R2 tail 也插入树。如果再来 R3 共享同样的 system_prompt，它也能命中 80 token，节省继续累加。';
+      r1c='0'; r1e='100'; r2c='80'; r2e='40';
+      const saved = 80;
+      const total = 140;
+      savings = `🎉 节省了 ${saved} token 计算 = ${Math.round(saved*100/total)}% 的 prefill 开销`;
+    }
+
+    actionEl.innerHTML = action || '等待开始...';
+    narEl.innerHTML = narr || '点 ▶ 播放，看 Radix Tree 怎么一步步建起来。';
+    r1cached.textContent = r1c; r2cached.textContent = r2c;
+    r1extend.textContent = r1e; r2extend.textContent = r2e;
+    savingsEl.innerHTML = savings;
+    stepEl.textContent = `step ${step} / ${TOTAL}`;
+  }
+
+  let curStep=0, timer=null;
+  render(0);
+
+  document.getElementById('rx-play').addEventListener('click', ()=>{
+    if(timer) return;
+    timer = setInterval(()=>{
+      curStep++;
+      render(curStep);
+      if(curStep >= TOTAL){clearInterval(timer); timer=null;}
+    }, 1500);
+  });
+  document.getElementById('rx-reset').addEventListener('click', ()=>{
+    if(timer){clearInterval(timer); timer=null;}
+    curStep=0; render(0);
+  });
+})();
+
+/* ============================================================
+   Demo 3: Chunked Prefill
+   ============================================================ */
+(function(){
+  const TOTAL_TOKENS = 100;  // visualize 100 cells, each represents 100 tokens (10000 total)
+  const TOKENS_PER_CELL = 100;
+  const CHUNK_SIZE = 8192;
+  const CHUNK_CELLS = Math.ceil(CHUNK_SIZE / TOKENS_PER_CELL); // ~82 cells per chunk
+
+  const stripEl = document.getElementById('ch-strip');
+  const cachedEl = document.getElementById('ch-cached');
+  const deviceEl = document.getElementById('ch-device');
+  const stepEl = document.getElementById('ch-step');
+  const narEl = document.getElementById('ch-narration');
+  const iterTracksEl = document.getElementById('ch-iter-tracks');
+
+  // Build cells
+  function buildStrip(){
+    stripEl.innerHTML = '';
+    for(let i=0; i<TOTAL_TOKENS; i++){
+      const c = document.createElement('div');
+      c.className = 'token-cell';
+      c.dataset.idx = i;
+      stripEl.appendChild(c);
+    }
+  }
+  buildStrip();
+
+  // 6 phases:
+  // 0: idle
+  // 1: iter1 - chunk1 computing (cells 0..81)
+  // 2: iter1 done - chunk1 cached (cells 0..81 green), chunk2 待算 (cells 82..99)
+  // 3: iter2 - chunk2 computing (cells 82..99)
+  // 4: iter2 done - all cached, R4 进 decode
+  // 5: decode 第一个 token
+
+  const TOTAL = 5;
+
+  function render(step){
+    const cells = stripEl.querySelectorAll('.token-cell');
+    cells.forEach(c=>c.className='token-cell');
+
+    let cached = 0, device = 0;
+    let action = '', narr = '';
+    iterTracksEl.innerHTML = '';
+
+    function addIter(label, content){
+      const row = document.createElement('div');
+      row.className = 'cb-track-row';
+      row.innerHTML = `<div class="lbl">${label}</div><div class="cb-track">${content}</div>`;
+      iterTracksEl.appendChild(row);
+    }
+
+    if(step >= 1){
+      // chunk 1 computing
+      const end = step >= 2 ? CHUNK_CELLS : Math.min(CHUNK_CELLS, Math.floor(CHUNK_CELLS * 0.7));
+      for(let i=0; i<end; i++){
+        cells[i].className = 'token-cell ' + (step >= 2 ? 'cached' : 'computing');
+      }
+      device = step >= 2 ? CHUNK_SIZE : Math.floor(CHUNK_SIZE * 0.7);
+      if(step >= 2) cached = CHUNK_SIZE;
+      narr = '① Iter 1：PrefillAdder 发现 10000 > 8192（token_budget），切！第一个 chunk 取 8192 token。';
+      addIter('Iter 1', `<div class="cb-seg" style="left:0;width:82%;background:#fbbf24">prefill chunk1 (8192 tok) · ~25 ms</div>`);
+    }
+    if(step >= 2){
+      narr = '② Iter 1 完成。chunk1 的 KV 已写入 (cached_len=8192)。但 R4 仍是 ChunkedReq，<u>没有采样、没进 decode</u>。';
+      addIter('Iter 1', `<div class="cb-seg" style="left:0;width:82%;background:#fbbf24">prefill chunk1 ✓</div>`);
+    }
+    if(step >= 3){
+      // chunk 2 computing
+      for(let i=0; i<CHUNK_CELLS; i++) cells[i].className = 'token-cell cached';
+      const remainCells = TOTAL_TOKENS - CHUNK_CELLS;
+      const end = step >= 4 ? TOTAL_TOKENS : CHUNK_CELLS + Math.floor(remainCells * 0.6);
+      for(let i=CHUNK_CELLS; i<end; i++){
+        cells[i].className = 'token-cell ' + (step >= 4 ? 'cached' : 'computing');
+      }
+      device = step >= 4 ? 10000 : 8192 + Math.floor((10000-8192)*0.6);
+      cached = step >= 4 ? 10000 : 8192;
+      narr = '③ Iter 2：R4.chunked_req 不为 None，复用 cache_handle 和 table_idx 接续。剩余 1808 token 装得下，is_chunked=False，转为普通 Req。';
+      addIter('Iter 1', `<div class="cb-seg" style="left:0;width:82%;background:#fbbf24">prefill chunk1 ✓</div>`);
+      addIter('Iter 2', `<div class="cb-seg" style="left:0;width:18%;background:#fbbf24">chunk2 (1808 tok) · ~10 ms</div>`);
+    }
+    if(step >= 4){
+      narr = '④ Iter 2 完成。R4 全部 prefill 完，cache_req(finished=False) 把整段插入 Radix Tree，R4 进 decode_manager.running_reqs。';
+      addIter('Iter 1', `<div class="cb-seg" style="left:0;width:82%;background:#fbbf24">prefill chunk1 ✓</div>`);
+      addIter('Iter 2', `<div class="cb-seg" style="left:0;width:18%;background:#fbbf24">chunk2 ✓</div>`);
+    }
+    if(step >= 5){
+      // first decode: device_len → 10001
+      device = 10001;
+      cached = 10000;
+      narr = '⑤ Iter 3：R4 第一次 decode！每步算 1 token，享受 CUDA Graph 加速（~3-5 ms/token）。';
+      addIter('Iter 1', `<div class="cb-seg" style="left:0;width:82%;background:#fbbf24">prefill chunk1 ✓</div>`);
+      addIter('Iter 2', `<div class="cb-seg" style="left:0;width:18%;background:#fbbf24">chunk2 ✓</div>`);
+      addIter('Iter 3', `<div class="cb-seg" style="left:0;width:3%;background:#7dd3fc">decode 1 tok · 4 ms</div>`);
+    }
+
+    cachedEl.textContent = cached.toLocaleString();
+    deviceEl.textContent = device.toLocaleString();
+    narEl.innerHTML = narr || '点 ▶ 播放，看 R4 的 10000 token 怎么被切成 2 个 chunk 完成 prefill。';
+    stepEl.textContent = `step ${step} / ${TOTAL}`;
+  }
+
+  let curStep=0, timer=null;
+  render(0);
+
+  document.getElementById('ch-play').addEventListener('click', ()=>{
+    if(timer) return;
+    timer = setInterval(()=>{
+      curStep++;
+      render(curStep);
+      if(curStep >= TOTAL){clearInterval(timer); timer=null;}
+    }, 1600);
+  });
+  document.getElementById('ch-reset').addEventListener('click', ()=>{
+    if(timer){clearInterval(timer); timer=null;}
+    curStep=0; render(0);
+  });
+})();
+</script>
+
+<!-- ========== Timeline ========== -->
+<h2 id="timeline">三、时序图（Iteration × Phase × Stream）</h2>
+
+<div class="card">
+<div class="legend">
+  <div class="lg"><span class="sw" style="background:#fbbf24"></span>R1</div>
+  <div class="lg"><span class="sw" style="background:#7dd3fc"></span>R2</div>
+  <div class="lg"><span class="sw" style="background:#a78bfa"></span>R3</div>
+  <div class="lg"><span class="sw" style="background:#f87171"></span>R4 (chunked)</div>
+  <div class="lg"><span class="sw" style="background:#34d399"></span>Mixed prefill</div>
+  <div class="lg"><span class="sw" style="background:#374151;border:1px solid #4b5563"></span>Decode batch</div>
+</div>
+
+<div style="overflow-x:auto">
+<div style="min-width:1100px">
+
+<!-- Iter 1 -->
+<div class="tl-row">
+  <div class="lbl">Iter 1<br>t=0~12 ms</div>
+  <div class="tl-grid" style="grid-template-columns:30px 70px 30px 60px 60px 80px 60px 30px 1fr">
+    <div class="tlbar" style="background:#3b82f6">📥</div>
+    <div class="tlbar" style="background:#6ee7b7">sched</div>
+    <div class="tlbar" style="background:#fb7185">alloc</div>
+    <div class="tlbar" style="background:#fbbf24">prefill R1</div>
+    <div class="tlbar" style="background:#1f2430;color:#cbd5e1">empty</div>
+    <div class="tlbar" style="background:#1f2430;color:#cbd5e1">CPU idle (no last)</div>
+    <div class="tlbar" style="background:#34d399">cache_req R1</div>
+    <div class="tlbar" style="background:#a78bfa">📤</div>
+    <div></div>
+  </div>
+</div>
+
+<!-- Iter 2 -->
+<div class="tl-row">
+  <div class="lbl">Iter 2<br>t=12~16 ms</div>
+  <div class="tl-grid" style="grid-template-columns:30px 70px 50px 90px 90px 60px 30px 1fr">
+    <div class="tlbar" style="background:#3b82f6">📥</div>
+    <div class="tlbar" style="background:#6ee7b7">sched</div>
+    <div class="tlbar" style="background:#fb7185">alloc</div>
+    <div class="tlbar" style="background:#34d399">prefill R2,R3 (radix hit)</div>
+    <div class="tlbar" style="background:#1f2430;color:#cbd5e1">process R1 (decode 1st)</div>
+    <div class="tlbar" style="background:#34d399">cache_req</div>
+    <div class="tlbar" style="background:#a78bfa">📤</div>
+    <div></div>
+  </div>
+</div>
+
+<!-- Iter 3 -->
+<div class="tl-row">
+  <div class="lbl">Iter 3<br>t=16~24 ms</div>
+  <div class="tl-grid" style="grid-template-columns:30px 70px 60px 130px 90px 60px 30px 1fr">
+    <div class="tlbar" style="background:#3b82f6">📥</div>
+    <div class="tlbar" style="background:#6ee7b7">sched</div>
+    <div class="tlbar" style="background:#fb7185">alloc</div>
+    <div class="tlbar" style="background:#f87171">chunk-prefill R4 (8160 tok)</div>
+    <div class="tlbar" style="background:#1f2430;color:#cbd5e1">process R2,R3</div>
+    <div class="tlbar" style="background:#34d399">cache</div>
+    <div class="tlbar" style="background:#a78bfa">📤</div>
+    <div></div>
+  </div>
+</div>
+
+<!-- Iter 4 (decode dominant) -->
+<div class="tl-row">
+  <div class="lbl">Iter 4<br>t=24~28 ms</div>
+  <div class="tl-grid" style="grid-template-columns:30px 70px 50px 110px 90px 60px 30px 1fr">
+    <div class="tlbar" style="background:#3b82f6">📥</div>
+    <div class="tlbar" style="background:#6ee7b7">sched</div>
+    <div class="tlbar" style="background:#fb7185">alloc</div>
+    <div class="tlbar" style="background:#f87171">chunk-prefill R4 rest</div>
+    <div class="tlbar" style="background:#1f2430;color:#cbd5e1">process R4 chunk1 (no sample)</div>
+    <div class="tlbar" style="background:#34d399">cache (R4 partial)</div>
+    <div class="tlbar" style="background:#a78bfa">📤</div>
+    <div></div>
+  </div>
+</div>
+
+<!-- Iter 5 decode batch -->
+<div class="tl-row">
+  <div class="lbl">Iter 5+<br>t=28~∞</div>
+  <div class="tl-grid" style="grid-template-columns:30px 70px 30px 110px 110px 60px 30px 1fr">
+    <div class="tlbar" style="background:#3b82f6">📥</div>
+    <div class="tlbar" style="background:#6ee7b7">sched</div>
+    <div class="tlbar" style="background:#fb7185">alloc</div>
+    <div class="tlbar" style="background:#374151;color:#e6e8ee;border:1px solid #4b5563">decode bs=4 (CUDA Graph)</div>
+    <div class="tlbar" style="background:#1f2430;color:#cbd5e1">process last decode</div>
+    <div class="tlbar" style="background:#1f2430;color:#cbd5e1">no cache</div>
+    <div class="tlbar" style="background:#a78bfa">📤×4</div>
+    <div></div>
+  </div>
+</div>
+
+</div></div>
+
+<div class="callout">
+<strong>读图技巧：</strong>
+<ul class="tight">
+  <li>每行 = 一次 <code>overlap_loop</code>（一次 iteration）</li>
+  <li>橙色块 = GPU 在 engine.stream 上跑 forward</li>
+  <li>灰色块 = CPU 在 scheduler.stream 上处理 last_data 和准备下一批</li>
+  <li><strong>橙色和灰色在同一 iteration 内并行</strong>——这就是 overlap scheduling 的本质</li>
+</ul>
+</div>
+</div>
+
+<!-- ========== Iter Source Walk ========== -->
+<h2 id="step">四、逐 Iteration 源码追踪</h2>
+
+<!-- Iter 1 -->
+<div class="card">
+<h3>Iteration 1 · t=0 ms · 唯一的 R1，纯 prefill</h3>
+<table>
+<tr><th>状态量</th><th>值</th></tr>
+<tr><td>pending_list</td><td>[R1]</td></tr>
+<tr><td>running_reqs</td><td>{}</td></tr>
+<tr><td>last_data</td><td>None</td></tr>
+<tr><td>blocking</td><td>True (一开始什么都没有)</td></tr>
+</table>
+<pre><code><span class="com"># scheduler.py:83 → overlap_loop(None)</span>
+blocking = <span class="kw">True</span>
+self.<span class="fn">receive_msg</span>(blocking=<span class="kw">True</span>)
+  → run_when_idle 打 log → ZMQ pull 拿到 UserMsg(R1)
+  → _process_one_msg → prefill_manager.add_one_req(R1)
+  → 继续 drain ZMQ inbox（无更多 msg）
+
+<span class="com"># 调度</span>
+forward_input = self.<span class="fn">_schedule_next_batch</span>()
+  → prefill_manager.<span class="fn">schedule_next_batch</span>(8192)
+  → PrefillAdder.<span class="fn">try_add_one</span>(R1)
+       cache.<span class="fn">match_req</span>(R1) → MatchResult(handle=root, cached_len=0)
+       extend_len = 30, estimated = 30 + 40 = 70
+       70 + 0 ≤ available (huge) ✓
+       table.<span class="fn">allocate</span>() → table_idx=0
+       cache.<span class="fn">lock</span>(root_handle)
+  → CLS = Req (full prefill, 30 ≤ 8192)
+  → Batch(reqs=[R1], phase="prefill")
+
+<span class="com"># 准备 batch</span>
+_prepare_batch(batch):
+  graph_runner.pad_batch(batch)            <span class="com"># prefill no-op</span>
+  cache.allocate_paged([R1])               <span class="com"># 分配 30 个页</span>
+  positions = [0..29]
+  attn_backend.prepare_metadata(batch)     <span class="com"># 准备 cu_seqlens 等</span>
+
+<span class="com"># launch GPU</span>
+<span class="kw">with</span> engine_stream_ctx:
+  ongoing_data = (forward_input, _forward(forward_input))
+  <span class="com"># engine.forward_batch → eager 跑模型 → sample → 返回 ForwardOutput</span>
+
+_process_last_data(<span class="kw">None</span>)   <span class="com"># last_data 是 None，return</span>
+<span class="kw">return</span> ongoing_data        <span class="com"># 下次 loop 这就是 last_data</span></code></pre>
+</div>
+
+<!-- Iter 2 -->
+<div class="card">
+<h3>Iteration 2 · t=12 ms · R2/R3 入队 + R1 完成 prefill</h3>
+<p>上一轮 GPU 在 prefill R1，CPU 进入第二轮。期间 R2, R3 已经被 tokenize 完推到 ZMQ inbox。</p>
+<table>
+<tr><th>状态量</th><th>值</th></tr>
+<tr><td>last_data</td><td>(forward_input_R1, forward_output_R1)</td></tr>
+<tr><td>pending_list</td><td>[R2, R3]</td></tr>
+<tr><td>running_reqs</td><td>{} (R1 还在 last_data 里没处理)</td></tr>
+<tr><td>blocking</td><td>False (有 last_data 要处理)</td></tr>
+</table>
+
+<pre><code>blocking = <span class="kw">False</span>
+<span class="kw">for</span> msg <span class="kw">in</span> self.<span class="fn">receive_msg</span>(blocking=<span class="kw">False</span>):     <span class="com"># 非阻塞 drain</span>
+    self.<span class="fn">_process_one_msg</span>(msg)                    <span class="com"># R2, R3 都进 pending</span>
+
+forward_input = self.<span class="fn">_schedule_next_batch</span>()
+  <span class="com"># reserved_size = 0 (R1 还没正式进 decode_manager)</span>
+  → PrefillAdder for R2:
+       cache.<span class="fn">match_req</span>(R2) → 命中 R1 留下的 prefix（如果共享 system prompt）
+       <span class="com"># 假设 cached_len=20, extend_len=30</span>
+       <span class="com"># estimated = 30 + 40 = 70, ok</span>
+       <span class="hl">cache.<span class="fn">lock</span>(prefix_handle)  <span class="com"># 锁住共享前缀（ref_count=2 现在）</span></span>
+       table.<span class="fn">allocate</span>() → table_idx=1
+       <span class="com"># 把命中的 20 个 token 的 page 索引 copy 到 R2 的 page_table 行</span>
+  → PrefillAdder for R3:
+       cache.<span class="fn">match_req</span>(R3) → no hit
+       <span class="com"># estimated = 80 + 40 = 120, ok</span>
+  → Batch(reqs=[R2, R3], phase="prefill")
+
+_prepare_batch:
+  cache.<span class="fn">allocate_paged</span>([R2, R3])  <span class="com"># 一次性分配 30 + 80 = 110 页</span>
+  attn_backend.<span class="fn">prepare_metadata</span>(batch)   <span class="com"># mixed-batch metadata</span>
+
+_forward → engine.forward_batch  <span class="com"># GPU 启动 prefill R2+R3</span>
+
+<span class="hl">_process_last_data(last_data_R1):           <span class="com">★ 与 GPU 并行</span></span>
+  copy_done.<span class="fn">synchronize</span>()                  <span class="com"># 等 R1 的 D2H</span>
+  next_token = next_tokens_cpu[0]
+  R1.<span class="fn">append_host</span>(next_token)
+  finished = <span class="kw">False</span>  <span class="com"># R1 还能继续 decode</span>
+  reply.<span class="fn">append</span>(<span class="fn">DetokenizeMsg</span>(R1.uid, next_token, <span class="kw">False</span>))
+  <span class="com"># prefill batch → cache_req(R1, finished=False)</span>
+  cache.<span class="fn">cache_req</span>(R1, finished=<span class="kw">False</span>)
+       prefix_cache.<span class="fn">insert_prefix</span>(R1.input_ids[:30], page_indices[:30])
+       <span class="com"># 在 Radix Tree 上：root → 共享前缀 20token → R1 tail 10token</span>
+  send_result(reply)              <span class="com"># 发给 detokenizer</span>
+
+<span class="com"># R1 进 decode_manager (在 _forward 末尾的 filter_reqs 里, 当 R2/R3 那批跑完后才会)</span></code></pre>
+
+<div class="callout warn">
+<strong>关键时序问题：</strong> R1 是在<u>哪一步</u>进入 <code>decode_manager.running_reqs</code> 的？答案是 <code>_forward()</code> 末尾：
+<pre><code><span class="com"># scheduler.py:227</span>
+<span class="kw">def</span> <span class="fn">_forward</span>(self, forward_input):
+    ...
+    self.decode_manager.<span class="fn">filter_reqs</span>(forward_input.batch.reqs)
+    <span class="com"># 把当前 batch 中 can_decode 的 req 加入 running_reqs</span>
+    <span class="kw">return</span> forward_output</code></pre>
+所以 R2/R3 这一批 prefill <u>立刻</u>把 R1 之前的请求加进 decode（不，它加的是 R2/R3 自己）。R1 是在<u>第一轮 forward 时</u>就被加到 running_reqs。理解这一点：<strong>filter_reqs 是 prefill→decode 状态转移的开关</strong>。
+</div>
+</div>
+
+<!-- Iter 3 -->
+<div class="card">
+<h3>Iteration 3 · t=16 ms · R4 长 prompt 触发 Chunked Prefill</h3>
+<table>
+<tr><th>状态量</th><th>值</th></tr>
+<tr><td>last_data</td><td>(forward_input_R2R3, forward_output_R2R3)</td></tr>
+<tr><td>pending_list</td><td>[R4]</td></tr>
+<tr><td>running_reqs</td><td>{R1}</td></tr>
+</table>
+
+<pre><code>self.<span class="fn">receive_msg</span>() → 把 R4 入 pending
+
+forward_input = self.<span class="fn">_schedule_next_batch</span>()
+  <span class="com"># R1 in decode → reserved_size 不再为 0</span>
+  reserved_size = decode_manager.inflight_tokens  <span class="com"># R1.remain_len + (page-1)*1</span>
+  → PrefillAdder for R4:
+       cache.<span class="fn">match_req</span>(R4) → cached_len=0
+       extend_len = 10000
+       estimated = 10000 + 40 = 10040
+       <span class="hl">10040 + reserved_size &gt; available_size? <span class="com"># 假设 available 够装但 budget 不够</span></span>
+
+       <span class="kw">if</span> available 够:
+         lock root, table.allocate() → table_idx=3
+         _add_one_req:
+           remain_len = 10000
+           chunk_size = min(8192, 10000) = 8192
+           <span class="hl">is_chunked = <span class="kw">True</span></span>
+           CLS = ChunkedReq
+           token_budget -= 8192       <span class="com"># now 0</span>
+           reserved_size += 10000 + 40
+           input_ids = R4.input_ids[:8192]
+           <span class="kw">return</span> <span class="fn">ChunkedReq</span>(...)
+
+  <span class="com"># 这一批就 R4 一个，因为 token_budget 用光了</span>
+  → Batch(reqs=[R4_chunk1], phase="prefill")
+  → self.pending_list = [R4 (still, with chunked_req=R4_chunk1)] + []
+       <span class="com"># R4 留在队首，下一轮接续</span>
+
+_prepare_batch + _forward
+  <span class="com"># GPU 跑 R4 8192 token 的 prefill chunk1</span>
+
+_process_last_data(last_R2R3):
+  for R2:
+    next_token, append_host, cache_req(finished=False)
+    <span class="com"># R2 现在也进 decode 队列了</span>
+  for R3: same
+  send_result([reply_R2, reply_R3])</code></pre>
+
+<div class="callout">
+<strong>ChunkedReq 在 _process_last_data 里被跳过</strong>：
+<pre><code><span class="kw">if</span> isinstance(req, ChunkedReq): <span class="kw">continue</span></code></pre>
+不采样、不发 detokenize、不 cache_req、不进 decode 队列。它只是"这一段 KV 已经被算并写入"。
+</div>
+</div>
+
+<!-- Iter 4 -->
+<div class="card">
+<h3>Iteration 4 · t=24 ms · R4 chunk2 + R1/R2/R3 想 decode</h3>
+
+<pre><code>last_data = (R4_chunk1 batch, ...)
+pending_list = [R4 (chunked_req=ChunkedReq#1)]
+running_reqs = {R1, R2, R3}
+
+forward_input = self.<span class="fn">_schedule_next_batch</span>()
+  <span class="com"># prefill 优先：</span>
+  → PrefillAdder for R4 (pending_req.chunked_req != None):
+       <span class="com"># 直接走第二个分支：复用 cache_handle 和 table_idx</span>
+       _add_one_req(R4, cache_handle=ChunkedReq#1.cache_handle,
+                        table_idx=3,
+                        cached_len=8192)
+       remain_len = 10000 - 8192 = 1808
+       chunk_size = min(8192, 1808) = 1808
+       is_chunked = <span class="kw">False</span>  <span class="com">★ 这一段能装下，正式变 Req</span>
+       CLS = Req
+  → Batch(reqs=[R4_full], phase="prefill")
+  <span class="com"># 注意：这次没把 R1/R2/R3 的 decode 一起做——prefill-first 抢占</span>
+
+_prepare_batch + _forward → GPU 跑 R4 最后 1808 token
+
+_process_last_data(R4_chunk1):  <span class="com"># 跳过（ChunkedReq）</span>
+  <span class="com"># R4 chunk1 没 sample, 但 cache_req 也不会被调用（continue 了）</span>
+  <span class="com"># KV 还是写入了 pool（forward 时 attn_backend 写的）, 但没插 Radix tree</span>
+  <span class="com"># 等 R4 全部 prefill 完再 cache_req 一次</span></code></pre>
+
+<div class="callout warn">
+<strong>"Decode 被 prefill 抢占" 的代价：</strong> R1 在 Iter 3 后就不能 decode 了（GPU 在跑 R4 chunk1），到 Iter 4 还得再让 R4 chunk2 跑完。<u>chunked prefill 期间 decode 完全停摆</u>。这是 Sarathi-Serve 论文里讲的 trade-off：长 prompt 用 chunk 削峰，但 inflight decode 的 ITL 会受影响。
+</div>
+</div>
+
+<!-- Iter 5 -->
+<div class="card">
+<h3>Iteration 5 · t=28 ms · 第一次纯 decode batch</h3>
+<pre><code>pending_list = []   <span class="com"># R4 chunk2 完成，R4 现在是普通 Req 进 decode</span>
+running_reqs = {R1, R2, R3, R4}
+
+forward_input = self.<span class="fn">_schedule_next_batch</span>()
+  → prefill_manager.<span class="fn">schedule_next_batch</span>() → <span class="kw">None</span>  (pending_list 空)
+  → decode_manager.<span class="fn">schedule_next_batch</span>()
+       Batch(reqs=[R1, R2, R3, R4], phase="decode")
+
+_prepare_batch:
+  <span class="hl">graph_runner.<span class="fn">pad_batch</span>(batch)
+       <span class="com"># bs=4, 在 cuda_graph_bs 列表里 → 直接 use bs=4 的图</span>
+       <span class="com"># 不需要 dummy_req padding</span></span>
+  cache.<span class="fn">allocate_paged</span>(batch.reqs)
+       <span class="com"># 每 req extend_len=1, 看是否需要新页</span>
+  attn_backend.<span class="fn">prepare_metadata</span>(batch, phase="decode")
+
+_forward:
+  engine.forward_batch:
+    <span class="hl">graph_runner.<span class="fn">replay</span>(batch)   <span class="com">★ CUDA Graph！</span></span>
+       buffer = self.graph_buffers[bs=4]
+       buffer.<span class="fn">copy_from</span>(batch)         <span class="com"># 把元数据 copy 到预录制 buffer</span>
+       graph.<span class="fn">replay</span>()                  <span class="com"># GPU 一次 launch 跑完所有 layers</span>
+    sampler.<span class="fn">sample</span>(logits[:4], args)
+    next_tokens_cpu = next_tokens_gpu.<span class="fn">to</span>(<span class="str">"cpu"</span>, non_blocking=<span class="kw">True</span>)
+  decode_manager.<span class="fn">filter_reqs</span>(batch.reqs)  <span class="com"># 还能 decode 的留下</span></code></pre>
+
+<p><strong>从此以后</strong> 每个 iteration 都是这样的纯 decode batch，GPU kernel launch 开销几乎为 0（CUDA Graph），CPU 用 overlap 隐藏了调度开销。直到某个请求 finished：</p>
+
+<pre><code>_process_last_data:
+  ...
+  finished = <span class="kw">not</span> req.can_decode <span class="kw">or</span> next_token == eos
+  <span class="kw">if</span> finished:
+    decode_manager.<span class="fn">remove_req</span>(req)
+    self.<span class="fn">_free_req_resources</span>(req)
+        table_manager.<span class="fn">free</span>(req.table_idx)
+        cache_manager.<span class="fn">cache_req</span>(req, finished=<span class="kw">True</span>)
+            <span class="com"># 整个 input_ids 插入 Radix（如果还没插过的话）</span>
+            <span class="com"># 尾部超过 page 边界的部分 free 掉</span>
+            <span class="com"># 解锁旧 handle, 新前缀变成 evictable</span>
+    new_finished_reqs.<span class="fn">add</span>(req)
+self.finished_reqs = new_finished_reqs    <span class="com"># 防止 overlap 模式下二次 free</span></code></pre>
+</div>
+
+<!-- Chunked Detail -->
+<h2 id="chunked">五、Chunked Prefill 的"接续机制"细节</h2>
+<div class="card">
+<p>这是 mini-sglang 调度层最巧妙的地方之一。让我们追踪 R4 在 3 个 iteration 里经历了什么：</p>
+
+<table>
+<tr><th>iter</th><th>pending R4.chunked_req</th><th>add_one_req 走的分支</th><th>产物</th><th>R4.cached_len</th></tr>
+<tr><td>3</td><td>None</td><td>_try_allocate_one (新分配)</td><td>ChunkedReq#1（含 8192 token）</td><td>0 → 8192 (forward 后)</td></tr>
+<tr><td>3 末</td><td>ChunkedReq#1</td><td>—</td><td>R4 留在 pending_list 队首</td><td>—</td></tr>
+<tr><td>4</td><td>ChunkedReq#1</td><td>"chunked_req" 复用分支</td><td>Req（普通，含 1808 token）</td><td>8192 → 10000</td></tr>
+<tr><td>4 末</td><td>None (清空)</td><td>—</td><td>R4 出 pending_list，进 decode</td><td>10000 (即将 +1)</td></tr>
+</table>
+
+<pre><code><span class="com"># scheduler/prefill.py:92  try_add_one</span>
+<span class="kw">def</span> <span class="fn">try_add_one</span>(self, pending_req):
+    <span class="kw">if</span> self.token_budget &lt;= 0: <span class="kw">return</span> <span class="kw">None</span>
+
+    <span class="hl"><span class="kw">if</span> chunked_req := pending_req.chunked_req:    <span class="com">★ 接续分支</span></span>
+        <span class="kw">return</span> self.<span class="fn">_add_one_req</span>(
+            pending_req=pending_req,
+            cache_handle=chunked_req.cache_handle,    <span class="com"># 复用</span>
+            table_idx=chunked_req.table_idx,           <span class="com"># 复用</span>
+            cached_len=chunked_req.cached_len,         <span class="com"># 复用</span>
+        )
+
+    <span class="kw">if</span> resource := self.<span class="fn">_try_allocate_one</span>(pending_req):  <span class="com">★ 新分配分支</span>
+        cache_handle, table_idx = resource
+        <span class="kw">return</span> self.<span class="fn">_add_one_req</span>(...)
+    <span class="kw">return</span> <span class="kw">None</span></code></pre>
+
+<div class="callout">
+<strong>关键不变量：</strong>
+<ul class="tight">
+  <li>chunked req 的 <code>cache_handle</code> 一直锁着初始命中的前缀（root 在 R4 case 里）</li>
+  <li><code>table_idx</code> 一直被这个请求占用，不会被回收给别人</li>
+  <li>每个 chunk forward 后，<code>complete_one()</code> 把 <code>cached_len</code> 推进到 <code>device_len</code>，<u>但 KV 写入靠 attention backend 在 forward 时直接写 page_table 指向的物理页</u></li>
+</ul>
+</div>
+</div>
+
+<!-- OOM -->
+<h2 id="oom">六、OOM 与回退（当资源真不够时）</h2>
+<div class="card">
+<p>Mini-SGLang 的策略相对保守：<strong>"调度时不入，绝不让 forward 中 OOM"</strong>。这通过 PrefillAdder 的"两次 check" 来保证：</p>
+
+<pre><code><span class="com"># scheduler/prefill.py:39  _try_allocate_one</span>
+estimated_len = extend_len + req.output_len
+<span class="kw">if</span> estimated_len + self.reserved_size &gt; self.cache_manager.available_size:
+    <span class="kw">return</span> <span class="kw">None</span>                         <span class="com"># check 1: 没 lock 之前</span>
+self.cache_manager.<span class="fn">lock</span>(handle)
+<span class="kw">if</span> estimated_len + self.reserved_size &gt; self.cache_manager.available_size:
+    <span class="kw">return</span> self.cache_manager.<span class="fn">unlock</span>(handle)  <span class="com"># check 2: lock 后再来一次</span></code></pre>
+
+<p>为什么要 check 两次？<strong>因为 lock 操作本身会改变 evictable_size。</strong> lock 一个前缀会让那部分 KV 从"evictable"变成"protected"，<code>available_size = evictable + free_pages</code>，所以 lock 后 available 可能变小。</p>
+
+<p>当 PrefillAdder 第一个 req 都装不下时，<code>schedule_next_batch</code> 返回 <code>None</code>，调度器只跑 decode batch。</p>
+
+<div class="callout bad">
+<strong>没有 preemption / restart</strong>：与 vLLM 不同，mini-sglang 没有"为新请求腾空间而 preempt 已有 decode 请求"的逻辑。这意味着：
+<ul class="tight">
+  <li>如果 decode pool 把 KV 占满了，新请求会一直 starve 在 pending_list</li>
+  <li>实际中靠 <code>memory_ratio</code>（默认 0.85）和 <code>max_running_req</code>（默认 256）保证不会到这种极端</li>
+  <li>这是 mini-sglang"教学优先"的取舍——SGLang 主线有完整的 preempt/restart 机制</li>
+</ul>
+</div>
+</div>
+
+<!-- Eviction -->
+<h2>七、Radix Cache Eviction 在多请求下的实战</h2>
+<div class="card">
+<p>当 decode 一段时间后某些请求 finish，它们 cache_req(finished=True) 把整段插入 Radix Tree 并解锁。当后续新请求需要的页超过 free_slots 时：</p>
+
+<pre><code><span class="com"># scheduler/cache.py:106  _allocate</span>
+<span class="kw">def</span> <span class="fn">_allocate</span>(self, needed_pages):
+    <span class="kw">if</span> needed_pages &gt; (free_pages := len(self.free_slots)):
+        <span class="hl">evicted = self.prefix_cache.<span class="fn">evict</span>((needed_pages - free_pages) * self.page_size)</span>
+        self.free_slots = torch.<span class="fn">cat</span>([self.free_slots, evicted[::self.page_size]])
+    allocated = self.free_slots[:needed_pages]
+    self.free_slots = self.free_slots[needed_pages:]
+    <span class="kw">return</span> allocated
+
+<span class="com"># kvcache/radix_cache.py:148  evict</span>
+<span class="kw">def</span> <span class="fn">evict</span>(self, size):
+    leave_nodes = self.<span class="fn">_collect_leave_nodes_for_evict</span>()  <span class="com"># 所有 ref_count==0 的叶子</span>
+    heapq.<span class="fn">heapify</span>(leave_nodes)                          <span class="com"># 按 timestamp 最小堆</span>
+    evicted_size = 0
+    <span class="kw">while</span> evicted_size &lt; size:
+        node = heapq.<span class="fn">heappop</span>(leave_nodes)              <span class="com"># 最老的优先</span>
+        evicted_size += node.length
+        evicted_indices.<span class="fn">append</span>(node.value)
+        del parent.children[key_fn(node._key)]
+        <span class="kw">if</span> parent.<span class="fn">is_leaf</span>() <span class="kw">and</span> parent.ref_count == 0:
+            heapq.<span class="fn">heappush</span>(leave_nodes, parent)         <span class="com"># 新叶子可能也能 evict</span>
+    <span class="kw">return</span> torch.<span class="fn">cat</span>(evicted_indices)</code></pre>
+
+<p>多请求场景下的副作用：</p>
+<ul class="tight">
+  <li><strong>共享前缀不会被 evict</strong>（ref_count &gt; 0 时不可 evict）—— 多个并发 req 共享 system prompt 时尤其有效</li>
+  <li><strong>arrive 时间戳影响 eviction 顺序</strong>—— 老的请求留下的"独占" tail prefix 会先被 evict</li>
+  <li><strong>整段 evict</strong>—— evict 会一直 pop 直到累计 size ≥ 需要量</li>
+</ul>
+</div>
+
+<!-- Performance -->
+<h2 id="perf">八、throughput 推算（4 并发的理论上限）</h2>
+<div class="card">
+<p>假设 H200, Qwen3-0.6B：</p>
+<table>
+<tr><th>阶段</th><th>耗时</th><th>说明</th></tr>
+<tr><td>Iter 1 prefill 30 token</td><td>~12 ms</td><td>R1, eager mode</td></tr>
+<tr><td>Iter 2 prefill 30+80=110 token (with radix hit -20)</td><td>~13 ms</td><td>R2+R3 mixed prefill</td></tr>
+<tr><td>Iter 3 prefill 8192 token</td><td>~25 ms</td><td>R4 chunk1</td></tr>
+<tr><td>Iter 4 prefill 1808 token</td><td>~10 ms</td><td>R4 chunk2</td></tr>
+<tr><td>Iter 5+ decode bs=4 (CUDA Graph)</td><td>~4 ms / iter</td><td>每 iter 出 4 个 token</td></tr>
+</table>
+
+<p><strong>稳态吞吐</strong>：4 token / 4 ms = <strong>1000 token/s aggregate</strong>。R1/R2/R3 在 Iter 5 启动 decode，R4 因为 chunked prefill 延迟了 12 ms 才进 decode 队列。</p>
+
+<div class="callout">
+<strong>对长 prompt 友好的优化思路</strong>：
+<ul class="tight">
+  <li>提高 <code>max_extend_tokens</code>（默认 8192）→ 减少 chunk 次数，但峰值显存增加</li>
+  <li>R4 的 system prompt 若与 R1/R2 共享 → Radix 命中可以省掉前面几千 token 的 prefill</li>
+  <li>如果实际场景有大量长 prompt，考虑用 <code>--cache naive</code> 测试基线（去掉 Radix 开销看 prefill 限速）</li>
+</ul>
+</div>
+</div>
+
+<!-- Summary -->
+<h2>九、调度核心思想总结</h2>
+<div class="grid cols-3">
+<div class="card">
+<h3>① Continuous Batching</h3>
+<p>请求随时进，每 iteration 重新组 batch。Prefill batch 和 decode batch 严格分开，不混合。</p>
+</div>
+<div class="card">
+<h3>② Prefill-First</h3>
+<p>每 iter 先尝试 prefill batch；只有 pending_list 空了才走 decode。决策代价：长 prefill 期间 decode ITL 抖动。</p>
+</div>
+<div class="card">
+<h3>③ Radix-Aware</h3>
+<p>match → lock → unlock → cache_req，是每个 prefill req 的标准生命周期。ref_count 是并发安全的关键。</p>
+</div>
+<div class="card">
+<h3>④ Chunked Prefill</h3>
+<p>token_budget + chunked_req 的组合，把超长 prompt 切成多个 iter 完成。期间 cache_handle/table_idx 保持不变。</p>
+</div>
+<div class="card">
+<h3>⑤ Reserved-for-Decode</h3>
+<p>PrefillAdder 用 <code>reserved_size = decode.inflight_tokens</code> 给 decode 预留空间，防止"prefill 一时爽，decode OOM 火葬场"。</p>
+</div>
+<div class="card">
+<h3>⑥ Overlap Scheduling</h3>
+<p>两条 stream，CPU 处理上批结果时 GPU 已在跑下批。事件 + wait_stream 控制顺序。</p>
+</div>
+</div>
+
+<div class="foot">
+<strong>← 上一节</strong> <a href="../02-architecture/02-request-lifecycle.html">03 · 单请求流程</a> &nbsp;·&nbsp; <a href="../02-architecture/01-system-overview.html">回到 01 · 架构总览</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,432 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Attention 从零推导 · 为什么是 Q/K/V 三个矩阵</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:8px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit}
+.btn:hover{border-color:var(--brand);color:var(--brand)}
+.btn.active{background:var(--brand);color:var(--bg);border-color:var(--brand)}
+.controls{display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+.slider{width:200px}
+.slider-row{display:flex;align-items:center;gap:12px;margin:8px 0;justify-content:center}
+.mat{display:inline-block;border:1px solid var(--line);border-radius:6px;padding:2px;font-family:"SF Mono",monospace;font-size:11px;background:#0f1218}
+.mat td{border:none;padding:2px 6px;text-align:center;color:#cbd5e1}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Attention 从零推导 · 为什么是 Q/K/V 三个矩阵 <span class="tag">第零章 · 03/05</span></h1>
+<div class="sub">从"一个 token 怎么知道该关注上下文哪里"的朴素问题出发，一步步推出 <code>softmax(QKᵀ/√d)V</code>——推完你会明白 Q/K/V 不是拍脑袋分出来的三个字母。</div>
+
+<div class="toc">
+  <a href="#why">§1 问题从哪来</a>
+  <a href="#dot">§2 用点积量相似度</a>
+  <a href="#qkv">§3 为什么分 Q K V</a>
+  <a href="#softmax">§4 softmax 的必要性</a>
+  <a href="#scale">§5 /√d 是在干什么</a>
+  <a href="#demo">§6 3×3 手算 demo</a>
+  <a href="#multi">§7 为什么多头</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§1</span>一切从一个问题开始 · "他" 应该关注什么</h2>
+
+<div class="card">
+<p>考虑这样一句话：</p>
+<pre>"小明 把 书 借给 小红 , <b style="color:var(--warn)">他</b> 忘了 还"</pre>
+<p><b>"他"</b>指的是谁？人类一眼知道是"小明"——因为"借给"说明借出方是主语。那么模型凭什么知道？</p>
+
+<div class="callout info">
+Attention 的<b>朴素目标</b>：对每个位置的 token，计算一组<b>权重 w<sub>1</sub>, w<sub>2</sub>, ..., w<sub>n</sub></b>，告诉它"上下文每个词对我当前语义贡献多少"，然后<b>按权重把上下文的信息加权汇总过来</b>。
+</div>
+
+<p>数学上就是：</p>
+<pre>新的 "他"_embedding = w₁·"小明" + w₂·"把" + w₃·"书" + ... + wₙ·"还"</pre>
+<p>问题只剩一个——<b>w 怎么算</b>？</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="dot"><span class="step">§2</span>第一步 · 用点积衡量"相似度"</h2>
+
+<div class="card">
+<p>最朴素想法：两个向量<b>方向越接近，点积越大</b>。如果"他"和"小明"的 embedding 点积大，就说明它俩语义相关。</p>
+
+<pre><span class="com"># 设每个 token 的 embedding 是 d 维向量</span>
+x_他 = [0.2, 0.8, -0.1, ...]     (d=4)
+x_小明 = [0.3, 0.7, -0.05, ...]
+x_书   = [-0.1, 0.2, 0.9, ...]
+
+score(他, 小明) = x_他 · x_小明    <span class="com"># 标量</span>
+score(他, 书)   = x_他 · x_书
+
+<span class="com"># 如果前者更大，说明"他" 更像"小明"</span></pre>
+
+<div class="callout warn">
+<b>但这里有一个 bug</b>：<code>x · x</code> 永远最大（自己跟自己最像）。这就意味着每个 token <b>永远只关注自己</b>，信息根本流不动。而且，<b>"相似"和"该关注"不是一回事</b>——"他"跟"小明"字面不像，但"他"该关注"小明"，这怎么办？
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="qkv"><span class="step">§3</span>第二步 · 引入 Q K V 三组可学习的投影</h2>
+
+<div class="card">
+<p>解决办法：<b>给每个 token 三个不同的"脸"</b>。同一个 embedding <code>x</code>，分别投影成：</p>
+
+<div class="kv">
+  <div class="k">Q = x · W<sub>Q</sub></div><div><b>Query 脸</b>——"我要找什么"</div>
+  <div class="k">K = x · W<sub>K</sub></div><div><b>Key 脸</b>——"我能被谁找到"（像个广告牌）</div>
+  <div class="k">V = x · W<sub>V</sub></div><div><b>Value 脸</b>——"我被找到后贡献什么"</div>
+</div>
+
+<p>然后把<b>分数公式改成</b>：</p>
+<pre>score(i → j) = Q<sub>i</sub> · K<sub>j</sub>     <span class="com"># 位置 i 的 Query 和位置 j 的 Key 点积</span></pre>
+
+<h3>为什么这个设计 genius</h3>
+<ul class="tight">
+  <li><b>Q 和 K 是不同投影</b>——即使 i=j，Q<sub>i</sub>·K<sub>i</sub> 不必最大。模型能学会"我该关注的不是自己"</li>
+  <li><b>W_Q / W_K / W_V 是可学习参数</b>——模型可以自己学出"我该用哪种相似度"</li>
+  <li><b>Value 独立</b>——"找到你"和"用你"可以不是同一组信息。比如"小明"的 Key 可能编码"这是人名"，Value 可能编码"小明是个学生、喜欢读书"这种传递出去的内容</li>
+</ul>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 860 280" width="860">
+  <defs>
+    <marker id="arr" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M0 0L8 4L0 8z" fill="#6ee7b7"/>
+    </marker>
+  </defs>
+  <!-- 一个 x -->
+  <rect x="40" y="110" width="80" height="60" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="80" y="140" text-anchor="middle" fill="#e6e8ee" font-weight="700">x</text>
+  <text x="80" y="158" text-anchor="middle" fill="#8b93a7" font-size="11">token embedding</text>
+
+  <!-- 三路投影 -->
+  <g stroke="#6ee7b7" stroke-width="1.5" fill="none" marker-end="url(#arr)">
+    <line x1="120" y1="130" x2="280" y2="60"/>
+    <line x1="120" y1="140" x2="280" y2="140"/>
+    <line x1="120" y1="150" x2="280" y2="220"/>
+  </g>
+  <text x="200" y="85" fill="#fbbf24" font-size="11" text-anchor="middle">× W_Q</text>
+  <text x="200" y="135" fill="#fbbf24" font-size="11" text-anchor="middle">× W_K</text>
+  <text x="200" y="205" fill="#fbbf24" font-size="11" text-anchor="middle">× W_V</text>
+
+  <!-- Q K V -->
+  <rect x="280" y="30"  width="110" height="50" rx="8" fill="#fbbf24"/>
+  <text x="335" y="60" text-anchor="middle" fill="#11141b" font-weight="700">Q "我要找什么"</text>
+  <rect x="280" y="115" width="110" height="50" rx="8" fill="#7dd3fc"/>
+  <text x="335" y="145" text-anchor="middle" fill="#11141b" font-weight="700">K "我是谁"</text>
+  <rect x="280" y="200" width="110" height="50" rx="8" fill="#a78bfa"/>
+  <text x="335" y="230" text-anchor="middle" fill="#11141b" font-weight="700">V "我能给什么"</text>
+
+  <!-- 右侧：打分 / 汇总 -->
+  <g stroke="#6ee7b7" stroke-width="1.5" fill="none" marker-end="url(#arr)">
+    <line x1="390" y1="55" x2="560" y2="90"/>
+    <line x1="390" y1="140" x2="560" y2="110"/>
+    <line x1="390" y1="225" x2="560" y2="225"/>
+  </g>
+  <rect x="560" y="75" width="140" height="60" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="630" y="100" text-anchor="middle" fill="#fb7185" font-weight="700">Q · Kᵀ</text>
+  <text x="630" y="120" text-anchor="middle" fill="#8b93a7" font-size="11">= 相似度矩阵</text>
+
+  <rect x="720" y="75" width="110" height="60" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="775" y="105" text-anchor="middle" fill="#6ee7b7" font-weight="700">softmax</text>
+  <text x="775" y="125" text-anchor="middle" fill="#8b93a7" font-size="11">归一化</text>
+
+  <rect x="560" y="195" width="270" height="60" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="695" y="220" text-anchor="middle" fill="#a78bfa" font-weight="700">weights · V  =  输出</text>
+  <text x="695" y="240" text-anchor="middle" fill="#8b93a7" font-size="11">按权重从 V 里加权取信息</text>
+
+  <!-- 连接 softmax -> 汇总 -->
+  <line x1="775" y1="135" x2="775" y2="195" stroke="#6ee7b7" stroke-dasharray="3 3"/>
+</svg>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="softmax"><span class="step">§4</span>第三步 · 为什么要 softmax · 不能直接用原始 score 吗</h2>
+
+<div class="card">
+<p>原始点积 score 有三个缺点：</p>
+<ol class="tight">
+  <li><b>可正可负</b>——没法当权重</li>
+  <li><b>尺度不固定</b>——不同层 score 数量级差很远</li>
+  <li><b>不归一化</b>——加权和可能爆炸</li>
+</ol>
+
+<p>softmax 把一串数变成"概率分布"：</p>
+<pre>softmax(s)<sub>i</sub> = exp(s<sub>i</sub>) / Σ<sub>j</sub> exp(s<sub>j</sub>)
+
+<span class="com"># 三个关键性质</span>
+1. 每个数 > 0              <span class="com"># 适合当权重</span>
+2. 加起来 = 1               <span class="com"># 天然归一化</span>
+3. 放大差异                 <span class="com"># score 差 1 → 概率差 e≈2.7 倍</span>
+</pre>
+
+<div class="callout info">
+<b>性质 3 特别重要</b>：softmax 让"最相关的那几个 token 获得绝大部分注意力"，其他的权重接近 0。这正是"关注"这个词的含义——<b>注意力稀疏而集中，而不是均匀分散</b>。
+</div>
+
+<p>到这一步，公式长这样：</p>
+<pre>Attention(Q, K, V) = softmax(Q · Kᵀ) · V</pre>
+
+<p>还差最后一个神秘系数 <code>/√d</code>。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="scale"><span class="step">§5</span>第四步 · /√d 是在治什么病</h2>
+
+<div class="card">
+<p>假设 Q、K 都是 d 维、每个分量是独立的标准正态（均值 0，方差 1）：</p>
+<pre>score = Q · K = Σ<sub>i=1..d</sub> Q<sub>i</sub> K<sub>i</sub>
+
+<span class="com"># 独立乘积的期望 = 0</span>
+<span class="com"># 独立乘积的方差 = 1</span>
+<span class="com"># d 项相加：方差 = d，标准差 = √d</span>
+
+E[score]   = 0
+Var[score] = d
+Std[score] = √d</pre>
+
+<p>d=128 时，score 的典型量级是 <b>±√128 ≈ ±11</b>。走一把 softmax：</p>
+<pre>softmax([-11, 10, 11, -10]) ≈ [0, 0.27, 0.73, 0]</pre>
+
+<div class="callout bad">
+<b>发现问题了吗？</b>——softmax 变成了<b>接近 one-hot</b>，几乎只选一个 token。梯度只会流向"赢家"，其他 key 的梯度趋近于 0，训练直接梯度消失。这就是为什么必须除以 √d。
+</div>
+
+<pre>score = (Q · K) / √d     <span class="com"># 除完后方差变回 1</span></pre>
+
+<p>除完之后 softmax 变得<b>温和而可微</b>，梯度也能合理地分散到所有 token——训练才能跑起来。</p>
+
+<h3>最终公式</h3>
+<div class="callout">
+<pre style="background:transparent;border:none;padding:0;margin:0;font-size:15px">
+<b>Attention(Q, K, V) = softmax(Q · Kᵀ / √d) · V</b>
+</pre>
+</div>
+<p>这就是 2017 年那篇 <b>Attention Is All You Need</b> 的核心——但它不是凭空来的，是被<b>四个工程问题</b>依次逼出来的：<br>
+<span style="color:var(--mute)">相似度 → 分离 Q/K/V → 归一化 → 尺度平稳</span>。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="demo"><span class="step">§6</span>3×3 手算 demo · 点击单步跑一遍</h2>
+
+<div class="card">
+<p>用最小例子：序列长度 N=3、隐藏维 d=2。</p>
+
+<div class="controls">
+  <button class="btn" onclick="step(0)">Reset</button>
+  <button class="btn" onclick="step(1)">① 算 Q·Kᵀ</button>
+  <button class="btn" onclick="step(2)">② /√d</button>
+  <button class="btn" onclick="step(3)">③ softmax</button>
+  <button class="btn" onclick="step(4)">④ × V</button>
+</div>
+
+<div class="svg-wrap">
+<svg id="attnSvg" viewBox="0 0 820 320" width="820">
+  <g font-family="SF Mono" font-size="12">
+    <!-- Q -->
+    <g id="gQ">
+      <text x="60" y="30" fill="#fbbf24" font-weight="700">Q (3×2)</text>
+      <g transform="translate(30,40)">
+        <rect x="0" y="0" width="120" height="90" fill="#1a1f2b" stroke="#fbbf24"/>
+        <g fill="#e6e8ee" text-anchor="middle">
+          <text x="30" y="22">1</text><text x="90" y="22">0</text>
+          <text x="30" y="52">0</text><text x="90" y="52">1</text>
+          <text x="30" y="82">1</text><text x="90" y="82">1</text>
+        </g>
+      </g>
+    </g>
+    <!-- K -->
+    <g id="gK">
+      <text x="220" y="30" fill="#7dd3fc" font-weight="700">K (3×2)</text>
+      <g transform="translate(190,40)">
+        <rect x="0" y="0" width="120" height="90" fill="#1a1f2b" stroke="#7dd3fc"/>
+        <g fill="#e6e8ee" text-anchor="middle">
+          <text x="30" y="22">1</text><text x="90" y="22">1</text>
+          <text x="30" y="52">1</text><text x="90" y="52">0</text>
+          <text x="30" y="82">0</text><text x="90" y="82">1</text>
+        </g>
+      </g>
+    </g>
+    <!-- V -->
+    <g id="gV">
+      <text x="380" y="30" fill="#a78bfa" font-weight="700">V (3×2)</text>
+      <g transform="translate(350,40)">
+        <rect x="0" y="0" width="120" height="90" fill="#1a1f2b" stroke="#a78bfa"/>
+        <g fill="#e6e8ee" text-anchor="middle">
+          <text x="30" y="22">10</text><text x="90" y="22">0</text>
+          <text x="30" y="52">0</text><text x="90" y="52">10</text>
+          <text x="30" y="82">5</text><text x="90" y="82">5</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- 矩阵 S = Q·K^T -->
+    <g id="gS" opacity="0">
+      <text x="60" y="175" fill="#fb7185" font-weight="700">S = Q·Kᵀ (3×3)</text>
+      <g transform="translate(30,185)">
+        <rect x="0" y="0" width="180" height="90" fill="#1a1f2b" stroke="#fb7185"/>
+        <g fill="#e6e8ee" text-anchor="middle">
+          <text x="30" y="22">1</text><text x="90" y="22">1</text><text x="150" y="22">0</text>
+          <text x="30" y="52">1</text><text x="90" y="52">0</text><text x="150" y="52">1</text>
+          <text x="30" y="82">2</text><text x="90" y="82">1</text><text x="150" y="82">1</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- 矩阵 S/sqrt(d) -->
+    <g id="gS2" opacity="0">
+      <text x="260" y="175" fill="#fb7185" font-weight="700">S / √2</text>
+      <g transform="translate(240,185)">
+        <rect x="0" y="0" width="180" height="90" fill="#1a1f2b" stroke="#fb7185"/>
+        <g fill="#e6e8ee" text-anchor="middle" font-size="11">
+          <text x="30" y="22">0.71</text><text x="90" y="22">0.71</text><text x="150" y="22">0</text>
+          <text x="30" y="52">0.71</text><text x="90" y="52">0</text><text x="150" y="52">0.71</text>
+          <text x="30" y="82">1.41</text><text x="90" y="82">0.71</text><text x="150" y="82">0.71</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- softmax -->
+    <g id="gSM" opacity="0">
+      <text x="470" y="175" fill="#6ee7b7" font-weight="700">softmax (每行)</text>
+      <g transform="translate(450,185)">
+        <rect x="0" y="0" width="180" height="90" fill="#1a1f2b" stroke="#6ee7b7"/>
+        <g fill="#e6e8ee" text-anchor="middle" font-size="11">
+          <text x="30" y="22">0.42</text><text x="90" y="22">0.42</text><text x="150" y="22">0.15</text>
+          <text x="30" y="52">0.42</text><text x="90" y="52">0.15</text><text x="150" y="52">0.42</text>
+          <text x="30" y="82">0.52</text><text x="90" y="82">0.24</text><text x="150" y="82">0.24</text>
+        </g>
+      </g>
+    </g>
+
+    <!-- Output -->
+    <g id="gO" opacity="0">
+      <text x="670" y="175" fill="#34d399" font-weight="700">Output = W·V</text>
+      <g transform="translate(650,185)">
+        <rect x="0" y="0" width="150" height="90" fill="#1a1f2b" stroke="#34d399"/>
+        <g fill="#e6e8ee" text-anchor="middle" font-size="11">
+          <text x="40" y="22">4.95</text><text x="110" y="22">4.95</text>
+          <text x="40" y="52">6.30</text><text x="110" y="52">2.10</text>
+          <text x="40" y="82">7.41</text><text x="110" y="82">3.60</text>
+        </g>
+      </g>
+    </g>
+  </g>
+</svg>
+</div>
+
+<div id="stepInfo" style="color:var(--mute);text-align:center;font-size:13px;margin-top:8px">点击按钮单步执行</div>
+
+<script>
+const stepTexts = {
+  0: '点击按钮单步执行',
+  1: '① QKᵀ: 每个位置的 Query 和所有位置的 Key 做点积，得到 3×3 相似度矩阵 S',
+  2: '② /√d: 这里 d=2，所以除以 √2≈1.414，让数值稳定',
+  3: '③ softmax: 每一行独立归一化成概率。可以看到第 1 个 token 把注意力分给了位置 0 和 1（都是 0.42）',
+  4: '④ × V: 用注意力权重去加权求和 V 的每一行——每个输出位置汇总了一份"关注的内容"'
+};
+function step(n){
+  ['gS','gS2','gSM','gO'].forEach((id,i)=>{
+    document.getElementById(id).style.opacity = (n>=i+1)?1:0;
+    document.getElementById(id).style.transition = 'opacity .5s';
+  });
+  document.getElementById('stepInfo').textContent = stepTexts[n];
+}
+</script>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="multi"><span class="step">§7</span>为什么还要 "多头" · 一个 d 维不够用</h2>
+
+<div class="card">
+<p>到目前我们讲的是 <b>single-head attention</b>：一套 Q/K/V 投影，一次 softmax。但实际 Transformer 都是 <b>multi-head attention (MHA)</b>，原因：</p>
+
+<ul class="tight">
+  <li><b>一个 softmax 只能分配一次"注意力"</b>。但一个 token 可能同时有多个独立的关注对象："他" 既要关注"小明"（找指代），又要关注"忘了"（找动作关系）。一套 softmax 抢不过来</li>
+  <li><b>解决办法：把 d 维切成 h 组，每组独立做 Q/K/V 投影 + attention</b>。h 个"头"各关注各的，最后拼回来</li>
+</ul>
+
+<pre><span class="com"># d_model = 4096, num_heads = 32, head_dim = 128</span>
+Q.shape = [N, 32, 128]    <span class="com"># 32 个头，每个头内做独立 attention</span>
+K.shape = [N, 32, 128]
+V.shape = [N, 32, 128]
+
+<span class="com"># 每个头独立 softmax 独立汇总</span>
+head_i = softmax(Q[:,i,:] · K[:,i,:].T / √128) · V[:,i,:]
+
+<span class="com"># 最后拼接 32 个头 → (N, 32*128) = (N, 4096)</span>
+output = concat(head_0, ..., head_31) · W_O
+</pre>
+
+<div class="callout info">
+<b>下一章埋伏笔</b>：32 个头都独立存 K/V → KV Cache 体积 = <code>2 · L · 32 · 128 · 2byte</code> / token。模型越大、头越多，decode 时要搬的 KV 就越吓人。<b>GQA (Grouped Query Attention) 就是在这里开刀省 KV</b>——下一节讲。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="step">§∞</span>带走这四句话</h2>
+<div class="card">
+<div class="kv">
+  <div class="k">① Attention 解决</div><div>"每个 token 应该关注上下文的哪里"</div>
+  <div class="k">② Q/K/V 分离</div><div>"我要找什么 / 我是谁 / 我能给什么"三个可学习投影</div>
+  <div class="k">③ softmax + /√d</div><div>把 score 变成概率 · 用 /√d 防梯度消失</div>
+  <div class="k">④ 多头</div><div>一个 token 可以"同时盯几个目标"</div>
+</div>
+
+<div class="callout">
+<b>下一章</b>：MHA → MQA → GQA 的演化——KV Cache 为什么这么大？凭什么 GQA 能省 4 倍 KV 还不掉精度？ → <a href="04-mha-to-gqa.html" style="color:var(--brand)">00d-mha-to-gqa.html</a>
+</div>
+</div>
+
+<div class="foot">
+第零章 · 03 / 05 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

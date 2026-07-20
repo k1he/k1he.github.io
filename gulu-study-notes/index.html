@@ -1,0 +1,56 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>咕噜的学习笔记</title>
+  <link rel="stylesheet" href="app.css">
+</head>
+<body>
+  <div class="app" id="app">
+    <aside class="sidebar" id="sidebar">
+      <header class="brand">
+        <div class="brand-row">
+          <div><span class="brand-kicker">GULU'S FIELD NOTES</span><h1>咕噜的学习笔记</h1></div>
+          <button class="icon-btn" id="collapseSidebar" title="收起目录">◂</button>
+        </div>
+        <div class="progress-copy"><span id="progressText">正在加载课程…</span><span id="progressPct">0%</span></div>
+        <div class="progress-track"><i id="progressFill"></i></div>
+      </header>
+      <div class="search-box"><span>⌕</span><input id="search" type="search" placeholder="搜索课程、标签…" autocomplete="off"></div>
+      <nav class="course-list" id="courseList" aria-label="课程目录"></nav>
+    </aside>
+
+    <button class="rail" id="expandSidebar" title="展开目录" aria-label="展开目录"><span>咕</span><b>目录</b></button>
+
+    <main class="workspace">
+      <header class="toolbar">
+        <div class="crumb"><span id="sectionName">学习地图</span><b id="courseName">从左侧选择一节课</b></div>
+        <div class="toolbar-actions">
+          <button id="toggleNotes" class="tool-btn active">笔记 <span id="noteCount">0</span></button>
+          <button id="markDone" class="tool-btn" disabled>标记完成</button>
+          <button id="openPage" class="tool-btn" disabled>独立打开 ↗</button>
+        </div>
+      </header>
+      <section class="viewer-wrap">
+        <div class="welcome" id="welcome">
+          <div class="orb"><span>咕</span></div>
+          <span class="welcome-kicker">A PERSONAL SYSTEMS NOTEBOOK</span>
+          <h2>沿着源码，理解系统。</h2>
+          <p>这里收录 GPU、Transformer、SGLang、PD 分离、Tokenizer、MoE 与 Mooncake 的交互式学习笔记。</p>
+          <button id="continueBtn">继续上次学习</button>
+        </div>
+        <iframe id="viewer" title="课程内容"></iframe>
+      </section>
+      <aside class="notes" id="notesPanel">
+        <div class="notes-head"><div><span>ANNOTATIONS</span><h3 id="notesTitle">页面笔记</h3></div><button class="icon-btn" id="closeNotes">⌄</button></div>
+        <p class="notes-hint" id="notesHint">在课程页中选中文字，即可添加笔记。</p>
+        <div class="notes-list" id="notesList"></div>
+      </aside>
+    </main>
+  </div>
+  <div class="toast" id="toast" role="status"></div>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,811 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>14 · CacheManager · 物理页 + 前缀树的结合点</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.var{color:#fda4af}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.api-card{background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:14px;margin:10px 0}
+.api-card h4{margin:0 0 8px;color:var(--brand);font-size:14px;font-family:"SF Mono",monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>CacheManager · 物理页 + 前缀树的结合点 <span class="tag">14</span></h1>
+<div class="sub">把"free page 池"和"Radix Tree"粘在一起的中间人。每个方法都演化推导出来，每一行都详解。</div>
+
+<div class="toc">
+  <a href="#overview">总览 · 它是谁的中间人</a>
+  <a href="#state">内部状态演化</a>
+  <a href="#api-map">完整 API 地图</a>
+  <a href="#match">match_req</a>
+  <a href="#alloc">allocate_paged · 最精妙的一块</a>
+  <a href="#cache-req">cache_req · 五段式注释的真相</a>
+  <a href="#evict">_allocate 的 evict 兜底</a>
+  <a href="#lazy">lazy_free_region</a>
+  <a href="#integrity">check_integrity · 自我诊断</a>
+  <a href="#summary">总结 · 四条不变式</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="overview"><span class="step">PART 1</span>它是谁的中间人？</h2>
+
+<div class="card">
+
+<p>CacheManager 本身<u>不存 KV</u>、不存<u>树结构</u>——它是两者的<strong>粘合剂</strong>：</p>
+
+<pre><code>CacheManager 粘合三层：
+
+       上面：<span class="var">RadixPrefixCache</span>                     <span class="com"># 前缀树 (逻辑结构)</span>
+              │
+              │ insert_prefix / match_prefix / evict
+              │ → 操作 "前缀能不能复用"
+              ▼
+       中间：<span class="var">CacheManager</span>                         <span class="com"># ★ 这一章的主角</span>
+              │
+              │ free_slots + page_table (GPU)
+              │ → 把 "前缀树的叶子" 和 "真正的物理页号" 桥接
+              ▼
+       下面：<span class="var">MHAKVCache._kv_buffer</span>                 <span class="com"># 物理 KV tensor (08 章讲过)</span>
+              <span class="com"># 一个巨大 GPU tensor，CacheManager 决定 "谁用哪一页"</span>
+</code></pre>
+
+<h3>一句话：它干什么</h3>
+<p><strong>"给我一组 token id，告诉我 Radix 命中了多少，然后把 KV 物理页号分给我。"</strong></p>
+
+<p>调用者是 <code>PrefillAdder</code> 和 <code>Scheduler</code>——他们不关心 Radix Tree 的节点结构，也不关心 page 是怎么从池里出来的。他们只想问：</p>
+<ul class="tight">
+  <li>"这个请求能命中多少前缀？"（<code>match_req</code>）</li>
+  <li>"给这个 req 的新 token 分配 page"（<code>allocate_paged</code>）</li>
+  <li>"req 完成了/前缀该插入树了"（<code>cache_req</code>）</li>
+</ul>
+
+<p>CacheManager 内部处理所有"物理 ↔ 逻辑"的转换细节。</p>
+
+<div class="callout info">
+<strong>你会同时用到 13、14、15 章的知识</strong>：
+<ul class="tight">
+  <li>13 章 (Req) 告诉你 "一个请求的状态是怎么维护的"</li>
+  <li>本章 (CacheManager) 告诉你 "请求的 KV 物理资源是怎么被分配和复用的"</li>
+  <li>15 章 (PrefillManager/DecodeManager) 告诉你 "这些 API 在什么时机被调用"</li>
+</ul>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="state"><span class="step">PART 2</span>内部状态 · 演化推导</h2>
+
+<div class="card">
+
+<p>让我们再用 05 章的"每加一个字段都问为什么"的方法构建 CacheManager。</p>
+
+<h3>v0 · 最小版本：只有一个 free_slots 池</h3>
+<pre><code><span class="kw">class</span> <span class="fn">CacheManagerV0</span>:
+    free_slots: List[<span class="kw">int</span>]    <span class="com"># 空闲页号列表</span>
+
+    <span class="kw">def</span> <span class="fn">allocate</span>(n) -&gt; List[<span class="kw">int</span>]:
+        <span class="kw">return</span> [self.free_slots.<span class="fn">pop</span>() <span class="kw">for</span> _ <span class="kw">in</span> range(n)]
+
+    <span class="kw">def</span> <span class="fn">free</span>(indices):
+        self.free_slots.<span class="fn">extend</span>(indices)</code></pre>
+
+<p>够用吗？不够——alloc 速度慢（Python list pop 会触发多次内存操作），且不能前缀复用。</p>
+
+<h3>v1 · free_slots 改为 GPU tensor</h3>
+<pre><code>free_slots: torch.Tensor    <span class="com"># GPU int32 [num_pages]</span></code></pre>
+
+<p>为什么要 GPU tensor？因为后续 <code>page_table</code> 的写入是 GPU 操作，free_slots 的 page 号需要直接写入 page_table，<u>不想来回 CPU/GPU</u>。所以整个 free_slots 本身就存 GPU。</p>
+
+<h3>v2 · 加入 Radix Tree 支持前缀复用</h3>
+<pre><code>free_slots: torch.Tensor
+<span class="hl">prefix_cache: BasePrefixCache</span>    <span class="com"># RadixPrefixCache 或 NaivePrefixCache</span></code></pre>
+
+<p>前缀命中的 page 号来自 Radix 树的节点 value；新分配的来自 free_slots。两者<u>并存但分工不同</u>：</p>
+<ul class="tight">
+  <li><strong>free_slots 里的 page</strong>：尚未被任何 req 占用</li>
+  <li><strong>Radix 树某节点的 page</strong>：已经被当前 req 占用 (ref_count &gt; 0) 或可被驱逐 (ref_count = 0)</li>
+</ul>
+
+<h3>v3 · 加入 page_size 支持（非 1 页大小）</h3>
+<pre><code>free_slots: torch.Tensor        <span class="com"># 现在存的是 page 的起始 token 位置 (按 page_size 对齐)</span>
+prefix_cache: BasePrefixCache
+<span class="hl">page_size: <span class="kw">int</span></span></code></pre>
+
+<p>当 page_size=16 时，free_slots 里的值是 [0, 16, 32, 48, ...]。这让 TRT-LLM 后端（要求 page_size=16/32/64）也能工作。</p>
+
+<pre><code><span class="com"># cache.py:20</span>
+self.free_slots = torch.<span class="fn">arange</span>(num_pages, dtype=torch.int32, device=device) * page_size
+<span class="com"># 例: num_pages=1M, page_size=1 → [0, 1, 2, ..., 999999]</span>
+<span class="com"># 例: num_pages=65536, page_size=16 → [0, 16, 32, ..., 1048560]</span></code></pre>
+
+<h3>v4 · 需要 page_table 引用</h3>
+<p>所有 <code>allocate_paged</code> 的结果最终要写进 page_table[req.table_idx, ...]。CacheManager 直接持有 page_table 的引用就能写。</p>
+
+<pre><code>free_slots: torch.Tensor
+prefix_cache: BasePrefixCache
+page_size: <span class="kw">int</span>
+<span class="hl">page_table: torch.Tensor</span>         <span class="com"># ← TableManager 也持有, 同一个 GPU tensor 共享引用</span>
+num_pages: <span class="kw">int</span></code></pre>
+
+<h3>最终实际源码（cache.py:16）</h3>
+<pre><code><span class="kw">class</span> <span class="fn">CacheManager</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, num_pages, page_size, page_table, type):
+        device = page_table.device
+        self.free_slots = torch.<span class="fn">arange</span>(num_pages, dtype=torch.int32, device=device) * page_size
+        self.prefix_cache = <span class="fn">create_prefix_cache</span>(device=device, type=type)
+        self.device = device
+        self.num_pages = num_pages
+        self.page_table = page_table
+        self.page_size = page_size</code></pre>
+
+<h3>内部状态总览</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 1100 360" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="550" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">CacheManager 的 "三件宝"</text>
+
+  <!-- free_slots -->
+  <g transform="translate(40, 60)">
+    <rect x="0" y="0" width="320" height="120" fill="#0f2a1f" stroke="#34d399" rx="10"/>
+    <text x="160" y="28" text-anchor="middle" fill="#34d399" font-size="13" font-weight="700">free_slots</text>
+    <text x="160" y="48" text-anchor="middle" fill="#8b93a7" font-size="10">torch.Tensor, GPU int32</text>
+    <text x="160" y="74" text-anchor="middle" fill="#cbd5e1" font-size="11" font-family="SF Mono">[page 号, page 号, ...]</text>
+    <text x="160" y="94" text-anchor="middle" fill="#cbd5e1" font-size="10">空闲的物理页位置</text>
+    <text x="160" y="110" text-anchor="middle" fill="#fbbf24" font-size="10">可以直接给 req 用</text>
+  </g>
+
+  <!-- prefix_cache (Radix Tree) -->
+  <g transform="translate(400, 60)">
+    <rect x="0" y="0" width="320" height="120" fill="#0b1f2a" stroke="#7dd3fc" rx="10"/>
+    <text x="160" y="28" text-anchor="middle" fill="#7dd3fc" font-size="13" font-weight="700">prefix_cache (Radix Tree)</text>
+    <text x="160" y="48" text-anchor="middle" fill="#8b93a7" font-size="10">逻辑结构, 存在 CPU 内存</text>
+    <text x="160" y="74" text-anchor="middle" fill="#cbd5e1" font-size="11" font-family="SF Mono">RadixTreeNode (tree)</text>
+    <text x="160" y="94" text-anchor="middle" fill="#cbd5e1" font-size="10">key = token_ids</text>
+    <text x="160" y="110" text-anchor="middle" fill="#fbbf24" font-size="10">value = 物理页号列表 (GPU)</text>
+  </g>
+
+  <!-- page_table ref -->
+  <g transform="translate(760, 60)">
+    <rect x="0" y="0" width="320" height="120" fill="#1a0f2a" stroke="#a78bfa" rx="10"/>
+    <text x="160" y="28" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="700">page_table (引用)</text>
+    <text x="160" y="48" text-anchor="middle" fill="#8b93a7" font-size="10">和 TableManager 共享</text>
+    <text x="160" y="74" text-anchor="middle" fill="#cbd5e1" font-size="11" font-family="SF Mono">[max_req+1, max_seq_len]</text>
+    <text x="160" y="94" text-anchor="middle" fill="#cbd5e1" font-size="10">[i, j] = req i 第 j token 的页号</text>
+    <text x="160" y="110" text-anchor="middle" fill="#fbbf24" font-size="10">allocate_paged 写入这里</text>
+  </g>
+
+  <!-- Invariant relationship -->
+  <g transform="translate(40, 220)">
+    <rect x="0" y="0" width="1040" height="120" fill="#0a0d12" stroke="#fbbf24" rx="10"/>
+    <text x="520" y="30" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700">不变式</text>
+    <text x="520" y="56" text-anchor="middle" fill="#cbd5e1" font-size="12" font-family="SF Mono">len(free_slots) × page_size + prefix_cache.size_info.total_size = num_pages × page_size</text>
+    <text x="520" y="80" text-anchor="middle" fill="#cbd5e1" font-size="11">即：池里的每一页要么<u>空闲</u>，要么<u>在 Radix 树某节点的 value 里</u>，不存在第三种状态</text>
+    <text x="520" y="104" text-anchor="middle" fill="#fbbf24" font-size="11">check_integrity 就是在验证这条</text>
+  </g>
+</svg>
+</div>
+
+<div class="callout warn">
+<strong>不变式：page 只能在一个地方。</strong> 要么在 <code>free_slots</code> 列表里（空闲），要么在 Radix 树的某个节点的 value 里（被占用或可驱逐）。<u>绝不能同时在两个地方</u>——这是整个 cache 模块的正确性根基。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="api-map"><span class="step">PART 3</span>完整 API 地图</h2>
+
+<div class="card">
+<p>CacheManager 对外暴露 8 个公开方法 + 3 个 property。我把它们按"被谁调用"分类。</p>
+
+<h3>① PrefillAdder 用的（装箱时）</h3>
+
+<div class="api-card">
+<h4>match_req(pending_req) → MatchResult</h4>
+<p>走 Radix Tree 看这个 req 的 input_ids 前缀能命中多少。<u>只看 input_ids[:-1]</u>（最后一个 token 要算，不能只 match）。</p>
+</div>
+
+<div class="api-card">
+<h4>available_size (property) → int</h4>
+<p>当前可用的 page 容量 = evictable 的 Radix 节点 + 真正空闲的 pages。PrefillAdder 用来判断能不能装下新 req。</p>
+</div>
+
+<div class="api-card">
+<h4>lock(handle) / unlock(handle)</h4>
+<p>把 Radix 节点的 ref_count+1 或 -1。lock 后这个节点（和所有祖先）不会被 evict。</p>
+</div>
+
+<h3>② Scheduler 用的（准备 batch 时）</h3>
+
+<div class="api-card">
+<h4>allocate_paged(reqs)</h4>
+<p>为整个 batch 的 req 按"缺多少页"批量分配，并写 page_table。<strong>本章最复杂的方法</strong>。</p>
+</div>
+
+<h3>③ Scheduler 用的（处理结果时）</h3>
+
+<div class="api-card">
+<h4>cache_req(req, finished)</h4>
+<p>prefill 完或 req finish 时插入 Radix 树 + 释放冗余页。<strong>cache_req 就是整套 cache 逻辑的"心脏"</strong>。</p>
+</div>
+
+<div class="api-card">
+<h4>lazy_free_region() (contextmanager)</h4>
+<p>批量释放场景下，把多次 _free 攒起来最后一次性 torch.cat——优化性能。</p>
+</div>
+
+<h3>④ 诊断用的</h3>
+
+<div class="api-card">
+<h4>check_integrity()</h4>
+<p>每次 iteration 后（可选）检查不变式是否成立。调试利器。</p>
+</div>
+
+<h3>内部私有</h3>
+<table>
+<tr><th>方法</th><th>作用</th></tr>
+<tr><td><code>_allocate(n) → Tensor</code></td><td>从 free_slots 取 n 个 page，不够就触发 Radix evict</td></tr>
+<tr><td><code>_free(indices)</code></td><td>把 indices 加回 free_slots</td></tr>
+<tr><td><code>_page_to_token(pages) → Tensor</code></td><td>page_size &gt; 1 时把"页号"展开成"每个 token 的位置"</td></tr>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="match"><span class="step">PART 4</span>match_req · 前缀匹配的微妙细节</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># cache.py:27</span>
+<span class="kw">def</span> <span class="fn">match_req</span>(self, req: PendingReq) -&gt; MatchResult:
+    input_len = req.input_len
+    <span class="kw">assert</span> input_len &gt; <span class="num">0</span>, <span class="str">"Input length must be greater than 0."</span>
+    <span class="hl"><span class="kw">return</span> self.prefix_cache.<span class="fn">match_prefix</span>(req.input_ids[: input_len - <span class="num">1</span>])</span>
+    <span class="com">#                                                          ^^^^^^^^^^^^^^</span>
+    <span class="com">#                                                          注意 -1!</span></code></pre>
+
+<h3>为什么不 match 完整的 input_ids？</h3>
+<div class="callout warn">
+<strong>因为最后一个 token 必须参与 prefill 计算</strong>。
+<ul class="tight">
+  <li>如果 input 长度为 N，模型要做 prefill 就需要算至少 1 个新 token 的 KV（不然 forward 就没任何 Q 了）</li>
+  <li>假设完整 match 了 N 个 token → extend_len = 0 → kernel 拿不到任何 Q，根本跑不起来</li>
+  <li>所以永远至少留 1 个给新算。match 只看前 N-1 个。</li>
+</ul>
+</div>
+
+<h3>返回的 MatchResult 是啥？</h3>
+<pre><code><span class="com"># kvcache/base.py:62</span>
+<span class="kw">class</span> <span class="fn">MatchResult</span>(NamedTuple):
+    cuda_handle: BaseCacheHandle
+    <span class="com"># TODO: support HiCache (CPU offload)</span></code></pre>
+
+<p>目前只有 <code>cuda_handle</code>（GPU 上的 Radix 节点引用）。将来 HiCache 会加个 <code>cpu_handle</code>——从 CPU 内存里命中的前缀。现在的接口已经为此预留。</p>
+
+<h3>BaseCacheHandle 是什么？</h3>
+<pre><code><span class="com"># kvcache/base.py:41</span>
+<span class="kw">@dataclass</span>(frozen=<span class="kw">True</span>)
+<span class="kw">class</span> <span class="fn">BaseCacheHandle</span>(ABC):
+    cached_len: <span class="kw">int</span>                                 <span class="com"># 命中了多少 token</span>
+    <span class="kw">@abstractmethod</span>
+    <span class="kw">def</span> <span class="fn">get_matched_indices</span>(self) -&gt; torch.Tensor: ...  <span class="com"># 取出物理页号序列</span></code></pre>
+
+<p>对 Radix 来说 <code>cuda_handle</code> 是 <code>RadixCacheHandle(cached_len, node)</code>——拿到 node 之后可以回溯到 root 拼出整条 page 路径。</p>
+
+<h3>零命中的情况</h3>
+<p>新请求进来，Radix 树空或 root 没有匹配的子节点 → 返回 <code>RadixCacheHandle(cached_len=0, node=root_node)</code>。<strong>cached_len=0 就是"空命中"的表示</strong>。后续 PrefillAdder 知道要全量 prefill。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="alloc"><span class="step">PART 5</span>allocate_paged · 最精妙的一块</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># cache.py:42</span>
+<span class="kw">def</span> <span class="fn">allocate_paged</span>(self, reqs: List[Req]) -&gt; <span class="kw">None</span>:
+    needed_pages = <span class="num">0</span>
+    allocation_info: List[Tuple[<span class="kw">int</span>, <span class="kw">int</span>, <span class="kw">int</span>]] = []
+    <span class="kw">for</span> req <span class="kw">in</span> reqs:
+        <span class="hl">first_page = <span class="fn">div_ceil</span>(req.cached_len, self.page_size)</span>
+        <span class="hl">last_page = <span class="fn">div_ceil</span>(req.device_len, self.page_size)</span>
+        <span class="kw">if</span> last_page &gt; first_page:
+            needed_pages += last_page - first_page
+            allocation_info.<span class="fn">append</span>((req.table_idx, first_page, last_page))
+    <span class="kw">if</span> needed_pages &gt; <span class="num">0</span>:
+        allocated = self.<span class="fn">_page_to_token</span>(self.<span class="fn">_allocate</span>(needed_pages))
+        <span class="fn">_write_page_table</span>(self.page_table, allocated, allocation_info, self.page_size)</code></pre>
+
+<h3>div_ceil 的作用</h3>
+<pre><code><span class="com"># utils</span>
+<span class="kw">def</span> <span class="fn">div_ceil</span>(a, b): <span class="kw">return</span> (a + b - <span class="num">1</span>) // b</code></pre>
+
+<p>它计算"<u>向上取整</u>的除法"。例：<code>div_ceil(25, 16) = 2</code>。</p>
+
+<h3>first_page 和 last_page 的语义</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1100 240" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="550" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">例：page_size=16, req.cached_len=20, req.device_len=50 → 需要分配几页？</text>
+
+  <!-- token position ruler -->
+  <g font-family="SF Mono" font-size="9" fill="#8b93a7">
+    <line x1="40" y1="80" x2="1060" y2="80" stroke="#4b5563"/>
+    <g>
+      <line x1="40" y1="76" x2="40" y2="84" stroke="#cbd5e1"/><text x="40" y="70" text-anchor="middle" fill="#cbd5e1">0</text>
+      <line x1="200" y1="76" x2="200" y2="84" stroke="#cbd5e1"/><text x="200" y="70" text-anchor="middle" fill="#cbd5e1">16</text>
+      <line x1="360" y1="76" x2="360" y2="84" stroke="#cbd5e1"/><text x="360" y="70" text-anchor="middle" fill="#cbd5e1">32</text>
+      <line x1="520" y1="76" x2="520" y2="84" stroke="#cbd5e1"/><text x="520" y="70" text-anchor="middle" fill="#cbd5e1">48</text>
+      <line x1="680" y1="76" x2="680" y2="84" stroke="#cbd5e1"/><text x="680" y="70" text-anchor="middle" fill="#cbd5e1">64</text>
+    </g>
+  </g>
+
+  <!-- cached region [0, 20) -->
+  <rect x="40" y="100" width="200" height="30" fill="#34d399" opacity=".5" stroke="#34d399"/>
+  <text x="140" y="120" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">[0, 20) cached</text>
+
+  <!-- pending region [20, 50) -->
+  <rect x="240" y="100" width="260" height="30" fill="#fbbf24" stroke="#fbbf24"/>
+  <text x="370" y="120" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">[20, 50) 要新算, 需要页</text>
+
+  <!-- Page boundaries -->
+  <g>
+    <rect x="40" y="150" width="160" height="30" fill="#0a0d12" stroke="#34d399"/>
+    <text x="120" y="170" text-anchor="middle" fill="#34d399" font-size="10">page 0 (已有)</text>
+    <rect x="200" y="150" width="160" height="30" fill="#0a0d12" stroke="#7dd3fc"/>
+    <text x="280" y="170" text-anchor="middle" fill="#7dd3fc" font-size="10">page 1 (部分 cached + 新)</text>
+    <rect x="360" y="150" width="160" height="30" fill="#0a0d12" stroke="#fbbf24"/>
+    <text x="440" y="170" text-anchor="middle" fill="#fbbf24" font-size="10">page 2 (新)</text>
+    <rect x="520" y="150" width="160" height="30" fill="#0a0d12" stroke="#fbbf24"/>
+    <text x="600" y="170" text-anchor="middle" fill="#fbbf24" font-size="10">page 3 (新, 部分)</text>
+  </g>
+
+  <!-- Compute -->
+  <text x="550" y="215" text-anchor="middle" fill="#cbd5e1" font-size="11">first_page = div_ceil(20, 16) = 2 · last_page = div_ceil(50, 16) = 4 · 需要新分配 <strong>2 页</strong> (page 2, 3)</text>
+  <text x="550" y="232" text-anchor="middle" fill="#fb7185" font-size="10">注意: page 1 的 [20, 32) 部分也是"新的", 但 page 1 的 page# 已经在 page_table 里了（cached 时分配的）, 所以不算新页</text>
+</svg>
+</div>
+
+<div class="callout info">
+<strong>为什么用 div_ceil 而不是 div_floor？</strong>
+<ul class="tight">
+  <li>first_page = div_ceil(cached_len) → cached_len=20 向上取到 page 2（第 1 页满了）</li>
+  <li>last_page = div_ceil(device_len) → device_len=50 向上取到 page 4</li>
+  <li>需要的新页 = last - first = 4 - 2 = 2</li>
+  <li>这个计算隐含一个关键点：<u>cached 区域的最后一页 (page 1) 已经被之前的 allocate 写入 page_table，这次不需要再分配</u>——它半满半新，但物理页是同一页</li>
+</ul>
+</div>
+
+<h3>为什么 batch 批量分配比逐个分配好？</h3>
+<p>把整个 batch 的需求汇总 (<code>needed_pages</code>) 然后一次 <code>_allocate(needed_pages)</code>——只触发 <u>一次</u> 可能的 evict，<u>一次</u> free_slots 切片，<u>一次</u> GPU H2D（通过 _write_page_table）。如果逐个 req 分配就会触发多次。</p>
+
+<h3>_write_page_table · 批量写入魔法</h3>
+
+<pre><code><span class="com"># cache.py:127</span>
+<span class="kw">def</span> <span class="fn">_write_page_table</span>(page_table, allocated, allocation_info, page_size):
+    needed_tokens = <span class="fn">len</span>(allocated)
+    <span class="hl">table_idx_host = torch.<span class="fn">empty</span>(needed_tokens, dtype=torch.int64, pin_memory=<span class="kw">True</span>)</span>
+    <span class="hl">positions_host = torch.<span class="fn">empty</span>(needed_tokens, dtype=torch.int64, pin_memory=<span class="kw">True</span>)</span>
+    offset = <span class="num">0</span>
+    <span class="kw">for</span> table_idx, first_page, last_page <span class="kw">in</span> allocation_info:
+        first_pos, last_pos = first_page * page_size, last_page * page_size
+        length = last_pos - first_pos
+        table_idx_host[offset : offset + length].<span class="fn">fill_</span>(table_idx)
+        torch.<span class="fn">arange</span>(first_pos, last_pos, out=positions_host[offset : offset + length])
+        offset += length
+    <span class="kw">assert</span> offset == needed_tokens
+    table_idxs = table_idx_host.<span class="fn">to</span>(page_table.device, non_blocking=<span class="kw">True</span>)
+    offsets = positions_host.<span class="fn">to</span>(page_table.device, non_blocking=<span class="kw">True</span>)
+    <span class="hl">page_table[table_idxs, offsets] = allocated</span>   <span class="com"># ★ 一次性 advanced indexing 写入</span></code></pre>
+
+<p>这个函数的精妙：</p>
+<ul class="tight">
+  <li><strong>pin_memory</strong>：CPU buffer 用 pinned memory，支持 non-blocking H2D copy</li>
+  <li><strong>一次 H2D</strong>：只有两次 cpu→gpu copy（table_idxs 和 offsets），不是每个 req 一次</li>
+  <li><strong>advanced indexing</strong>：<code>page_table[table_idxs, offsets] = allocated</code> 是 PyTorch 的高级索引，<u>一个 kernel 搞定整批写入</u></li>
+</ul>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="cache-req"><span class="step">PART 6</span>cache_req · 五段式注释的真相</h2>
+
+<div class="card">
+
+<p>这是整个 CacheManager 最难的方法。作者在源码里贴了一段<strong>五段式的注释</strong>——我们把这段注释逐行解剖。</p>
+
+<pre><code><span class="com"># cache.py:55</span>
+<span class="kw">def</span> <span class="fn">cache_req</span>(self, req: Req, *, finished: <span class="kw">bool</span>) -&gt; <span class="kw">None</span>:
+    <span class="com"># ==================================== valid cache region ====================================</span>
+    <span class="com"># [0, req.cached_len)                       This part is valid for attention kernel read/write.</span>
+    <span class="com"># [0, old_handle.cached_len)                This part is in the prefix cache before prefill.</span>
+    <span class="com"># [old_handle.cached_len, req.cached_len)   This part is allocated by cache manager for this request.</span>
+    <span class="com"># ================================== allocated cache region ==================================</span>
+    <span class="com"># [old_handle.cached_len, cached_len)       This part was not in the prefix cache when prefill,</span>
+    <span class="com">#                                           but later cached by other requests.</span>
+    <span class="com">#                                           We must free them to avoid memory leak.</span>
+    <span class="com"># [cached_len, new_handle.cached_len)       This part is newly inserted into the prefix cache.</span>
+    <span class="com"># [new_handle.cached_len, req.cached_len)   This part is tailing part that can not inserted into the prefix cache.</span>
+    <span class="com">#                                           We should free it if the request has finished.</span>
+    insert_ids = req.input_ids[: req.cached_len]
+    page_indices = self.page_table[req.table_idx, : req.cached_len]
+    old_handle = req.cache_handle
+    cached_len, new_handle = self.prefix_cache.<span class="fn">insert_prefix</span>(insert_ids, page_indices)
+    self.<span class="fn">unlock</span>(old_handle)
+    self.<span class="fn">_free</span>(page_indices[old_handle.cached_len : cached_len])
+    <span class="kw">if</span> finished:
+        self.<span class="fn">_free</span>(page_indices[new_handle.cached_len :])
+    <span class="kw">else</span>:
+        req.cache_handle = new_handle
+        self.<span class="fn">lock</span>(new_handle)</code></pre>
+
+<h3>5 段各自是什么？</h3>
+
+<p>设 req.cached_len = 100，old_handle.cached_len = 20，insert_prefix 返回 cached_len = 50, new_handle.cached_len = 96。这些数字对应图中：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 380" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">cache_req 里的 4 个关键长度 · 5 个区间</text>
+
+  <!-- Ruler -->
+  <g font-family="SF Mono" font-size="10" fill="#8b93a7">
+    <line x1="60" y1="70" x2="1140" y2="70" stroke="#4b5563"/>
+    <g>
+      <line x1="60" y1="66" x2="60" y2="74" stroke="#cbd5e1"/><text x="60" y="60" text-anchor="middle" fill="#cbd5e1">0</text>
+      <line x1="276" y1="66" x2="276" y2="74" stroke="#fbbf24"/><text x="276" y="60" text-anchor="middle" fill="#fbbf24">20</text>
+      <line x1="600" y1="66" x2="600" y2="74" stroke="#7dd3fc"/><text x="600" y="60" text-anchor="middle" fill="#7dd3fc">50</text>
+      <line x1="1076" y1="66" x2="1076" y2="74" stroke="#a78bfa"/><text x="1076" y="60" text-anchor="middle" fill="#a78bfa">96</text>
+      <line x1="1140" y1="66" x2="1140" y2="74" stroke="#fb7185"/><text x="1140" y="60" text-anchor="middle" fill="#fb7185">100</text>
+    </g>
+  </g>
+
+  <!-- Labels -->
+  <text x="170" y="45" text-anchor="middle" fill="#fbbf24" font-size="10">old_handle.cached_len</text>
+  <text x="440" y="45" text-anchor="middle" fill="#7dd3fc" font-size="10">insert 返回的 cached_len</text>
+  <text x="850" y="45" text-anchor="middle" fill="#a78bfa" font-size="10">new_handle.cached_len</text>
+  <text x="1110" y="45" text-anchor="middle" fill="#fb7185" font-size="10">req.cached_len</text>
+
+  <!-- Segments -->
+  <g>
+    <!-- A: [0, 20) -->
+    <rect x="60" y="100" width="216" height="40" fill="#0f2a1f" stroke="#34d399"/>
+    <text x="168" y="125" text-anchor="middle" fill="#34d399" font-size="11" font-weight="600">A: 本就在 Radix 里</text>
+
+    <!-- B: [20, 50) -->
+    <rect x="276" y="100" width="324" height="40" fill="#2a0f0f" stroke="#fb7185"/>
+    <text x="438" y="120" text-anchor="middle" fill="#fb7185" font-size="11" font-weight="600">B: 本次被别人抢先 insert 了</text>
+    <text x="438" y="135" text-anchor="middle" fill="#fb7185" font-size="10">→ 我们要 free (memory leak)</text>
+
+    <!-- C: [50, 96) -->
+    <rect x="600" y="100" width="476" height="40" fill="#0b1f2a" stroke="#7dd3fc"/>
+    <text x="838" y="120" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">C: 我们新插入的</text>
+    <text x="838" y="135" text-anchor="middle" fill="#7dd3fc" font-size="10">→ 在 new_handle 里, 保留</text>
+
+    <!-- D: [96, 100) -->
+    <rect x="1076" y="100" width="64" height="40" fill="#2a1f0b" stroke="#fbbf24"/>
+    <text x="1108" y="123" text-anchor="middle" fill="#fbbf24" font-size="9">D: 尾巴</text>
+  </g>
+
+  <!-- Action rows -->
+  <g>
+    <text x="60" y="180" fill="#cbd5e1" font-size="12" font-weight="600">处理：</text>
+
+    <rect x="60" y="195" width="216" height="32" fill="#1f2937" stroke="#374151"/>
+    <text x="168" y="215" text-anchor="middle" fill="#cbd5e1" font-size="10">A: 不动 (保留锁)</text>
+
+    <rect x="276" y="195" width="324" height="32" fill="#2a0f0f" stroke="#fb7185"/>
+    <text x="438" y="215" text-anchor="middle" fill="#fb7185" font-size="10">_free(page_indices[20:50])</text>
+
+    <rect x="600" y="195" width="476" height="32" fill="#0b1f2a" stroke="#7dd3fc"/>
+    <text x="838" y="215" text-anchor="middle" fill="#7dd3fc" font-size="10">已被 insert_prefix 加进树</text>
+
+    <rect x="1076" y="195" width="64" height="32" fill="#2a1f0b" stroke="#fbbf24"/>
+    <text x="1108" y="215" text-anchor="middle" fill="#fbbf24" font-size="9">D: 见下</text>
+  </g>
+
+  <!-- finished branch -->
+  <g>
+    <text x="60" y="265" fill="#cbd5e1" font-size="12" font-weight="600">若 finished=True:</text>
+    <rect x="1076" y="280" width="64" height="32" fill="#2a0f0f" stroke="#fb7185"/>
+    <text x="1108" y="300" text-anchor="middle" fill="#fb7185" font-size="9">_free(D)</text>
+    <text x="180" y="300" fill="#8b93a7" font-size="11">→ req 完成, 尾巴不能插入树 (长度不满 page), 直接 free</text>
+  </g>
+
+  <!-- not finished branch -->
+  <g>
+    <text x="60" y="340" fill="#cbd5e1" font-size="12" font-weight="600">若 finished=False:</text>
+    <rect x="1076" y="355" width="64" height="22" fill="#1f2937" stroke="#fbbf24"/>
+    <text x="1108" y="370" text-anchor="middle" fill="#fbbf24" font-size="9">保留</text>
+    <text x="180" y="370" fill="#8b93a7" font-size="11">→ 继续 decode, 这段 KV 还要用 (cache_handle 更新成 new_handle, lock 住)</text>
+  </g>
+</svg>
+</div>
+
+<h3>B 段的故事 · 最难理解的一段</h3>
+
+<div class="callout warn">
+<strong>"为什么 [old_handle.cached_len, cached_len) 区间的 page 要 free？"</strong>
+
+<p>想象并发场景：</p>
+<ol class="tight">
+  <li>t=0: req X 开始 prefill，match 命中前 20 个 token，分配了 page 21-50 存新算的</li>
+  <li>t=1: 同时 req Y 也来了，<u>它的 prompt 前 50 个 token 跟 X 一样</u></li>
+  <li>t=2: req Y 先完成 prefill，把自己的 page 21-50 insert_prefix 进树</li>
+  <li>t=3: req X 也完成 prefill，准备 cache_req(X)</li>
+  <li>t=3': insert_prefix(X.input_ids[:100], X.page_indices[:100])—— 但 Radix 树里已经有"前 50 个 token"的节点了（Y 插的），所以 insert 返回 <code>cached_len=50</code>——X 新插的只是 [50, 96) 这段</li>
+  <li>t=4: X 原本分配的 page 21-50 现在 <u>被两份 KV 代表同一 prefix</u>——Y 的已经入树，X 的多余了</li>
+  <li>→ X 必须 free 自己的 page 21-50（区间 B），否则<u>同一份 KV 逻辑上重复占用 60 页</u></li>
+</ol>
+这就是注释里 "later cached by other requests, We must free them to avoid memory leak" 的意思。
+</div>
+
+<h3>D 段的故事 · 尾巴为什么可能不入树？</h3>
+
+<p><code>insert_prefix</code> 里有个 <code>align_down(len(input_ids), self.page_size)</code>——只有<u>整页</u>的 token 才能入树。如果 req.cached_len=100, page_size=16，那可以入树的最多是 96 个 token（6×16），尾巴 [96, 100) 不能入树。</p>
+
+<p>此时分两种情况：</p>
+<ul class="tight">
+  <li><strong>finished=False</strong>（prefill 完, 还要 decode）：保留这些 page，req.cache_handle 更新成 new_handle（持有前 96 个）。尾巴的 4 个 token 继续跟着这个 req，<u>下次 cache_req 时可能被下次 insert 顺带插入</u></li>
+  <li><strong>finished=True</strong>（req 结束）：这些 page 没人要了，<code>_free</code> 回池</li>
+</ul>
+
+<div class="callout info">
+<strong>page_size=1 时 D 段永远为空</strong>——任何长度都是"整页"。这也是 page_size=1 让逻辑简化的原因之一（08 章也提过）。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="evict"><span class="step">PART 7</span>_allocate · evict 兜底机制</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># cache.py:106</span>
+<span class="kw">def</span> <span class="fn">_allocate</span>(self, needed_pages: <span class="kw">int</span>) -&gt; torch.Tensor:
+    <span class="kw">if</span> needed_pages &gt; (free_pages := <span class="fn">len</span>(self.free_slots)):
+        <span class="hl">evicted = self.prefix_cache.<span class="fn">evict</span>((needed_pages - free_pages) * self.page_size)</span>
+        self.free_slots = torch.<span class="fn">cat</span>([self.free_slots, evicted[:: self.page_size]])
+        <span class="kw">assert</span> <span class="fn">len</span>(self.free_slots) &gt;= needed_pages
+    allocated = self.free_slots[:needed_pages]
+    self.free_slots = self.free_slots[needed_pages:]
+    <span class="kw">return</span> allocated</code></pre>
+
+<h3>流程</h3>
+<ol class="tight">
+  <li>检查 free_slots 够不够</li>
+  <li>不够的话，从 Radix 树 evict 差额 × page_size 个 token 的 KV（挑 ref_count=0 的 leaf 节点）</li>
+  <li>把 evict 出来的 page 号加回 free_slots</li>
+  <li>从 free_slots 前面切 <code>needed_pages</code> 个返回</li>
+</ol>
+
+<h3>evict 策略是什么？</h3>
+<p>RadixPrefixCache.evict 用 <strong>时间戳最小堆</strong>：</p>
+<pre><code><span class="com"># kvcache/radix_cache.py:148</span>
+<span class="kw">def</span> <span class="fn">evict</span>(self, size):
+    leave_nodes = self.<span class="fn">_collect_leave_nodes_for_evict</span>()    <span class="com"># 所有 ref_count=0 的叶子</span>
+    heapq.<span class="fn">heapify</span>(leave_nodes)                             <span class="com"># 按 timestamp 建堆</span>
+    ...
+    <span class="kw">while</span> evicted_size &lt; size:
+        <span class="hl">node = heapq.<span class="fn">heappop</span>(leave_nodes)</span>                  <span class="com"># 最老的先 evict</span>
+        del parent.children[...]
+        <span class="kw">if</span> parent.<span class="fn">is_leaf</span>() <span class="kw">and</span> parent.ref_count == <span class="num">0</span>:
+            heapq.<span class="fn">heappush</span>(leave_nodes, parent)            <span class="com"># 父节点变孤儿后也可能被 evict</span>
+    <span class="kw">return</span> torch.<span class="fn">cat</span>(evicted_indices)</code></pre>
+
+<h3>关键细节</h3>
+<table>
+<tr><th>细节</th><th>说明</th></tr>
+<tr><td>只 evict leaf</td><td>中间节点有 children，不能直接删</td></tr>
+<tr><td>只 evict ref_count=0</td><td>被锁住的（正在用的）不能动</td></tr>
+<tr><td>evict 可能连锁</td><td>删掉叶子后父节点变叶子，可能也被 evict</td></tr>
+<tr><td>timestamp 最小的先死</td><td>LRU-like 策略：最近没访问的先被清</td></tr>
+<tr><td>可能 evict 超过 size</td><td>evict 的单位是节点的 length，不一定刚好等于 size</td></tr>
+<tr><td>一个节点被 walk 到时会更新 timestamp</td><td>热点 prefix 自动续命</td></tr>
+</table>
+
+<h3>evict 失败会怎样？</h3>
+<pre><code><span class="kw">assert</span> <span class="fn">len</span>(self.free_slots) &gt;= needed_pages, <span class="str">"Eviction did not free enough space."</span></code></pre>
+
+<p>如果所有叶子都被锁住（evictable_size &lt; 需求），evict 会先触发 <code>assert size &lt;= self.evictable_size</code> 在 Radix 内部就崩。实际上 <strong>PrefillAdder 的 available_size 检查已经保证了这不会发生</strong>——装箱前先检查 available ≥ 需求，装不下的就不进 batch。</p>
+
+<div class="callout info">
+<strong>两层防护：</strong>
+<ul class="tight">
+  <li>PrefillAdder 层：装箱前 check available_size，装不下就不装</li>
+  <li>_allocate 层：真需要了才 evict，evict 不够就 assert 崩</li>
+</ul>
+第一层是"预期路径"，第二层是"假设失败时立刻暴露 bug"。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="lazy"><span class="step">PART 8</span>lazy_free_region · 批量 free 优化</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># cache.py:93</span>
+<span class="kw">@contextmanager</span>
+<span class="kw">def</span> <span class="fn">lazy_free_region</span>(self):
+    <span class="kw">def</span> <span class="fn">lazy_free</span>(indices: torch.Tensor) -&gt; <span class="kw">None</span>:
+        lazy_free_list.<span class="fn">append</span>(indices[:: self.page_size])
+
+    lazy_free_list: List[torch.Tensor] = []
+    <span class="kw">try</span>:
+        <span class="hl">self._free = lazy_free</span>        <span class="com"># ★ 临时替换 _free 方法</span>
+        <span class="kw">yield</span>
+    <span class="kw">finally</span>:
+        <span class="kw">del</span> self._free                 <span class="com"># 移除临时方法, 恢复原 _free</span>
+        <span class="hl">self.free_slots = torch.<span class="fn">cat</span>([self.free_slots] + lazy_free_list)</span>
+        <span class="com"># ↑ 一次性 cat 所有累积的 free 请求</span></code></pre>
+
+<h3>这是什么 Python 技巧？</h3>
+
+<p>它用了<strong>"运行时方法替换"</strong>：在 contextmanager 期间把 <code>self._free</code> 指向一个临时闭包函数（只收集，不真 free）。退出时恢复并批量提交。</p>
+
+<h3>为什么这是 Python 的"运行时替换"？</h3>
+<p>正常情况下 <code>self._free(x)</code> 会调用类上定义的 <code>_free</code> 方法。但 Python 属性查找顺序是 instance dict → class dict，<strong>如果实例字典里有 <code>_free</code>，它会覆盖类上的同名方法</strong>。</p>
+
+<p>所以 <code>self._free = lazy_free</code> 这一行就是在实例字典上加了个 <code>_free</code> 引用，暂时屏蔽掉类方法。<code>del self._free</code> 再把它删掉，后续调用就回到类方法了。</p>
+
+<h3>调用场景</h3>
+<pre><code><span class="com"># scheduler/scheduler.py:_process_last_data</span>
+<span class="kw">with</span> self.cache_manager.<span class="fn">lazy_free_region</span>():           <span class="com"># ★ 区域开始</span>
+    <span class="kw">for</span> i, req <span class="kw">in</span> enumerate(batch.reqs):
+        <span class="kw">if</span> isinstance(req, ChunkedReq): <span class="kw">continue</span>
+        ...
+        <span class="kw">if</span> finished:
+            self.decode_manager.<span class="fn">remove_req</span>(req)
+            self.<span class="fn">_free_req_resources</span>(req)                <span class="com"># 可能调用 _free 多次</span>
+        <span class="kw">elif</span> batch.is_prefill:
+            self.cache_manager.<span class="fn">cache_req</span>(req, finished=<span class="kw">False</span>)  <span class="com"># 也可能 _free</span>
+<span class="com"># ★ 区域结束, 一次性 torch.cat 所有 free 请求</span></code></pre>
+
+<h3>为什么不直接多次 _free？</h3>
+<pre><code><span class="com"># 如果每次 _free 都真 cat:</span>
+<span class="kw">def</span> <span class="fn">_free</span>(self, indices):
+    self.free_slots = torch.<span class="fn">cat</span>([self.free_slots, indices[:: self.page_size]])
+    <span class="com"># ↑ 每次 cat 都是 O(n), 10 个 req 调 10 次 → 10 次 cat</span></code></pre>
+
+<p>batch size 100 时，每 req 可能 free 多次（cache_req 就可能 free 两段）——<strong>一轮可能有几百次 <code>torch.cat</code></strong>。每次 cat 要分配新 GPU tensor + 拷贝旧数据，累积开销巨大。</p>
+
+<p>lazy 版本把几百次 cat 压缩成一次。<u>CPU 端的 list.append 几乎免费</u>。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="integrity"><span class="step">PART 9</span>check_integrity · 自我诊断</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># cache.py:81</span>
+<span class="kw">def</span> <span class="fn">check_integrity</span>(self) -&gt; <span class="kw">None</span>:
+    self.prefix_cache.<span class="fn">check_integrity</span>()
+    cache_pages = self.prefix_cache.size_info.total_size // self.page_size
+    <span class="kw">if</span> <span class="fn">len</span>(self.free_slots) + cache_pages != self.num_pages:
+        <span class="kw">raise</span> <span class="fn">RuntimeError</span>(
+            <span class="str">"CacheManager integrity check failed:"</span>
+            f<span class="str">" free_pages({len(self.free_slots)}) +"</span>
+            f<span class="str">" cache_pages({cache_pages}) != num_pages({self.num_pages})"</span>
+        )
+    <span class="kw">if</span> self.page_size &gt; <span class="num">1</span>:
+        <span class="kw">assert</span> torch.<span class="fn">all</span>(self.free_slots % self.page_size == <span class="num">0</span>)</code></pre>
+
+<h3>它检查什么？</h3>
+
+<ol>
+<li><strong>不变式 1</strong>：free + cache = total
+<pre><code>free_pages + cache_pages == num_pages</code></pre>
+即每一页都能被定位（要么空闲、要么在树里）。</li>
+
+<li><strong>不变式 2</strong>：page_size 对齐
+<pre><code>all(free_slots % page_size == 0)</code></pre>
+free_slots 里存的必须都是"页起始位置"。</li>
+
+<li><strong>Radix 树自己的完整性</strong>：<code>self.prefix_cache.check_integrity()</code>（子类实现，目前空操作）</li>
+</ol>
+
+<h3>什么时候调用它？</h3>
+<pre><code><span class="com"># env 控制, 默认关</span>
+<span class="kw">if</span> ENV.ENABLE_INTEGRITY_CHECK:
+    cache_manager.<span class="fn">check_integrity</span>()</code></pre>
+
+<p>调试/开发时打开，生产不开（每次 check 是 O(num_pages)，有性能代价）。</p>
+
+<h3>什么情况会触发失败？</h3>
+<ul class="tight">
+  <li>某个 req finish 时忘记 free page → cache_pages 少了</li>
+  <li>某次 evict 把 page 号 free 了两次 → free_pages 多了</li>
+  <li>cache_req 的 5 段计算出错 → 漏 free 某段</li>
+</ul>
+
+<p><strong>你自己改代码时，最好每轮 loop 都开 check_integrity</strong>——能快速定位"page 泄露"或"page 重复"。这是 CacheManager 维护正确性的"后验证明"。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="summary"><span class="step">SUM</span>总结 · CacheManager 的四条不变式</h2>
+
+<div class="card">
+
+<h3>四条不变式</h3>
+
+<table>
+<tr><th>不变式</th><th>说明</th><th>违反意味着</th></tr>
+<tr><td>①</td><td>每个物理页要么在 free_slots 里，要么在某个 Radix 节点的 value 里</td><td>page 泄露或重复使用</td></tr>
+<tr><td>②</td><td>free_slots 里的元素都是 page_size 对齐的</td><td>分配出去的 page 基址非法</td></tr>
+<tr><td>③</td><td>Radix 节点的 ref_count &gt; 0 ⟺ 被某个 Req.cache_handle 持有</td><td>evict 会清掉正在用的 prefix</td></tr>
+<tr><td>④</td><td>page_table[req.table_idx, :req.device_len] 全部指向合法 page</td><td>attention kernel 读到垃圾 KV</td></tr>
+</table>
+
+<h3>每个方法维护哪条不变式？</h3>
+<table>
+<tr><th>方法</th><th>维护哪些</th></tr>
+<tr><td>allocate_paged</td><td>④（写 page_table）, ①（从 free 拿到分配）</td></tr>
+<tr><td>cache_req</td><td>①（free 冗余、free 尾巴）, ③（unlock old、lock new）</td></tr>
+<tr><td>_allocate</td><td>①（从 free 取或 evict）</td></tr>
+<tr><td>_free</td><td>①（加回 free_slots）, ②（按 page_size 步长切片）</td></tr>
+<tr><td>lock / unlock</td><td>③（增减 ref_count）</td></tr>
+</table>
+
+<h3>为什么 API 这么"脆"？</h3>
+
+<div class="callout warn">
+<strong>CacheManager 没做防御性编程——它假设调用者按正确顺序调用。</strong>
+<ul class="tight">
+  <li>cache_req 之前必须先 allocate_paged（否则 page_table 是零）</li>
+  <li>lock/unlock 必须配对（否则 ref_count 不对)</li>
+  <li>cache_req 的 req 必须有合法的 cache_handle (从 match_req 得来)</li>
+</ul>
+这些契约没有断言强制，只靠 scheduler 逻辑保证。<u>这是"核心逻辑 &lt; 700 行"的代价</u>——代码简洁但调用方必须严格遵守顺序。
+</div>
+
+<h3>学习建议</h3>
+<ol class="tight">
+  <li>先把 PART 2（内部状态）和 PART 6（cache_req 五段）弄明白</li>
+  <li>打开 <code>ENABLE_INTEGRITY_CHECK</code>，跑一些 benchmark 看有没有触发</li>
+  <li>试着写一个 <code>print_tree</code> 函数把 Radix 树打印出来，观察一次长 prefill 前后的变化</li>
+  <li>试着让 memory_ratio 调到 0.95+，触发 evict，观察 evict 时 free_slots 的变化</li>
+</ol>
+</div>
+
+<div class="foot">
+<a href="02-table-manager.html" style="color:var(--brand2)">← 上一篇 Req / TableManager</a> &nbsp;·&nbsp;
+<a href="index.html" style="color:var(--brand2)">回到首页</a> &nbsp;·&nbsp;
+<a href="04-prefill-decode.html" style="color:var(--brand2)">下一篇 → PrefillManager / DecodeManager</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>MoE 生产调优与性能分析 — 咕噜的学习笔记</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--purple);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--purple);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--purple)}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--purple);color:var(--purple)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>MoE 生产调优与性能分析 <span class="tag">MoE · 07/07</span></h1>
+<p class="sub">环境变量、Autotuning、FP8 量化、TBO Overlap、EP 调优和常见问题排查</p>
+
+<div class="toc">
+  <a href="#backend">Runner Backend</a>
+  <a href="#autotuning">Autotuning</a>
+  <a href="#env-vars">环境变量</a>
+  <a href="#tbo">TBO Overlap</a>
+  <a href="#fp8">FP8 量化</a>
+  <a href="#ep-tuning">EP 调优</a>
+  <a href="#benchmark">性能基准</a>
+  <a href="#pitfalls">常见问题</a>
+</div>
+
+<!-- Section: Backend -->
+<h2 id="backend"><span class="step">01</span>MoE Runner Backend 选择</h2>
+
+<p>SGLang 通过环境变量 <code>SGLANG_MOE_RUNNER_BACKEND</code> 选择不同的 MoE 执行后端：</p>
+
+<div class="card">
+<table>
+<thead>
+<tr><th>Backend</th><th>说明</th><th>适用场景</th></tr>
+</thead>
+<tbody>
+<tr><td><code>triton</code></td><td>默认。使用 Triton fused kernel</td><td>通用场景，A100/H100/H200</td></tr>
+<tr><td><code>aiter</code></td><td>AMD AITer 后端 (ROCm)</td><td>AMD MI300X 等 GPU</td></tr>
+<tr><td><code>cutlass</code></td><td>CUTLASS grouped GEMM</td><td>特定尺寸下可能更优</td></tr>
+<tr><td><code>pplx</code></td><td>PPLX 通信优化后端</td><td>多节点 EP 场景</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="card">
+<pre><code><span class="com"># 设置方法</span>
+export SGLANG_MOE_RUNNER_BACKEND=triton  <span class="com"># 默认值</span>
+
+<span class="com"># 代码中的选择逻辑</span>
+<span class="kw">def</span> <span class="fn">get_moe_runner</span>(backend: str):
+    <span class="kw">if</span> backend == <span class="str">"triton"</span>:
+        <span class="kw">return</span> <span class="fn">TritonMoERunner</span>()
+    <span class="kw">elif</span> backend == <span class="str">"aiter"</span>:
+        <span class="kw">return</span> <span class="fn">AITerMoERunner</span>()
+    <span class="kw">elif</span> backend == <span class="str">"cutlass"</span>:
+        <span class="kw">return</span> <span class="fn">CutlassMoERunner</span>()
+    <span class="kw">elif</span> backend == <span class="str">"pplx"</span>:
+        <span class="kw">return</span> <span class="fn">PPLXMoERunner</span>()
+    <span class="kw">else</span>:
+        <span class="kw">raise</span> ValueError(f<span class="str">"Unknown backend: {backend}"</span>)</code></pre>
+</div>
+
+<!-- Section: Autotuning -->
+<h2 id="autotuning"><span class="step">02</span>Autotuning 配置系统</h2>
+
+<p>Triton kernel 的性能对 tile 参数极为敏感。SGLang 使用预计算配置文件 + 运行时 fallback：</p>
+
+<div class="card">
+<pre><code><span class="kw">def</span> <span class="fn">try_get_optimal_moe_config</span>(
+    M: <span class="fn">int</span>, N: <span class="fn">int</span>, K: <span class="fn">int</span>,
+    topk: <span class="fn">int</span>, dtype: <span class="fn">str</span>,
+    is_marlin: <span class="fn">bool</span> = <span class="kw">False</span>,
+):
+    <span class="com"># 配置文件路径: configs/{gpu_name}/moe_{N}_{K}_{dtype}.json</span>
+    <span class="com"># 例: configs/H100/moe_14336_7168_bf16.json</span>
+    config_file = get_config_path(N, K, dtype)
+
+    <span class="kw">if</span> os.path.exists(config_file):
+        configs = json.load(open(config_file))
+        <span class="com"># 查找与 M 最接近的预计算配置</span>
+        <span class="kw">for</span> m_range, cfg <span class="kw">in</span> configs.items():
+            <span class="kw">if</span> M <= <span class="fn">int</span>(m_range):
+                <span class="kw">return</span> cfg
+
+    <span class="com"># Fallback: 通用默认配置</span>
+    <span class="kw">return</span> {
+        <span class="str">"BLOCK_SIZE_M"</span>: <span class="num">128</span>,
+        <span class="str">"BLOCK_SIZE_N"</span>: <span class="num">128</span>,
+        <span class="str">"BLOCK_SIZE_K"</span>: <span class="num">64</span>,
+        <span class="str">"GROUP_SIZE_M"</span>: <span class="num">8</span>,
+        <span class="str">"num_warps"</span>: <span class="num">8</span>,
+        <span class="str">"num_stages"</span>: <span class="num">3</span>,
+    }</code></pre>
+</div>
+
+<div class="callout info">
+<strong>如何生成配置文件？</strong> SGLang 提供 <code>benchmark_moe.py</code> 脚本，针对特定 GPU + 模型参数做 exhaustive search，将最优配置序列化为 JSON。部署前务必为目标 GPU 型号运行一次。
+</div>
+
+<!-- Section: Env Vars -->
+<h2 id="env-vars"><span class="step">03</span>关键环境变量</h2>
+
+<div class="card">
+<table>
+<thead>
+<tr><th>环境变量</th><th>默认值</th><th>作用</th></tr>
+</thead>
+<tbody>
+<tr><td><code>SGLANG_MOE_RUNNER_BACKEND</code></td><td><code>triton</code></td><td>选择 MoE 执行后端</td></tr>
+<tr><td><code>SGLANG_MOE_PADDING</code></td><td><code>1</code></td><td>是否对 expert token 做 padding 对齐</td></tr>
+<tr><td><code>SGLANG_USE_AITER</code></td><td><code>0</code></td><td>启用 AMD AITer 优化路径</td></tr>
+<tr><td><code>SGLANG_USE_TMA</code></td><td><code>0</code></td><td>启用 TMA (SM90+ only)</td></tr>
+<tr><td><code>SGLANG_FUSED_MOE_SUM_ALL_REDUCE</code></td><td><code>0</code></td><td>融合 sum + allreduce 为一个 kernel</td></tr>
+<tr><td><code>SGLANG_DEEPEP_SYM_MEM_SIZE</code></td><td><code>auto</code></td><td>DeepEP symmetric memory 大小 (bytes)</td></tr>
+<tr><td><code>SGLANG_MOE_CHUNK_SIZE</code></td><td><code>65536</code></td><td>分块处理的 chunk 大小</td></tr>
+<tr><td><code>SGLANG_EPLB_ENABLED</code></td><td><code>0</code></td><td>启用 EPLB 动态负载均衡</td></tr>
+<tr><td><code>SGLANG_EPLB_INTERVAL</code></td><td><code>100</code></td><td>EPLB 重新平衡的间隔（iteration 数）</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="card">
+<h3>推荐配置组合</h3>
+<pre><code><span class="com"># === H100/H200 生产推荐 ===</span>
+export SGLANG_MOE_RUNNER_BACKEND=triton
+export SGLANG_MOE_PADDING=<span class="num">1</span>
+export SGLANG_FUSED_MOE_SUM_ALL_REDUCE=<span class="num">1</span>
+
+<span class="com"># === DeepSeek-V3 多节点 EP 推荐 ===</span>
+export SGLANG_MOE_RUNNER_BACKEND=triton
+export SGLANG_EPLB_ENABLED=<span class="num">1</span>
+export SGLANG_EPLB_INTERVAL=<span class="num">50</span>
+
+<span class="com"># === AMD MI300X 推荐 ===</span>
+export SGLANG_MOE_RUNNER_BACKEND=aiter
+export SGLANG_USE_AITER=<span class="num">1</span></code></pre>
+</div>
+
+<!-- Section: TBO -->
+<h2 id="tbo"><span class="step">04</span>TBO: Two-Batch Overlap</h2>
+
+<p>TBO 是 SGLang 针对 EP 场景的 <strong>通信-计算重叠</strong> 优化：将一个 batch 拆成两个子 batch，交替执行通信和计算。</p>
+
+<div class="card">
+<h3>核心思想</h3>
+<pre><code><span class="com"># 传统串行执行 (无 overlap)</span>
+<span class="com"># Time: |--dispatch--||--compute--||--combine--|</span>
+<span class="com">#       通信            计算           通信</span>
+
+<span class="com"># TBO (Two-Batch Overlap)</span>
+<span class="com"># 将 batch 拆成 batch_A 和 batch_B</span>
+<span class="com"># Time:</span>
+<span class="com"># Stream1: |dispatch_A|  compute_A  |combine_A|</span>
+<span class="com"># Stream2:            |dispatch_B|  compute_B  |combine_B|</span>
+<span class="com"># 通信和计算在不同 stream 上重叠执行</span>
+
+<span class="kw">class</span> <span class="fn">TBOScheduler</span>:
+    <span class="kw">def</span> <span class="fn">forward</span>(self, hidden_states, topk_ids, topk_weights):
+        <span class="com"># 拆分 batch</span>
+        mid = hidden_states.shape[<span class="num">0</span>] // <span class="num">2</span>
+        batch_a = hidden_states[:mid]
+        batch_b = hidden_states[mid:]
+
+        <span class="com"># Stream A: dispatch</span>
+        <span class="kw">with</span> torch.cuda.stream(self.stream_a):
+            disp_a = self.dispatcher.dispatch(batch_a, ...)
+
+        <span class="com"># Stream B: dispatch (overlap with A's compute)</span>
+        <span class="kw">with</span> torch.cuda.stream(self.stream_b):
+            disp_b = self.dispatcher.dispatch(batch_b, ...)
+
+        <span class="com"># 交替 compute + combine ...</span></code></pre>
+</div>
+
+<div class="callout">
+<strong>收益分析：</strong> 在多节点 EP 场景下，跨节点 all-to-all 通信占比可达 30-40%。TBO 可将通信延迟隐藏在计算中，理论加速 ~1.3x。对单节点 EP 收益较小（NVLink 通信已经很快）。
+</div>
+
+<!-- Section: FP8 -->
+<h2 id="fp8"><span class="step">05</span>FP8 量化配置</h2>
+
+<p>MoE 的 FP8 量化有两种 scale 粒度，对性能和精度影响显著：</p>
+
+<div class="grid cols-2">
+<div class="card">
+<h4>Per-Tensor Scale</h4>
+<pre><code><span class="com"># 每个 expert 每个权重矩阵一个 scale</span>
+w1_scale: [num_experts, <span class="num">1</span>]
+w2_scale: [num_experts, <span class="num">1</span>]
+a1_scale: [<span class="num">1</span>]  <span class="com"># 激活值 scale</span>
+
+<span class="com"># 优点: 实现简单，开销小</span>
+<span class="com"># 缺点: 大矩阵中极值会压缩动态范围</span></code></pre>
+</div>
+<div class="card">
+<h4>Block-wise Scale (推荐)</h4>
+<pre><code><span class="com"># 以 block (128x128) 为粒度分配 scale</span>
+w1_scale: [num_experts, N//128, K//128]
+w2_scale: [num_experts, N//128, K//128]
+a1_scale: [num_tokens, K//128]
+
+<span class="com"># 优点: 精度损失更小</span>
+<span class="com"># 缺点: scale 存储和计算开销稍大</span></code></pre>
+</div>
+</div>
+
+<div class="card">
+<h3>FP8 MoE Kernel 适配</h3>
+<pre><code><span class="com"># Triton kernel 中的 FP8 处理</span>
+<span class="kw">if</span> use_fp8_w8a8:
+    <span class="com"># 加载时 dequantize: fp8_val * scale → bf16/fp32</span>
+    a_block = tl.load(A_ptr + ...).to(tl.float32) * a_scale
+    b_block = tl.load(B_ptr + ...).to(tl.float32) * b_scale
+
+    <span class="com"># 或使用硬件原生 FP8 GEMM (SM89+/SM90+)</span>
+    <span class="com"># 在 Hopper 上 FP8 Tensor Core 吞吐是 BF16 的 2x</span>
+    acc += tl.dot(a_block_fp8, b_block_fp8, out_dtype=tl.float32)
+
+    <span class="com"># gemm1_limit: 防止中间激活溢出 FP8 范围</span>
+    <span class="kw">if</span> gemm1_limit:
+        intermediate = intermediate.clamp(-<span class="num">448.0</span>, <span class="num">448.0</span>)</code></pre>
+</div>
+
+<div class="callout warn">
+<strong>精度注意：</strong> MoE 模型对量化更敏感（因为每个 expert 训练数据相对少）。建议先用 block-wise scale 测试精度，确认 perplexity 退化在可接受范围内再上线。
+</div>
+
+<!-- Section: EP Tuning -->
+<h2 id="ep-tuning"><span class="step">06</span>EP 调优要点</h2>
+
+<div class="card">
+<h3>ep_size 选择</h3>
+<table>
+<thead>
+<tr><th>场景</th><th>推荐 ep_size</th><th>原因</th></tr>
+</thead>
+<tbody>
+<tr><td>单机 8 卡，Expert ≤ 64</td><td>1 (纯 TP)</td><td>NVLink 带宽足够，TP 通信简单</td></tr>
+<tr><td>单机 8 卡，Expert = 256</td><td>8</td><td>显存不够装全部 expert</td></tr>
+<tr><td>多机 (2 节点 × 8 卡)</td><td>16</td><td>充分利用所有 GPU</td></tr>
+<tr><td>多机但节点间带宽低</td><td>8 (节点内)</td><td>避免跨节点 all-to-all</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="card">
+<h3>DeepEP Normal vs Low-Latency 切换阈值</h3>
+<pre><code><span class="com"># 根据当前 batch 中 token 数量动态选择</span>
+<span class="kw">def</span> <span class="fn">select_dispatch_mode</span>(num_tokens, threshold=<span class="num">128</span>):
+    <span class="kw">if</span> num_tokens >= threshold:
+        <span class="com"># 大 batch → Normal 模式 (异步 all-to-all)</span>
+        <span class="com"># 通信可与计算 overlap，吞吐优先</span>
+        <span class="kw">return</span> <span class="str">"deepep_normal"</span>
+    <span class="kw">else</span>:
+        <span class="com"># 小 batch → Low-Latency 模式 (SM RDMA)</span>
+        <span class="com"># 通信延迟极低，适合 decode</span>
+        <span class="kw">return</span> <span class="str">"deepep_low_latency"</span>
+
+<span class="com"># Symmetric Memory 大小计算</span>
+<span class="com"># 需要能容纳最大可能的 token 数 × hidden_size × dtype_size</span>
+sym_mem_size = (
+    max_tokens_per_expert * num_local_experts
+    * hidden_size * dtype_size
+    * <span class="num">2</span>  <span class="com"># 双缓冲</span>
+)</code></pre>
+</div>
+
+<!-- Section: Benchmark -->
+<h2 id="benchmark"><span class="step">07</span>性能基准对比</h2>
+
+<p>以 DeepSeek-V3 (671B, 256 Experts, top-8) 为例，不同配置的吞吐对比：</p>
+
+<div class="card">
+<table>
+<thead>
+<tr><th>配置</th><th>GPU</th><th>EP</th><th>量化</th><th>Prefill (tok/s)</th><th>Decode (tok/s)</th></tr>
+</thead>
+<tbody>
+<tr><td>8×H100 NVLink</td><td>H100 80G</td><td>ep=8</td><td>BF16</td><td>~2800</td><td>~180</td></tr>
+<tr><td>8×H100 NVLink</td><td>H100 80G</td><td>ep=8</td><td>FP8</td><td>~4200</td><td>~280</td></tr>
+<tr><td>16×H100 (2节点)</td><td>H100 80G</td><td>ep=16</td><td>FP8</td><td>~7500</td><td>~520</td></tr>
+<tr><td>16×H100 + TBO</td><td>H100 80G</td><td>ep=16</td><td>FP8</td><td>~9200</td><td>~540</td></tr>
+<tr><td>8×H200 NVLink</td><td>H200 141G</td><td>ep=8</td><td>FP8</td><td>~5100</td><td>~340</td></tr>
+<tr><td>8×H20</td><td>H20 96G</td><td>ep=8</td><td>FP8</td><td>~1900</td><td>~130</td></tr>
+</tbody>
+</table>
+<p style="color:var(--mute);font-size:12px;margin-top:8px">* 数据为近似参考值，实际性能受 prompt 长度、并发数、网络拓扑等因素影响</p>
+</div>
+
+<!-- Section: Pitfalls -->
+<h2 id="pitfalls"><span class="step">08</span>常见问题与排查</h2>
+
+<div class="grid cols-2">
+<div class="card">
+<h4>🔴 OOM: 中间缓存溢出</h4>
+<p><strong>症状：</strong> Prefill 阶段 CUDA OOM</p>
+<p><strong>原因：</strong> token 数太大，intermediate_cache 超出显存</p>
+<p><strong>解决：</strong></p>
+<pre><code><span class="com"># 减小 chunk size</span>
+export SGLANG_MOE_CHUNK_SIZE=<span class="num">32768</span>
+<span class="com"># 或降低 max_prefill_tokens</span>
+--max-prefill-tokens <span class="num">8192</span></code></pre>
+</div>
+<div class="card">
+<h4>🔴 Triton Kernel 编译慢</h4>
+<p><strong>症状：</strong> 首次启动耗时 5-10 分钟</p>
+<p><strong>原因：</strong> Triton JIT 编译 + autotuning</p>
+<p><strong>解决：</strong></p>
+<pre><code><span class="com"># 持久化 Triton cache</span>
+export TRITON_CACHE_DIR=/data/triton_cache
+<span class="com"># 使用预编译配置文件</span>
+<span class="com"># 放置在 configs/{gpu}/ 下</span></code></pre>
+</div>
+<div class="card">
+<h4>🔴 EP 通信超时</h4>
+<p><strong>症状：</strong> NCCL timeout / DeepEP hang</p>
+<p><strong>原因：</strong> 跨节点网络问题或 expert 负载极度不均</p>
+<p><strong>解决：</strong></p>
+<pre><code><span class="com"># 增加超时</span>
+export NCCL_TIMEOUT=<span class="num">1800</span>
+<span class="com"># 启用 EPLB</span>
+export SGLANG_EPLB_ENABLED=<span class="num">1</span>
+<span class="com"># 检查网络</span>
+ib_write_bw / nccl-tests</code></pre>
+</div>
+<div class="card">
+<h4>🔴 FP8 精度退化严重</h4>
+<p><strong>症状：</strong> 输出质量明显下降</p>
+<p><strong>原因：</strong> per-tensor scale 不适合该模型</p>
+<p><strong>解决：</strong></p>
+<pre><code><span class="com"># 切换到 block-wise scale</span>
+--quantization fp8_block
+<span class="com"># 或仅量化 w2 (down_proj)</span>
+<span class="com"># w1 保持 BF16</span></code></pre>
+</div>
+<div class="card">
+<h4>🟡 Decode 吞吐低</h4>
+<p><strong>症状：</strong> decode 阶段 token/s 远低于预期</p>
+<p><strong>原因：</strong> 小 batch 下 GPU 利用率低 + 通信占比高</p>
+<p><strong>解决：</strong></p>
+<pre><code><span class="com"># 使用 Low-Latency dispatch</span>
+--a2a-backend deepep_low_latency
+<span class="com"># 增大 decode batch</span>
+--max-running-requests <span class="num">256</span>
+<span class="com"># 启用 fused sum+allreduce</span>
+export SGLANG_FUSED_MOE_SUM_ALL_REDUCE=<span class="num">1</span></code></pre>
+</div>
+<div class="card">
+<h4>🟡 CUDA Graph 失效</h4>
+<p><strong>症状：</strong> 性能没有 CG 加速的预期提升</p>
+<p><strong>原因：</strong> EP dispatch/combine 是 graph-breaking</p>
+<p><strong>解决：</strong></p>
+<pre><code><span class="com"># 确认 piecewise capture 启用</span>
+--enable-cuda-graph
+<span class="com"># 检查日志中 graph 段数</span>
+<span class="com"># [INFO] CUDA Graph: N segments</span>
+<span class="com"># N 应 > 1 (piecewise 生效)</span></code></pre>
+</div>
+</div>
+
+<div class="callout">
+<strong>调优方法论总结：</strong>
+1️⃣ 先确定 ep_size（受限于显存）→
+2️⃣ 选择 a2a_backend（prefill/decode 分别配置）→
+3️⃣ 开启 FP8 量化 →
+4️⃣ 运行 autotuning 生成配置 →
+5️⃣ 启用 TBO overlap →
+6️⃣ 按需开启 EPLB。每一步验证吞吐和精度。
+</div>
+
+<!-- Navigation -->
+<div class="nav">
+  <a href="06-expert-parallelism.html">← 06 Expert Parallelism</a>
+  <a href="index.html">回到目录 →</a>
+</div>
+
+<p class="foot">咕噜的学习笔记 · MoE Deep Dive · Page 07/07</p>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

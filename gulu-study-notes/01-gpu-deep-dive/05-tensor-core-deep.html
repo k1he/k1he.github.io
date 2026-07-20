@@ -1,0 +1,218 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Tensor Core 深度解析 · 第一章 05/08</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218;}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}.sub{color:var(--mute);margin-bottom:30px;font-size:15px}h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}.grid{display:grid;gap:16px}.cols-2{grid-template-columns:1fr 1fr}.cols-3{grid-template-columns:repeat(3,1fr)}@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}.svg-wrap svg{max-width:100%;height:auto}.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}.toc a:hover{border-color:var(--brand);color:var(--brand)}table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13px}th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mute);font-weight:500;background:#151a25}.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}.nav{display:flex;justify-content:space-between;margin:40px 0 0;padding-top:20px;border-top:1px solid var(--line);font-size:13px}.nav a{color:var(--brand2);text-decoration:none}.nav a:hover{color:var(--brand)}.num-big{font-size:22px;color:var(--brand);font-family:"SF Mono",monospace;font-weight:600}.chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);color:var(--brand2);padding:2px 8px;border-radius:6px;font-size:11.5px;font-family:"SF Mono",monospace;margin:2px}
+</style>
+</head>
+<body><div class="wrap">
+<h1>Tensor Core 深度解析 · 为什么矩阵乘法有专用引擎 <span class="tag">第一章 · 05/08</span></h1>
+<div class="sub">CUDA Core 是“标量 ALU”，Tensor Core 是“矩阵乘累加工厂”。LLM 里的 Linear、Attention、MoE 最终都变成 GEMM，所以 Tensor Core 决定了训练/推理的上限。本篇从一条 MMA 指令讲到 warpgroup MMA、FP8/FP4、tiling pipeline，以及为什么普通 CUDA 代码跑不满它。</div>
+
+<div class="toc">
+  <a href="#why">§1 为什么需要 Tensor Core</a>
+  <a href="#mma">§2 MMA 指令模型</a>
+  <a href="#gen">§3 代际演进</a>
+  <a href="#formats">§4 数字格式</a>
+  <a href="#tiling">§5 Tiling Pipeline</a>
+  <a href="#wgmma">§6 wgmma async</a>
+  <a href="#llm">§7 LLM kernel 视角</a>
+  <a href="#takeaway">§8 带走的八句话</a>
+</div>
+
+<h2 id="why"><span class="step">§1</span>为什么需要 Tensor Core：GEMM 是 AI 的“发动机”</h2>
+<div class="card">
+<p>Transformer 里最贵的算子几乎都能写成矩阵乘法：</p>
+<pre>Linear:      Y = XW
+Attention:   QK^T,  softmax(QK^T)V
+MLP:         gate_up = XW, down = act(gate)·up·W
+MoE:         token dispatch 后，每个 expert 还是 GEMM</pre>
+<p>普通 CUDA Core 每条指令做少量 FMA；Tensor Core 一条指令做一个小矩阵的乘累加：</p>
+<pre>D = A × B + C</pre>
+<p>这就是为什么 FP32 CUDA core 峰值只有几十 TFLOPS，而 FP16/FP8 Tensor Core 峰值能到数百/上千 TFLOPS。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 930 320" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="465" y="28" fill="#6ee7b7" text-anchor="middle" font-size="16">CUDA Core vs Tensor Core</text>
+<rect x="70" y="70" width="280" height="170" rx="12" fill="#1f3328" stroke="#6ee7b7"/>
+<text x="210" y="100" fill="#6ee7b7" text-anchor="middle" font-size="14">CUDA Core</text>
+<text x="210" y="130" fill="#cbd5e1" text-anchor="middle">一条 FMA: a*b+c</text>
+<text x="210" y="158" fill="#8b93a7" text-anchor="middle">标量/向量流水线</text>
+<text x="210" y="188" fill="#fbbf24" text-anchor="middle">适合 index、activation、非矩阵逻辑</text>
+<rect x="580" y="70" width="280" height="170" rx="12" fill="#1e2d36" stroke="#7dd3fc"/>
+<text x="720" y="100" fill="#7dd3fc" text-anchor="middle" font-size="14">Tensor Core</text>
+<text x="720" y="130" fill="#cbd5e1" text-anchor="middle">一条 MMA: 矩阵 tile × tile</text>
+<text x="720" y="158" fill="#8b93a7" text-anchor="middle">专用矩阵乘累加阵列</text>
+<text x="720" y="188" fill="#fbbf24" text-anchor="middle">适合 GEMM/Attention/MLP</text>
+<path d="M370 155 L555 155" stroke="#fbbf24" stroke-width="2" marker-end="url(#m)"/><defs><marker id="m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#fbbf24"/></marker></defs>
+<text x="465" y="140" fill="#fbbf24" text-anchor="middle">把大量 FMA 固化成矩阵引擎</text>
+<text x="465" y="285" fill="#8b93a7" text-anchor="middle">高性能 LLM kernel = 用 CUDA Core 做搬运/控制，用 Tensor Core 做主计算</text>
+</svg>
+</div>
+</div>
+
+<h2 id="mma"><span class="step">§2</span>MMA 指令模型：warp 共同发起的小矩阵乘</h2>
+<div class="card">
+<p>Tensor Core 并不是“每个 thread 单独调用一次”。典型 MMA 是 <b>一个 warp 或 warpgroup 协作</b>：每个 lane 持有 A/B/C 的一小片 fragment，硬件把它们组合成矩阵 tile。</p>
+<pre>// PTX 形态示意：m16n8k16 的 half 矩阵乘，累加到 fp32
+mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32
+  {d0,d1,d2,d3}, {a0,a1,a2,a3}, {b0,b1}, {c0,c1,c2,c3};</pre>
+
+<h3>m16n8k16 是什么</h3>
+<table>
+<thead><tr><th>符号</th><th>含义</th><th>对 GEMM 的对应</th></tr></thead>
+<tbody>
+<tr><td><code>m16</code></td><td>输出 tile 的 M 维 16 行</td><td>通常是 token/block 行</td></tr>
+<tr><td><code>n8</code></td><td>输出 tile 的 N 维 8 列</td><td>通常是输出 channel 列</td></tr>
+<tr><td><code>k16</code></td><td>内积维 K 每次推进 16</td><td>hidden_dim 方向分块</td></tr>
+<tr><td><code>row.col</code></td><td>A row-major，B col-major</td><td>决定 shared memory layout</td></tr>
+<tr><td><code>f32.f16.f16.f32</code></td><td>D/C FP32，A/B FP16</td><td>低精度输入，高精度累加</td></tr>
+</tbody>
+</table>
+
+<div class="callout info"><b>Fragment 是最容易误解的点</b>：程序员看见的是每个 thread 几个寄存器；硬件看见的是整个 warp 的寄存器集合。MMA 指令把 32 个 lane 的 fragment 拼成矩阵，送进 Tensor Core。</div>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 920 330" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="460" y="26" fill="#6ee7b7" text-anchor="middle" font-size="15">Warp-level MMA：32 lane 拼出一个矩阵 tile</text>
+<g transform="translate(60,70)">
+  <rect width="180" height="150" fill="#1f3328" stroke="#6ee7b7" rx="8"/>
+  <text x="90" y="28" fill="#6ee7b7" text-anchor="middle">A fragments</text>
+  <g fill="#263445" stroke="#6ee7b7"><rect x="24" y="52" width="28" height="22"/><rect x="58" y="52" width="28" height="22"/><rect x="92" y="52" width="28" height="22"/><rect x="126" y="52" width="28" height="22"/><rect x="24" y="82" width="28" height="22"/><rect x="58" y="82" width="28" height="22"/><rect x="92" y="82" width="28" height="22"/><rect x="126" y="82" width="28" height="22"/></g>
+  <text x="90" y="130" fill="#8b93a7" text-anchor="middle">lane 寄存器集合</text>
+</g>
+<g transform="translate(300,70)">
+  <rect width="180" height="150" fill="#1e2d36" stroke="#7dd3fc" rx="8"/>
+  <text x="90" y="28" fill="#7dd3fc" text-anchor="middle">B fragments</text>
+  <g fill="#263445" stroke="#7dd3fc"><rect x="36" y="50" width="24" height="80"/><rect x="70" y="50" width="24" height="80"/><rect x="104" y="50" width="24" height="80"/></g>
+</g>
+<g transform="translate(570,55)">
+  <rect width="270" height="180" fill="#2b2135" stroke="#a78bfa" rx="8"/>
+  <text x="135" y="30" fill="#a78bfa" text-anchor="middle">Tensor Core</text>
+  <text x="135" y="70" fill="#cbd5e1" text-anchor="middle">D = A × B + C</text>
+  <text x="135" y="100" fill="#fbbf24" text-anchor="middle">m16n8k16 / m16n16k16 / wgmma...</text>
+  <text x="135" y="135" fill="#8b93a7" text-anchor="middle">输出 accumulator fragments</text>
+</g>
+<path d="M245 145 L295 145" stroke="#fbbf24" stroke-width="2" marker-end="url(#m)"/><path d="M485 145 L565 145" stroke="#fbbf24" stroke-width="2" marker-end="url(#m)"/><defs><marker id="m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#fbbf24"/></marker></defs>
+<text x="460" y="285" fill="#8b93a7" text-anchor="middle">注意：这不是 32 个独立小矩阵乘，而是 32 lane 合作执行一条矩阵指令</text>
+</svg>
+</div>
+</div>
+
+<h2 id="gen"><span class="step">§3</span>Tensor Core 代际演进：从 FP16 到 FP4</h2>
+<div class="card">
+<table>
+<thead><tr><th>架构</th><th>年份</th><th>Tensor Core 重点</th><th>支持格式</th><th>对 LLM 的意义</th></tr></thead>
+<tbody>
+<tr><td>Volta V100</td><td>2017</td><td>第一代 Tensor Core</td><td>FP16 输入，FP32 累加</td><td>深度学习训练进入 Tensor Core 时代</td></tr>
+<tr><td>Turing T4</td><td>2018</td><td>INT8/INT4 推理增强</td><td>FP16/INT8/INT4</td><td>低精度推理开始普及</td></tr>
+<tr><td>Ampere A100</td><td>2020</td><td>TF32、稀疏 Tensor Core</td><td>TF32/BF16/FP16/INT8</td><td>不用改太多代码就能加速 FP32 训练；BF16 成主流</td></tr>
+<tr><td>Hopper H100</td><td>2022</td><td>FP8、Transformer Engine、wgmma</td><td>FP8 E4M3/E5M2、BF16、FP16</td><td>大模型训练/推理吞吐大涨；FlashAttention-3 依赖 wgmma</td></tr>
+<tr><td>Blackwell B200</td><td>2024</td><td>FP4、第二代 Transformer Engine</td><td>FP4/FP6/FP8/BF16/FP16</td><td>进一步压缩权重和 KV，推理性价比提高</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn"><b>代际升级不是只加 FLOPS</b>：真正改变 kernel 写法的是指令模型和数据搬运能力。例如 Hopper 的 wgmma + TMA 让“一个 warpgroup 算，一个 TMA 搬”的流水线成为主流；Blackwell 又把低精度格式推进到 FP4。</div>
+</div>
+
+<h2 id="formats"><span class="step">§4</span>数字格式：BF16、FP8、FP4 到底牺牲了什么</h2>
+<div class="card">
+<p>Tensor Core 的高吞吐依赖低精度。低精度不是“随便少几位”，而是在动态范围、精度、累加格式之间取舍。</p>
+<table>
+<thead><tr><th>格式</th><th>位数</th><th>特点</th><th>常用位置</th><th>风险</th></tr></thead>
+<tbody>
+<tr><td>FP32</td><td>1 sign + 8 exp + 23 mantissa</td><td>范围和精度都强</td><td>累加、loss、少量敏感算子</td><td>慢、占显存</td></tr>
+<tr><td>TF32</td><td>8 exp + 10 mantissa</td><td>FP32 范围，降低 mantissa</td><td>Ampere 默认加速 FP32 GEMM</td><td>精度略低</td></tr>
+<tr><td>BF16</td><td>8 exp + 7 mantissa</td><td>范围同 FP32，精度低</td><td>训练/推理主流</td><td>小差异表达弱</td></tr>
+<tr><td>FP16</td><td>5 exp + 10 mantissa</td><td>精度比 BF16 高，范围小</td><td>推理、部分训练</td><td>溢出/下溢更敏感</td></tr>
+<tr><td>FP8 E4M3</td><td>4 exp + 3 mantissa</td><td>精度相对好，范围较小</td><td>activation/weight</td><td>需要 scale</td></tr>
+<tr><td>FP8 E5M2</td><td>5 exp + 2 mantissa</td><td>范围更大，精度更低</td><td>gradient/动态范围大处</td><td>量化误差大</td></tr>
+<tr><td>FP4</td><td>4 bit</td><td>极致压缩</td><td>Blackwell 推理/训练新方向</td><td>必须强依赖 scale 和校准</td></tr>
+</tbody>
+</table>
+
+<h3>Scale 是 FP8/FP4 的“生命线”</h3>
+<pre>真实值 x  →  x_scaled = x / scale  →  cast to FP8/FP4
+计算时 Tensor Core 读低精度值，累加通常仍用 FP16/FP32
+输出再乘回 scale 或进入下一层 scale</pre>
+<p>Transformer Engine 的工作就是动态选择这些 scale，决定哪些张量用 E4M3、哪些用 E5M2，以及何时回退到 BF16/FP16。</p>
+</div>
+
+<h2 id="tiling"><span class="step">§5</span>Tiling Pipeline：Tensor Core 不等数据，数据要提前送到嘴边</h2>
+<div class="card">
+<p>一颗 Tensor Core 很快，瓶颈常常变成“把 A/B tile 从 HBM 搬到寄存器”。高性能 GEMM pipeline 通常长这样：</p>
+<pre>for k_tile in K:
+  async copy global → shared memory    // cp.async / TMA
+  wait previous tile ready
+  load shared → register fragment      // ldmatrix
+  mma / wgmma                          // Tensor Core 计算
+  double-buffer shared memory          // 搬下一块时算当前块</pre>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 300" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="480" y="26" fill="#6ee7b7" text-anchor="middle" font-size="15">Double-buffered GEMM pipeline</text>
+<line x1="80" y1="70" x2="900" y2="70" stroke="#8b93a7"/>
+<g fill="#8b93a7" font-size="10"><text x="90" y="58">t0</text><text x="230" y="58">t1</text><text x="370" y="58">t2</text><text x="510" y="58">t3</text><text x="650" y="58">t4</text><text x="790" y="58">t5</text></g>
+<text x="25" y="105" fill="#7dd3fc">SMEM buf0</text><rect x="90" y="88" width="150" height="28" fill="#1e2d36" stroke="#7dd3fc" rx="4"/><text x="165" y="107" fill="#7dd3fc" text-anchor="middle">load tile0</text><rect x="250" y="88" width="150" height="28" fill="#1f3328" stroke="#6ee7b7" rx="4"/><text x="325" y="107" fill="#6ee7b7" text-anchor="middle">compute tile0</text><rect x="570" y="88" width="150" height="28" fill="#1e2d36" stroke="#7dd3fc" rx="4"/><text x="645" y="107" fill="#7dd3fc" text-anchor="middle">load tile2</text>
+<text x="25" y="155" fill="#a78bfa">SMEM buf1</text><rect x="250" y="138" width="150" height="28" fill="#2b2135" stroke="#a78bfa" rx="4"/><text x="325" y="157" fill="#a78bfa" text-anchor="middle">load tile1</text><rect x="410" y="138" width="150" height="28" fill="#1f3328" stroke="#6ee7b7" rx="4"/><text x="485" y="157" fill="#6ee7b7" text-anchor="middle">compute tile1</text><rect x="730" y="138" width="150" height="28" fill="#1f3328" stroke="#6ee7b7" rx="4"/><text x="805" y="157" fill="#6ee7b7" text-anchor="middle">compute tile2</text>
+<text x="95" y="230" fill="#fbbf24">目标：Tensor Core 永远在 compute，copy engine/TMA 永远在搬下一块</text>
+<text x="95" y="255" fill="#8b93a7">如果 copy 暴露在关键路径上，Tensor Core 会空转，峰值 FLOPS 没意义</text>
+</svg>
+</div>
+</div>
+
+<h2 id="wgmma"><span class="step">§6</span>Hopper 的 wgmma async：从 warp 到 warpgroup</h2>
+<div class="card">
+<p>Hopper 引入 <b>wgmma</b>：warpgroup-level matrix multiply-accumulate。一个 warpgroup = 4 个 warp = 128 threads。它的关键变化：</p>
+<ul class="tight">
+<li><b>粒度更大</b>：128 线程协作发起更大的矩阵 tile。</li>
+<li><b>异步</b>：wgmma 发出后可以和后续指令重叠，需要 barrier/commit/wait 管理。</li>
+<li><b>更适合 FlashAttention-3</b>：warpgroup 负责矩阵乘，另一些 warp/TMA 负责搬运，流水线更深。</li>
+</ul>
+<pre>// PTX 形态示意，不是完整可编译代码
+wgmma.mma_async.sync.aligned.m64n128k16.f32.f16.f16
+wgmma.commit_group.sync.aligned;
+wgmma.wait_group.sync.aligned 0;</pre>
+
+<div class="callout bad"><b>写 wgmma 难在哪</b>：不是调用指令，而是满足它对 shared memory layout、barrier、warpgroup 协作、寄存器压力、TMA pipeline 的所有约束。绝大多数项目通过 CUTLASS/CuTe、Triton、FlashAttention 内核间接使用。</div>
+</div>
+
+<h2 id="llm"><span class="step">§7</span>LLM kernel 视角：哪些地方吃 Tensor Core，哪些地方吃不到</h2>
+<div class="card">
+<table>
+<thead><tr><th>算子</th><th>是否主要用 Tensor Core</th><th>原因</th><th>常见瓶颈</th></tr></thead>
+<tbody>
+<tr><td>Prefill Q/K/V Linear</td><td>是</td><td>大 batch/长序列 GEMM</td><td>算力 + HBM，通常 compute-bound</td></tr>
+<tr><td>Decode Linear</td><td>部分</td><td>batch 小时退化成 GEMV，复用少</td><td>权重 HBM bandwidth</td></tr>
+<tr><td>QK^T Attention</td><td>是</td><td>tile 化矩阵乘</td><td>K/V 读取 + softmax pipeline</td></tr>
+<tr><td>Softmax</td><td>否</td><td>max/sum/exp/reduce，多用 CUDA Core/SFU</td><td>reduction、数值稳定、寄存器</td></tr>
+<tr><td>Sampling Top-k/Top-p</td><td>否</td><td>排序/扫描/随机采样</td><td>vocab 维读取 + reduce</td></tr>
+<tr><td>MoE Expert GEMM</td><td>是</td><td>本质仍是分组 GEMM</td><td>token dispatch、small GEMM 合并</td></tr>
+<tr><td>LayerNorm/RMSNorm</td><td>否</td><td>reduce + elementwise</td><td>内存带宽和 reduction</td></tr>
+</tbody>
+</table>
+
+<h3>所以推理系统不是“只看 Tensor Core 峰值”</h3>
+<p>Prefill 阶段通常能把 Tensor Core 喂得很满；decode 阶段 batch 小、每步读权重/KV 多，Tensor Core 经常吃不饱。因此服务系统的优化重点是 continuous batching、prefix cache、CUDA Graph、KV layout、spec decode，而不只是换更高 TFLOPS 的卡。</p>
+</div>
+
+<h2 id="takeaway"><span class="step">§8</span>带走的八句话</h2>
+<div class="card"><div class="callout"><ol>
+<li><b>Tensor Core 是矩阵乘专用引擎</b>，不是更快的普通 CUDA Core。</li>
+<li><b>MMA 是协作指令</b>：warp/warpgroup 的 lane fragments 拼成矩阵 tile。</li>
+<li><b>低精度输入 + 高精度累加</b> 是主流：FP16/BF16/FP8 输入，FP32 或 FP16/FP32 累加。</li>
+<li><b>峰值 FLOPS 的前提是数据喂得上</b>：tiling、SMEM、TMA、double buffer 都是喂饭系统。</li>
+<li><b>Hopper 的 wgmma 把粒度扩大到 warpgroup</b>，让异步矩阵乘和异步搬运更深度重叠。</li>
+<li><b>Transformer Engine 的本质是管理低精度 scale</b>，让 FP8/FP4 尽量不炸精度。</li>
+<li><b>Prefill 更容易吃满 Tensor Core</b>，decode 往往被 HBM/KV/launch 卡住。</li>
+<li><b>真正的 kernel 优化是系统工程</b>：指令、layout、搬运、同步、调度缺一不可。</li>
+</ol></div></div>
+
+<div class="nav"><a href="04-memory-hierarchy.html">← 上一章：内存层次与 HBM</a><a href="06-hopper.html">下一章：Hopper 架构详解 →</a></div>
+<div class="foot">第一章 · GPU 硬件深度 · 05/08</div>
+</div>  <script src="../course-nav.js"></script>
+</body></html>

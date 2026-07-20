@@ -1,0 +1,725 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Operator 模式 · CRD + Controller 扩展 K8S</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Operator 模式 <span class="tag">第四层 · 13/15</span></h1>
+<div class="sub">CRD + Controller 扩展 K8S——把运维知识编码成软件，让集群自动管理复杂有状态应用。以 LWS 多机推理为核心实战。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么要用 Operator</a>
+  <a href="#crd">§1 CRD</a>
+  <a href="#reconcile">§2 Reconcile 模式</a>
+  <a href="#operator">§3 Operator = CRD + Controller</a>
+  <a href="#lws">§4 LWS 深度解读</a>
+  <a href="#others">§5 其他推理 Operator</a>
+  <a href="#when">§6 何时用 Operator</a>
+  <a href="#takeaway">§7 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么要用 Operator——把运维知识编码成软件</h2>
+
+<div class="card">
+<p>K8S 内置的 Deployment / StatefulSet 能搞定无状态服务和简单有状态服务。但当你遇到下面这些场景时，内置资源就不够了：</p>
+<ul class="tight">
+  <li>多机 Tensor Parallel 推理——需要一组 Pod <b>同时启动</b>，leader 要先拿到所有 worker 的地址</li>
+  <li>MySQL 主从——新建副本时要自动从主库做 clone，failover 时要选举新主并切 VIP</li>
+  <li>Prometheus 监控——每加一个服务就要自动生成 scrape config、创建 ServiceMonitor</li>
+  <li>模型灰度发布——旧模型不能直接下线，要等流量切完、缓存清空后才能释放 GPU</li>
+</ul>
+
+<div class="callout warn">
+这些"运维操作"如果靠人写 shell 脚本 + crontab，迟早出事。<b>Operator 模式</b>的核心思想：<br/>
+把领域专家的运维知识（"如何部署、扩缩、故障恢复"）编码成一个 Controller 程序，让 K8S 7×24 自动执行。
+</div>
+
+<h3>Operator 模式 = 声明式 + 自动化</h3>
+<p>你不再告诉 K8S "先做 A，再做 B，然后做 C"（命令式），而是声明 "我要一个 3 副本的推理集群"（声明式），Operator 自动算出当前状态和目标状态的差异，然后执行必要的操作。</p>
+
+<div class="callout info">
+<b>一句话定义</b>：Operator = <b>自定义资源类型（CRD）</b> + <b>自定义控制器（Controller）</b>。CRD 告诉 K8S "我发明了一种新资源"；Controller 持续 watch 这个新资源并执行运维逻辑。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="crd"><span class="step">§1</span>CRD · 给 K8S 注册新的资源类型</h2>
+
+<div class="card">
+<h3>CRD 是什么</h3>
+<p><b>Custom Resource Definition（CRD）</b>是 K8S 的扩展机制——它让你在不修改 K8S 源码的情况下，往 API Server 里注册一种全新的资源类型。注册完后，你就能像使用 Pod、Service 一样用 <code>kubectl get/create/delete</code> 操作你自定义的资源。</p>
+
+<h3>CRD 的四大要素</h3>
+<table>
+<thead><tr><th>要素</th><th>含义</th><th>示例</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>group</b></td><td>API 组，类似"命名空间"避免命名冲突</td><td><code>inference.example.com</code></td></tr>
+<tr><td style="color:#fbbf24"><b>version</b></td><td>版本号，支持多版本共存 + 平滑迁移</td><td><code>v1alpha1</code>, <code>v1</code></td></tr>
+<tr><td style="color:#7dd3fc"><b>scope</b></td><td>Namespaced 或 Cluster 级别</td><td>大部分用 <code>Namespaced</code></td></tr>
+<tr><td style="color:#a78bfa"><b>schema</b></td><td>OpenAPI V3 格式定义 spec/status 的字段和校验规则</td><td>类型、必填、枚举、最小值等</td></tr>
+</tbody>
+</table>
+
+<h3>完整示例：定义一个 InferenceService CRD</h3>
+<pre><span style="color:#8b93a7"># 告诉 K8S："我要注册一种新资源叫 InferenceService"</span>
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: inferenceservices.inference.example.com   <span style="color:#8b93a7"># 格式：plural.group</span>
+spec:
+  group: inference.example.com                    <span style="color:#8b93a7"># API 组</span>
+  versions:
+  - name: v1alpha1                                <span style="color:#8b93a7"># 版本号</span>
+    served: true                                  <span style="color:#8b93a7"># 是否通过 API 提供服务</span>
+    storage: true                                 <span style="color:#8b93a7"># 是否作为 etcd 存储版本</span>
+    schema:
+      openAPIV3Schema:                            <span style="color:#8b93a7"># 字段校验规则</span>
+        type: object
+        properties:
+          spec:
+            type: object
+            properties:
+              modelName:
+                type: string
+                description: "模型名称，如 Qwen3-72B"
+              replicas:
+                type: integer
+                minimum: 1
+                description: "推理实例副本数"
+              gpuPerReplica:
+                type: integer
+                enum: [1, 2, 4, 8]
+                description: "每个副本使用的 GPU 数量"
+              tensorParallelSize:
+                type: integer
+                minimum: 1
+                description: "TP 并行度"
+            required: ["modelName", "replicas", "gpuPerReplica"]
+          status:
+            type: object
+            properties:
+              readyReplicas:
+                type: integer
+              endpoint:
+                type: string
+              conditions:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    type: {type: string}
+                    status: {type: string}
+                    lastTransitionTime: {type: string, format: date-time}
+    subresources:
+      status: {}                                  <span style="color:#8b93a7"># 启用 status 子资源（spec 和 status 独立更新）</span>
+  scope: Namespaced                               <span style="color:#8b93a7"># 每个 namespace 独立</span>
+  names:
+    plural: inferenceservices                     <span style="color:#8b93a7"># kubectl get inferenceservices</span>
+    singular: inferenceservice
+    kind: InferenceService                        <span style="color:#8b93a7"># YAML 里的 kind</span>
+    shortNames:
+    - isvc                                        <span style="color:#8b93a7"># kubectl get isvc</span>
+</pre>
+
+<h3>CR（Custom Resource）——CRD 的实例</h3>
+<p>CRD 注册完后，你就能创建它的实例（CR）——跟写 Deployment YAML 一样自然：</p>
+<pre><span style="color:#8b93a7"># 这就是一个 CR 实例</span>
+apiVersion: inference.example.com/v1alpha1
+kind: InferenceService
+metadata:
+  name: qwen3-72b-service
+  namespace: production
+spec:
+  modelName: Qwen3-72B
+  replicas: 2
+  gpuPerReplica: 8
+  tensorParallelSize: 8
+</pre>
+
+<div class="callout info">
+<b>注册完 CRD 后</b>，你立刻就能执行：<br/>
+<code>kubectl get inferenceservices</code> 或 <code>kubectl get isvc</code><br/>
+<code>kubectl describe isvc qwen3-72b-service</code><br/>
+API Server 已经知道这种资源的存在了，会帮你做 schema 校验、存储到 etcd、支持 watch。
+</div>
+
+<div class="callout warn">
+<b>但是！</b>光有 CRD 和 CR，什么也不会发生。CR 只是一条"数据"存在 etcd 里——没有人来读它、没有人来执行任何操作。你还需要一个 <b>Controller</b> 来 watch 这些 CR，并做出实际动作（创建 Pod、配置网络等）。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="reconcile"><span class="step">§2</span>Controller 的 Reconcile 模式</h2>
+
+<div class="card">
+<h3>Watch → Queue → Reconcile 循环</h3>
+<p>Controller 的核心运行模式只有三步，永远循环：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 340" width="900">
+  <!-- Watch -->
+  <rect x="50" y="30" width="200" height="70" rx="12" fill="#1f2937" stroke="#7dd3fc" stroke-width="2"/>
+  <text x="150" y="58" text-anchor="middle" fill="#7dd3fc" font-size="14" font-weight="700">Watch</text>
+  <text x="150" y="78" text-anchor="middle" fill="#8b93a7" font-size="11">监听 API Server 的资源变更</text>
+  <text x="150" y="92" text-anchor="middle" fill="#8b93a7" font-size="10">(CREATE / UPDATE / DELETE 事件)</text>
+
+  <!-- 箭头 Watch → Queue -->
+  <path d="M250 65 L320 65" stroke="#7dd3fc" stroke-width="2" fill="none" marker-end="url(#arrowBlue)"/>
+  <defs><marker id="arrowBlue" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#7dd3fc"/></marker></defs>
+
+  <!-- Queue -->
+  <rect x="320" y="30" width="200" height="70" rx="12" fill="#1f2937" stroke="#fbbf24" stroke-width="2"/>
+  <text x="420" y="58" text-anchor="middle" fill="#fbbf24" font-size="14" font-weight="700">Work Queue</text>
+  <text x="420" y="78" text-anchor="middle" fill="#8b93a7" font-size="11">去重 + 限速队列</text>
+  <text x="420" y="92" text-anchor="middle" fill="#8b93a7" font-size="10">(同一个 key 只保留一个条目)</text>
+
+  <!-- 箭头 Queue → Reconcile -->
+  <path d="M520 65 L590 65" stroke="#fbbf24" stroke-width="2" fill="none" marker-end="url(#arrowYellow)"/>
+  <defs><marker id="arrowYellow" markerWidth="8" markerHeight="8" refX="8" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8" fill="#fbbf24"/></marker></defs>
+
+  <!-- Reconcile -->
+  <rect x="590" y="20" width="260" height="90" rx="12" fill="#1f2937" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="720" y="48" text-anchor="middle" fill="#6ee7b7" font-size="14" font-weight="700">Reconcile(key)</text>
+  <text x="720" y="68" text-anchor="middle" fill="#8b93a7" font-size="11">① 读取 CR spec（期望状态）</text>
+  <text x="720" y="83" text-anchor="middle" fill="#8b93a7" font-size="11">② 查看实际子资源（Pod/Svc）</text>
+  <text x="720" y="98" text-anchor="middle" fill="#8b93a7" font-size="11">③ 计算 diff → 创建/更新/删除</text>
+
+  <!-- 回环箭头 Reconcile → Watch -->
+  <path d="M720 110 L720 155 Q720 170 700 170 L150 170 Q130 170 130 155 L130 100" stroke="#6ee7b7" stroke-width="1.5" fill="none" stroke-dasharray="5 3" marker-end="url(#arrowGreen)"/>
+  <defs><marker id="arrowGreen" markerWidth="8" markerHeight="8" refX="4" refY="0" orient="auto"><path d="M0,8 L4,0 L8,8" fill="#6ee7b7"/></marker></defs>
+  <text x="420" y="188" text-anchor="middle" fill="#6ee7b7" font-size="11">循环：状态变化 → 触发下一轮 Reconcile</text>
+
+  <!-- Reconcile 内部逻辑 -->
+  <rect x="50" y="210" width="800" height="115" rx="10" fill="#1f2937" stroke="#262b38"/>
+  <text x="70" y="235" fill="#6ee7b7" font-size="12" font-weight="600">Reconcile 函数核心逻辑（伪代码）：</text>
+  <text x="70" y="258" fill="#cbd5e1" font-size="11.5" font-family="SF Mono,monospace">func Reconcile(ctx, req) (Result, error) {</text>
+  <text x="90" y="275" fill="#8b93a7" font-size="11" font-family="SF Mono,monospace">cr := client.Get(req.NamespacedName)              <span style="color:#6ee7b7">// 1. 读 CR 对象</span></text>
+  <text x="90" y="290" fill="#8b93a7" font-size="11" font-family="SF Mono,monospace">actualPods := listPodsOwnedBy(cr)                 <span style="color:#6ee7b7">// 2. 查实际子资源</span></text>
+  <text x="90" y="305" fill="#8b93a7" font-size="11" font-family="SF Mono,monospace">if len(actualPods) != cr.Spec.Replicas → fix()    <span style="color:#6ee7b7">// 3. 对比并修复差异</span></text>
+  <text x="90" y="320" fill="#8b93a7" font-size="11" font-family="SF Mono,monospace">cr.Status.ReadyReplicas = countReady(actualPods)  <span style="color:#6ee7b7">// 4. 更新 status</span></text>
+  <text x="70" y="320" fill="#cbd5e1" font-size="11.5" font-family="SF Mono,monospace">}</text>
+</svg>
+</div>
+
+<h3>幂等性要求</h3>
+<div class="callout info">
+<b>Reconcile 函数必须是幂等的</b>：同一个事件执行一次和执行十次，最终结果必须完全一样。<br/><br/>
+为什么？因为 K8S 不保证事件只送达一次。网络抖动、Controller 重启、队列重试——都可能导致同一个 CR 被 Reconcile 多次。如果你的逻辑是"每次都创建一个新 Pod"，那重试三次就会多出两个 Pod。<br/><br/>
+正确做法：<b>先查再做</b>——"如果 Pod 不存在才创建"而不是"无脑创建"。
+</div>
+
+<h3>Owner Reference · 级联清理</h3>
+<p>Controller 创建子资源（Pod、Service、ConfigMap）时，必须设置 <code>ownerReferences</code> 指向 CR：</p>
+<pre><span style="color:#8b93a7"># Controller 创建的 Pod 会自动带上这个字段</span>
+metadata:
+  ownerReferences:
+  - apiVersion: inference.example.com/v1alpha1
+    kind: InferenceService
+    name: qwen3-72b-service
+    uid: a1b2c3d4-...
+    controller: true                   <span style="color:#8b93a7"># 标记为"控制者"</span>
+    blockOwnerDeletion: true           <span style="color:#8b93a7"># 删 CR 前先删子资源</span>
+</pre>
+
+<p><b>效果</b>：当你 <code>kubectl delete isvc qwen3-72b-service</code> 时，K8S 的垃圾回收器会自动级联删除所有 ownerReferences 指向它的 Pod、Service——无需 Controller 手动清理。这就是为什么删一个 Deployment 会连带删掉所有 Pod 的原因。</p>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+如果你发现删了 CR 后子资源没被清理（orphan），通常是 Controller 创建子资源时<b>忘了设 ownerReference</b>。用 <code>kubectl get pods -o yaml | grep ownerReferences -A5</code> 检查。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="operator"><span class="step">§3</span>Operator = CRD + Controller</h2>
+
+<div class="card">
+<p>把 §1 和 §2 合在一起：<b>Operator = CRD（定义"长什么样"）+ Controller（确保"变成那样"）</b>。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 260" width="900">
+  <!-- 大框 Operator -->
+  <rect x="20" y="20" width="860" height="210" rx="14" fill="none" stroke="#6ee7b7" stroke-width="2" stroke-dasharray="6 3"/>
+  <text x="40" y="48" fill="#6ee7b7" font-size="16" font-weight="700">Operator</text>
+  <text x="150" y="48" fill="#8b93a7" font-size="12">= 领域专家的运维知识，编码成一个持续运行的程序</text>
+
+  <!-- CRD 框 -->
+  <rect x="50" y="70" width="340" height="140" rx="10" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="70" y="95" fill="#7dd3fc" font-size="13" font-weight="700">CRD（声明式 API）</text>
+  <text x="70" y="118" fill="#8b93a7" font-size="11">定义用户可以声明的"期望状态"</text>
+  <text x="70" y="140" fill="#cbd5e1" font-size="11" font-family="SF Mono,monospace">kind: InferenceService</text>
+  <text x="70" y="156" fill="#cbd5e1" font-size="11" font-family="SF Mono,monospace">spec:</text>
+  <text x="70" y="172" fill="#cbd5e1" font-size="11" font-family="SF Mono,monospace">  modelName: Qwen3-72B</text>
+  <text x="70" y="188" fill="#cbd5e1" font-size="11" font-family="SF Mono,monospace">  replicas: 2</text>
+  <text x="70" y="204" fill="#cbd5e1" font-size="11" font-family="SF Mono,monospace">  gpuPerReplica: 8</text>
+
+  <!-- + 号 -->
+  <text x="420" y="145" fill="#6ee7b7" font-size="28" font-weight="700">+</text>
+
+  <!-- Controller 框 -->
+  <rect x="470" y="70" width="390" height="140" rx="10" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="490" y="95" fill="#fbbf24" font-size="13" font-weight="700">Controller（Reconcile 循环）</text>
+  <text x="490" y="118" fill="#8b93a7" font-size="11">持续对比期望 vs 实际，执行操作消除差异</text>
+  <text x="490" y="145" fill="#8b93a7" font-size="11">• 副本不够？→ 创建新 Pod + 分配 GPU</text>
+  <text x="490" y="163" fill="#8b93a7" font-size="11">• 模型版本变了？→ 滚动替换 Pod</text>
+  <text x="490" y="181" fill="#8b93a7" font-size="11">• Pod 崩了？→ 重建 + 重新加入推理集群</text>
+  <text x="490" y="199" fill="#8b93a7" font-size="11">• CR 被删除？→ 级联清理所有子资源</text>
+
+  <!-- 底部说明 -->
+  <text x="350" y="248" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">用户只写 YAML 描述"想要什么"</text>
+  <text x="670" y="248" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">Operator 负责"如何实现"</text>
+</svg>
+</div>
+
+<h3>经典 Operator 示例</h3>
+<table>
+<thead><tr><th>Operator</th><th>管理什么</th><th>自动化了哪些运维操作</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>MySQL Operator</b></td><td>MySQL 主从集群</td><td>自动初始化从库、配 GTID 复制、故障选举新主、定时备份到 S3</td></tr>
+<tr><td style="color:#6ee7b7"><b>Prometheus Operator</b></td><td>监控系统</td><td>根据 ServiceMonitor 自动生成 scrape config、热加载配置、管理 HA 副本</td></tr>
+<tr><td style="color:#6ee7b7"><b>Cert-Manager</b></td><td>TLS 证书</td><td>自动申请 Let's Encrypt 证书、到期前自动续签、注入 Secret 到 Ingress</td></tr>
+<tr><td style="color:#6ee7b7"><b>LWS</b></td><td>分布式推理集群</td><td>编排 leader+workers、注入发现地址、整组原子操作、滚动更新</td></tr>
+</tbody>
+</table>
+
+<h3>Level-Triggered vs Edge-Triggered</h3>
+<div class="callout">
+<b>K8S Controller 采用 Level-Triggered（水平触发）模式</b>——这是理解 Operator 容错能力的关键：<br/><br/>
+<b>Edge-Triggered（边沿触发）</b>：基于"发生了什么事件"来决策。如果你漏掉一个事件（网络抖、Controller 重启），状态就会不一致。<br/><br/>
+<b>Level-Triggered（水平触发）</b>：基于"当前状态是什么"来决策。不管中间发生过多少事件、漏掉了几个——每次 Reconcile 都重新对比 desired vs actual，计算差异。<br/><br/>
+<b>好处</b>：天然容错。Controller 重启后不需要"回放历史事件"，只需要看当前状态就能做出正确决策。这也是为什么 Reconcile 必须幂等——它不关心"之前发生了什么"，只关心"现在差多少"。
+</div>
+
+<div class="callout info">
+<b>Operator 的本质</b>：把"SRE/DBA 脑子里的运维 runbook"变成代码。以前半夜收到告警要人手动处理的事，现在 Controller 自动处理——而且更快、更可靠、不会犯困。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="lws"><span class="step">§4</span>LWS（LeaderWorkerSet）深度解读</h2>
+
+<div class="card">
+<h3>LWS 是什么</h3>
+<p><b>LeaderWorkerSet（LWS）</b>是 Google 开源的 CRD，专门为"1 个 leader + N 个 workers"的分布式工作负载设计。它完美匹配多机推理场景：leader 负责接收请求和协调，workers 负责参与计算。</p>
+
+<div class="callout info">
+<b>为什么不能用 Deployment / StatefulSet？</b><br/>
+多机 TP/PP 推理需要：① 所有 Pod 同时就绪才能工作 ② Leader 需要知道所有 Worker 的地址 ③ 更新时必须整组一起更新 ④ 一个 Pod 挂了整组要重建。Deployment 做不到"组"的概念，StatefulSet 的滚动更新是逐个 Pod 的——不满足"一组 Pod 是一个原子单元"的需求。
+</div>
+
+<h3>CRD 核心字段</h3>
+<table>
+<thead><tr><th>字段</th><th>含义</th><th>推理场景示例</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>replicas</b></td><td>多少"组"（每组是一个独立推理实例）</td><td>2 = 两个独立的推理服务可负载均衡</td></tr>
+<tr><td style="color:#6ee7b7"><b>leaderWorkerTemplate.size</b></td><td>每组的 Pod 总数（1 leader + N-1 workers）</td><td>2 = 1 leader + 1 worker（2 机）</td></tr>
+<tr><td style="color:#6ee7b7"><b>leaderTemplate</b></td><td>Leader Pod 的模板（可选，不设则与 worker 相同）</td><td>rank=0，开放推理端口</td></tr>
+<tr><td style="color:#6ee7b7"><b>workerTemplate</b></td><td>Worker Pod 的模板</td><td>rank=1+，只参与计算</td></tr>
+<tr><td style="color:#fbbf24"><b>restartPolicy</b></td><td>Pod 异常时的恢复策略</td><td>RecreateGroupOnPodRestart</td></tr>
+<tr><td style="color:#fbbf24"><b>rolloutStrategy</b></td><td>滚动更新策略</td><td>按组滚动，maxUnavailable=1</td></tr>
+</tbody>
+</table>
+
+<h3>LWS Controller 逻辑架构</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 420" width="900">
+  <!-- 大框 LWS Controller -->
+  <rect x="20" y="10" width="860" height="400" rx="14" fill="none" stroke="#6ee7b7" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="40" y="35" fill="#6ee7b7" font-size="14" font-weight="700">LeaderWorkerSet Controller</text>
+  <text x="260" y="35" fill="#8b93a7" font-size="11">Watch LeaderWorkerSet CR → Reconcile → 管理 StatefulSet + Headless Service</text>
+
+  <!-- CR 对象 -->
+  <rect x="50" y="55" width="220" height="100" rx="10" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="70" y="78" fill="#7dd3fc" font-size="12" font-weight="600">LeaderWorkerSet CR</text>
+  <text x="70" y="98" fill="#8b93a7" font-size="10">replicas: 2（两组推理实例）</text>
+  <text x="70" y="113" fill="#8b93a7" font-size="10">size: 2（每组 2 个 Pod）</text>
+  <text x="70" y="128" fill="#8b93a7" font-size="10">restartPolicy: RecreateGroup</text>
+  <text x="70" y="143" fill="#8b93a7" font-size="10">rolloutStrategy: RollingUpdate</text>
+
+  <!-- 箭头 CR → Groups -->
+  <path d="M270 105 L320 105" stroke="#7dd3fc" stroke-width="1.5" fill="none" marker-end="url(#arrowBlue)"/>
+
+  <!-- Group 0 -->
+  <rect x="320" y="55" width="250" height="155" rx="10" fill="#162924" stroke="#6ee7b7"/>
+  <text x="340" y="78" fill="#6ee7b7" font-size="12" font-weight="600">Group 0（StatefulSet 0）</text>
+
+  <!-- Leader Pod 0 -->
+  <rect x="340" y="90" width="210" height="48" rx="6" fill="#fbbf24" opacity=".12" stroke="#fbbf24"/>
+  <text x="355" y="108" fill="#fbbf24" font-size="11" font-weight="600">lws-sample-0-0（Leader）</text>
+  <text x="355" y="126" fill="#8b93a7" font-size="9">annotation: leaderworkerset.sigs.k8s.io/leader</text>
+
+  <!-- Worker Pod 0 -->
+  <rect x="340" y="148" width="210" height="48" rx="6" fill="#7dd3fc" opacity=".1" stroke="#7dd3fc"/>
+  <text x="355" y="166" fill="#7dd3fc" font-size="11" font-weight="600">lws-sample-0-1（Worker）</text>
+  <text x="355" y="184" fill="#8b93a7" font-size="9">env: LWS_LEADER_ADDRESS=lws-sample-0-0</text>
+
+  <!-- Group 1 -->
+  <rect x="600" y="55" width="250" height="155" rx="10" fill="#162924" stroke="#6ee7b7"/>
+  <text x="620" y="78" fill="#6ee7b7" font-size="12" font-weight="600">Group 1（StatefulSet 1）</text>
+
+  <!-- Leader Pod 1 -->
+  <rect x="620" y="90" width="210" height="48" rx="6" fill="#fbbf24" opacity=".12" stroke="#fbbf24"/>
+  <text x="635" y="108" fill="#fbbf24" font-size="11" font-weight="600">lws-sample-1-0（Leader）</text>
+  <text x="635" y="126" fill="#8b93a7" font-size="9">annotation: leaderworkerset.sigs.k8s.io/leader</text>
+
+  <!-- Worker Pod 1 -->
+  <rect x="620" y="148" width="210" height="48" rx="6" fill="#7dd3fc" opacity=".1" stroke="#7dd3fc"/>
+  <text x="635" y="166" fill="#7dd3fc" font-size="11" font-weight="600">lws-sample-1-1（Worker）</text>
+  <text x="635" y="184" fill="#8b93a7" font-size="9">env: LWS_LEADER_ADDRESS=lws-sample-1-0</text>
+
+  <!-- 下方说明 -->
+  <rect x="50" y="230" width="800" height="165" rx="10" fill="#1f2937" stroke="#262b38"/>
+  <text x="70" y="255" fill="#fbbf24" font-size="12" font-weight="600">Controller 的 Reconcile 做了什么：</text>
+  <text x="70" y="278" fill="#8b93a7" font-size="11">① 为每个 replica 创建一个 StatefulSet，Pod 命名有序：{lws-name}-{group}-{index}</text>
+  <text x="70" y="298" fill="#8b93a7" font-size="11">② index=0 的 Pod 标记为 Leader（特殊 annotation），其他为 Worker</text>
+  <text x="70" y="318" fill="#8b93a7" font-size="11">③ 所有 Pod 注入环境变量：LWS_LEADER_ADDRESS / LWS_GROUP_INDEX / LWS_WORKER_INDEX</text>
+  <text x="70" y="338" fill="#8b93a7" font-size="11">④ 创建 Headless Service 供组内 Pod 通过 DNS 互相发现</text>
+  <text x="70" y="358" fill="#8b93a7" font-size="11">⑤ 滚动更新时：先更新 Workers，再更新 Leader（保证 Worker 先就绪等 Leader 连入）</text>
+  <text x="70" y="378" fill="#6ee7b7" font-size="11">⑥ 任何一个 Pod 异常 → Controller 重建整个 Group（TP 推理必须全员在线，缺一不可）</text>
+</svg>
+</div>
+
+<h3>推理场景：多机 TP/PP 的完美匹配</h3>
+<p>2 台 8 卡 A100 机器做 Qwen3-72B 的 16 卡 TP 推理：</p>
+<ul class="tight">
+  <li><b>Group = 一个完整推理实例</b>：Leader（rank 0）启动 SGLang server 接收请求，Worker（rank 1）参与 tensor parallel 计算</li>
+  <li><b>replicas = 推理实例数</b>：2 个 replicas = 2 个独立的 16 卡推理服务，前面挂 Service 负载均衡</li>
+  <li><b>组内通信</b>：Worker 通过 <code>LWS_LEADER_ADDRESS</code> 找到 Leader，NCCL 通过 RDMA/InfiniBand 直连</li>
+  <li><b>故障恢复</b>：任何一个 Pod OOM 或 GPU 故障，整组重建（因为分布式推理 rank 缺一不可）</li>
+  <li><b>组间独立</b>：Group 0 出问题不影响 Group 1——用户请求只需切流到健康的 Group</li>
+</ul>
+
+<h3>YAML 示例：用 LWS 部署 2 机 8 卡 SGLang</h3>
+<pre><span style="color:#8b93a7"># LeaderWorkerSet：2 机 16 卡 TP 推理（Qwen3-72B）</span>
+apiVersion: leaderworkerset.x-k8s.io/v1
+kind: LeaderWorkerSet
+metadata:
+  name: sglang-qwen3-72b
+  namespace: inference
+spec:
+  replicas: 1                                     <span style="color:#8b93a7"># 1 个推理组（可按需增加做负载均衡）</span>
+  leaderWorkerTemplate:
+    size: 2                                       <span style="color:#8b93a7"># 每组 2 个 Pod：1 leader + 1 worker</span>
+    restartPolicy: RecreateGroupOnPodRestart      <span style="color:#8b93a7"># 一个挂了整组重建</span>
+    leaderTemplate:                               <span style="color:#8b93a7"># Leader Pod 模板</span>
+      metadata:
+        labels:
+          role: leader
+      spec:
+        containers:
+        - name: sglang
+          image: lmsysorg/sglang:latest
+          command: ["python3", "-m", "sglang.launch_server"]
+          args:
+          - "--model-path=/models/Qwen3-72B"
+          - "--tp=16"                             <span style="color:#8b93a7"># 跨 2 机共 16 卡 TP</span>
+          - "--nnodes=2"                          <span style="color:#8b93a7"># 2 个节点</span>
+          - "--node-rank=0"                       <span style="color:#8b93a7"># Leader 是 rank 0</span>
+          - "--nccl-init-addr=0.0.0.0:29500"      <span style="color:#8b93a7"># NCCL rendezvous 地址</span>
+          - "--host=0.0.0.0"
+          - "--port=30000"
+          ports:
+          - containerPort: 30000                  <span style="color:#8b93a7"># 推理服务端口</span>
+            name: http
+          - containerPort: 29500                  <span style="color:#8b93a7"># NCCL 初始化端口</span>
+            name: nccl
+          resources:
+            limits:
+              nvidia.com/gpu: 8                   <span style="color:#8b93a7"># 每台机器 8 卡 A100</span>
+            requests:
+              cpu: "32"
+              memory: "200Gi"
+          volumeMounts:
+          - name: model-storage
+            mountPath: /models
+          - name: shm                             <span style="color:#8b93a7"># NCCL AllReduce 需要大 shared memory</span>
+            mountPath: /dev/shm
+        volumes:
+        - name: model-storage
+          hostPath:
+            path: /nvme/models                    <span style="color:#8b93a7"># 模型预热到本地 NVMe</span>
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "64Gi"                     <span style="color:#8b93a7"># 不够会 NCCL segfault</span>
+        tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+    workerTemplate:                               <span style="color:#8b93a7"># Worker Pod 模板</span>
+      spec:
+        containers:
+        - name: sglang
+          image: lmsysorg/sglang:latest
+          command: ["python3", "-m", "sglang.launch_server"]
+          args:
+          - "--model-path=/models/Qwen3-72B"
+          - "--tp=16"
+          - "--nnodes=2"
+          - "--node-rank=1"                       <span style="color:#8b93a7"># Worker 是 rank 1</span>
+          - "--nccl-init-addr=$(LWS_LEADER_ADDRESS):29500"  <span style="color:#8b93a7"># LWS 自动注入</span>
+          resources:
+            limits:
+              nvidia.com/gpu: 8
+            requests:
+              cpu: "32"
+              memory: "200Gi"
+          volumeMounts:
+          - name: model-storage
+            mountPath: /models
+          - name: shm
+            mountPath: /dev/shm
+        volumes:
+        - name: model-storage
+          hostPath:
+            path: /nvme/models
+        - name: shm
+          emptyDir:
+            medium: Memory
+            sizeLimit: "64Gi"
+        tolerations:
+        - key: nvidia.com/gpu
+          operator: Exists
+          effect: NoSchedule
+  rolloutStrategy:
+    type: RollingUpdate
+    rollingUpdateConfiguration:
+      maxUnavailable: 1                           <span style="color:#8b93a7"># 滚动更新时最多 1 组不可用</span>
+      maxSurge: 0
+</pre>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+<b>LWS 部署多机 SGLang 推理的关键注意事项：</b>
+<ul class="tight" style="margin-top:6px">
+<li><code>LWS_LEADER_ADDRESS</code> 环境变量由 LWS Controller 自动注入到每个 Pod——Worker 不需要硬编码 Leader IP</li>
+<li><code>/dev/shm</code> 必须设足够大（建议 ≥ 64Gi），NCCL AllReduce 用共享内存通信，不够会直接 segfault</li>
+<li>同组 Pod 最好在同一 InfiniBand 子网内——用 <code>topologySpreadConstraints</code> 或 <code>nodeAffinity</code> 控制</li>
+<li>任何一个 Pod OOM/GPU 故障，LWS 会重建整个 Group，保证 TP 拓扑完整不会出现"半死不活"</li>
+<li>验证命令：<code>kubectl get lws sglang-qwen3-72b -n inference</code> → 看 readyReplicas</li>
+</ul>
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：LWS 自动注入的环境变量一览</button>
+<div class="expand-content">
+<table>
+<thead><tr><th>环境变量</th><th>含义</th><th>示例值</th></tr></thead>
+<tbody>
+<tr><td><code>LWS_LEADER_ADDRESS</code></td><td>本组 Leader Pod 的 DNS 名称</td><td><code>sglang-qwen3-72b-0-0.sglang-qwen3-72b</code></td></tr>
+<tr><td><code>LWS_GROUP_INDEX</code></td><td>当前 Pod 所在组的索引</td><td><code>0</code></td></tr>
+<tr><td><code>LWS_WORKER_INDEX</code></td><td>当前 Pod 在组内的索引（0=leader）</td><td><code>1</code>（worker）</td></tr>
+<tr><td><code>LWS_GROUP_SIZE</code></td><td>组内 Pod 总数</td><td><code>2</code></td></tr>
+</tbody>
+</table>
+<p style="margin-top:8px">利用这些变量，你可以在启动脚本里动态确定 <code>--node-rank=$LWS_WORKER_INDEX</code> 和 <code>--nccl-init-addr=$LWS_LEADER_ADDRESS:29500</code>，无需为每个 Pod 写不同的 YAML。</p>
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：LWS vs JobSet vs MPI Operator 对比</button>
+<div class="expand-content">
+<table>
+<thead><tr><th>特性</th><th>LWS</th><th>JobSet</th><th>MPI Operator</th></tr></thead>
+<tbody>
+<tr><td>设计目标</td><td>长期运行的 leader-worker 服务</td><td>批量 Job 编排</td><td>MPI 分布式训练</td></tr>
+<tr><td>生命周期</td><td>持续运行（像 Deployment）</td><td>完成即退出（像 Job）</td><td>完成即退出</td></tr>
+<tr><td>滚动更新</td><td>支持，按组原子更新</td><td>不支持（一次性任务）</td><td>不支持</td></tr>
+<tr><td>Leader 发现</td><td>自动注入环境变量</td><td>需自己配置</td><td>通过 mpirun hostfile</td></tr>
+<tr><td>故障恢复</td><td>整组重建</td><td>按 Job 重试策略</td><td>整体重启</td></tr>
+<tr><td><b>多机推理</b></td><td style="color:#6ee7b7"><b>最佳选择</b></td><td>不适合</td><td>不适合（面向训练）</td></tr>
+</tbody>
+</table>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="others"><span class="step">§5</span>其他推理相关 Operator</h2>
+
+<div class="card">
+<div class="grid cols-3">
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:16px">
+    <h4 style="margin-top:0;color:#6ee7b7">KServe</h4>
+    <p style="font-size:12px;color:var(--mute)">CRD: InferenceService</p>
+    <ul class="tight" style="font-size:12px">
+      <li>模型推理服务的完整生命周期</li>
+      <li>自动扩缩容（含 scale-to-zero）</li>
+      <li>Canary 灰度发布（流量按比例切分）</li>
+      <li>模型版本管理 + A/B 测试</li>
+      <li>支持 vLLM / SGLang / Triton Runtime</li>
+    </ul>
+    <p style="font-size:11px;color:var(--brand2);margin-bottom:0">解决：生产级推理服务管理</p>
+  </div>
+
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:16px">
+    <h4 style="margin-top:0;color:#fbbf24">NVIDIA GPU Operator</h4>
+    <p style="font-size:12px;color:var(--mute)">CRD: ClusterPolicy</p>
+    <ul class="tight" style="font-size:12px">
+      <li>自动安装 GPU 驱动（免预装节点镜像）</li>
+      <li>部署 device-plugin（注册 nvidia.com/gpu）</li>
+      <li>部署 GPU Feature Discovery（标签）</li>
+      <li>管理 DCGM Exporter（GPU 监控指标）</li>
+      <li>MIG 分片配置管理</li>
+    </ul>
+    <p style="font-size:11px;color:var(--brand2);margin-bottom:0">解决：GPU 节点基础设施自动化</p>
+  </div>
+
+  <div style="background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:16px">
+    <h4 style="margin-top:0;color:#a78bfa">Triton Inference Server</h4>
+    <p style="font-size:12px;color:var(--mute)">搭配 KServe 使用</p>
+    <ul class="tight" style="font-size:12px">
+      <li>多模型多框架动态加载/卸载</li>
+      <li>Model Repository 热更新（S3/GCS）</li>
+      <li>Dynamic batching 优化吞吐</li>
+      <li>Model Analyzer 自动调优并发</li>
+      <li>Ensemble（多模型 Pipeline 串联）</li>
+    </ul>
+    <p style="font-size:11px;color:var(--brand2);margin-bottom:0">解决：多模型混合部署 + 高吞吐</p>
+  </div>
+</div>
+
+<div class="callout info">
+<b>选型建议</b>：
+<ul class="tight" style="margin-top:6px">
+<li><b>单模型多机推理</b>（SGLang / vLLM） → <b>LWS</b> 最轻量、最匹配</li>
+<li><b>生产级推理平台</b>（需要 canary + 自动扩缩 + 模型版本管理） → <b>KServe</b></li>
+<li><b>GPU 节点初始化</b>（不想维护自定义 AMI / OS 镜像） → <b>NVIDIA GPU Operator</b></li>
+<li><b>多模型高吞吐</b>（同一 GPU 上跑多个小模型） → <b>Triton</b></li>
+</ul>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="when"><span class="step">§6</span>什么时候该用 Operator vs 纯 Deployment</h2>
+
+<div class="card">
+<h3>决策标准：是否有复杂的运维逻辑需要自动化</h3>
+
+<table>
+<thead><tr><th>场景</th><th>推荐方案</th><th>理由</th></tr></thead>
+<tbody>
+<tr>
+  <td>单卡推理、无状态、简单扩缩</td>
+  <td style="color:#6ee7b7"><b>Deployment + HPA</b></td>
+  <td>Pod 之间互不依赖，内置能力完全足够</td>
+</tr>
+<tr>
+  <td>需要稳定网络标识的单机推理</td>
+  <td style="color:#6ee7b7"><b>StatefulSet</b></td>
+  <td>Pod 有固定 hostname，方便日志追踪和模型缓存</td>
+</tr>
+<tr>
+  <td>多机 TP/PP 推理（2+ 节点）</td>
+  <td style="color:#fbbf24"><b>LWS Operator</b></td>
+  <td>需要"组"的原子性：同时启动、整组替换、Leader 发现</td>
+</tr>
+<tr>
+  <td>多模型灰度 + 自动扩缩 + SLA</td>
+  <td style="color:#fbbf24"><b>KServe Operator</b></td>
+  <td>Canary 流量切换、基于 QPS 的扩缩、模型版本管理</td>
+</tr>
+<tr>
+  <td>GPU 节点驱动和 device-plugin</td>
+  <td style="color:#fbbf24"><b>GPU Operator</b></td>
+  <td>驱动安装/升级本身是复杂的有状态操作</td>
+</tr>
+<tr>
+  <td>业务特有：故障自愈 + 特殊调度 + 状态机</td>
+  <td style="color:#f87171"><b>自研 Operator</b></td>
+  <td>没有现成 Operator 满足时，用 kubebuilder 开发</td>
+</tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>不要为简单场景写 Operator！</b><br/>
+Operator 是有维护成本的代码——它可能有 bug、需要升级、要监控它自身的健康。如果 Deployment + 几行 shell 就能搞定，别引入 Operator 增加复杂度。<br/><br/>
+判断公式：<b>Operator 的维护成本 &lt; 它替代的手动运维成本</b> → 用 Operator。否则 = 过度设计。
+</div>
+
+<h3>推理团队的典型演进路径</h3>
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+<b>Phase 1</b>：单卡推理 → Deployment + HPA，够用<br/>
+<b>Phase 2</b>：多卡单机 TP（8 卡） → 还是 Deployment，只需 <code>nvidia.com/gpu: 8</code><br/>
+<b>Phase 3</b>：多机推理 + 故障恢复 → <b>LWS</b>，必须用 Operator（Deployment 做不到组级原子操作）<br/>
+<b>Phase 4</b>：多模型 + 灰度 + SLA + 自动扩缩 → <b>KServe</b> 或自研 Operator<br/><br/>
+<b>判断信号</b>：如果你发现自己在写"出了 XX 状况就手动执行 YY 脚本"的 runbook——那就是 Operator 该做的事。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§7</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① Operator 模式</div><div>CRD 定义"期望状态 schema"，Controller 持续 reconcile 让现实逼近期望——把运维知识编码成软件</div>
+  <div class="k">② CRD 四要素</div><div>group / version / scope / openAPIV3Schema · 注册完就能 kubectl get/apply 操作自定义资源</div>
+  <div class="k">③ Reconcile 核心</div><div>Watch → Queue → Reconcile 循环 · 幂等 · 先查再做，不依赖事件历史</div>
+  <div class="k">④ Level-Triggered</div><div>基于"当前状态是什么"决策，不依赖"发生了什么事件"——Controller 重启后自动恢复正确</div>
+  <div class="k">⑤ Owner Reference</div><div>子资源指向 CR → CR 删除时自动级联清理——K8S 垃圾回收的基石</div>
+  <div class="k">⑥ LWS</div><div>专为"1 leader + N workers"设计 · 多机 TP/PP 推理最佳选择 · 自动注入 Leader 地址 · 整组原子操作</div>
+  <div class="k">⑦ 选型原则</div><div>简单无状态 → Deployment · 多机推理 → LWS · 复杂状态管理 → Operator · 别过早引入</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——Operator 让集群自动运转，但你如何知道它运转得好不好？下一章进入可观测性三支柱：Metrics / Logging / Tracing——如何监控 GPU 推理服务的关键指标（TTFT、吞吐、显存利用率、请求排队深度）。→ <a href="14-observability.html" style="color:var(--brand)">14-observability.html</a>
+</div>
+</div>
+
+<div class="foot">
+第四层 · 13 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

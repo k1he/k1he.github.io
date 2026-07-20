@@ -1,0 +1,389 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Pod 生命周期 · 从创建到销毁</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Pod 生命周期 <span class="tag">第一层 · 02/15</span></h1>
+<div class="sub">Pod 从被创建到被销毁的完整旅程——5 个阶段、initContainer、三种探针、优雅下线 hook，每个环节你都可能踩坑。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么要学 Pod 生命周期</a>
+  <a href="#phases">§1 五个阶段</a>
+  <a href="#init">§2 initContainer</a>
+  <a href="#probes">§3 三种探针</a>
+  <a href="#restart">§4 重启策略</a>
+  <a href="#shutdown">§5 优雅下线</a>
+  <a href="#takeaway">§6 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么要理解 Pod 生命周期</h2>
+
+<div class="card">
+<p>你一定遇到过这些情况：</p>
+<ul class="tight">
+  <li>Pod 状态 <code>CrashLoopBackOff</code>——是容器挂了还是健康检查配错了？</li>
+  <li>滚动更新时偶发 502——是新 Pod 没 ready 就接流量了，还是旧 Pod 下线太快？</li>
+  <li>推理服务启动要 60 秒加载模型，但 30 秒就被 kubelet 杀了——是哪个探针的锅？</li>
+  <li>需要在推理容器启动前先从对象存储拉模型权重——用 initContainer 还是 sidecar？</li>
+</ul>
+<div class="callout warn">
+Pod 生命周期的每个细节都直接影响服务可用性。特别是推理服务这种<b>启动慢、下线要排空连接</b>的场景，配错一个参数就是线上事故。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="phases"><span class="step">§1</span>Pod 的五个阶段</h2>
+
+<div class="card">
+<div class="svg-wrap">
+<svg viewBox="0 0 900 160" width="900">
+  <!-- 5 阶段 -->
+  <rect x="20" y="50" width="140" height="55" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="90" y="73" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">Pending</text>
+  <text x="90" y="91" text-anchor="middle" fill="#8b93a7" font-size="10">等待调度/拉镜像</text>
+
+  <text x="170" y="78" fill="#8b93a7" font-size="14">→</text>
+
+  <rect x="190" y="50" width="140" height="55" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="260" y="73" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">Running</text>
+  <text x="260" y="91" text-anchor="middle" fill="#8b93a7" font-size="10">至少一个容器在跑</text>
+
+  <text x="340" y="78" fill="#8b93a7" font-size="14">→</text>
+
+  <rect x="360" y="35" width="140" height="45" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="430" y="62" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">Succeeded</text>
+
+  <rect x="360" y="90" width="140" height="45" rx="8" fill="#1f2937" stroke="#f87171"/>
+  <text x="430" y="117" text-anchor="middle" fill="#f87171" font-size="11" font-weight="600">Failed</text>
+
+  <!-- Unknown -->
+  <rect x="550" y="50" width="140" height="55" rx="8" fill="#1f2937" stroke="#8b93a7" stroke-dasharray="4 3"/>
+  <text x="620" y="73" text-anchor="middle" fill="#8b93a7" font-size="12" font-weight="600">Unknown</text>
+  <text x="620" y="91" text-anchor="middle" fill="#8b93a7" font-size="10">kubelet 失联</text>
+
+  <!-- 说明 -->
+  <text x="20" y="140" fill="#8b93a7" font-size="11.5">Pending：scheduler 还没选到 Node，或 kubelet 正在拉镜像</text>
+  <text x="20" y="155" fill="#8b93a7" font-size="11.5">Unknown：节点与控制平面断联超过 node-monitor-grace-period（默认 40s）</text>
+</svg>
+</div>
+
+<h3>常见的 Pending 原因（排障清单）</h3>
+<table>
+<thead><tr><th>原因</th><th>kubectl describe 里看到什么</th><th>解法</th></tr></thead>
+<tbody>
+<tr><td>资源不足</td><td><code>Insufficient cpu/memory/nvidia.com/gpu</code></td><td>扩节点 / 降 requests / 驱逐低优先级 Pod</td></tr>
+<tr><td>节点有 Taint</td><td><code>node(s) had taints that the pod didn't tolerate</code></td><td>给 Pod 加 toleration 或给节点去 taint</td></tr>
+<tr><td>PVC 未绑定</td><td><code>persistentvolumeclaim "xxx" not found</code> 或 unbound</td><td>创建对应 PV 或检查 StorageClass</td></tr>
+<tr><td>镜像拉取失败</td><td><code>ImagePullBackOff</code> / <code>ErrImagePull</code></td><td>检查镜像地址、imagePullSecrets、网络连通</td></tr>
+<tr><td>NodeAffinity 无匹配</td><td><code>node(s) didn't match Pod's node affinity/selector</code></td><td>检查 label 或放宽 affinity</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="init"><span class="step">§2</span>initContainer · 启动前的准备工作</h2>
+
+<div class="card">
+<p><code>initContainers</code> 是在主容器启动<b>之前</b>顺序执行的容器。全部成功后，主容器才会启动。</p>
+
+<h3>执行规则</h3>
+<ul class="tight">
+  <li><b>顺序执行</b>：initContainer[0] 成功 → initContainer[1] → ... → 全部完成 → 主容器启动</li>
+  <li><b>失败重试</b>：任何一个 initContainer 失败，整个 Pod 重启（受 restartPolicy 控制）</li>
+  <li><b>资源独立计算</b>：init 阶段的资源 = max(各 initContainer requests)，不叠加</li>
+  <li><b>完成即退出</b>：initContainer 跑完就销毁，不占运行时资源</li>
+</ul>
+
+<h3>典型场景</h3>
+<pre><span class="com"># 推理服务：先从对象存储拉模型权重到本地 NVMe</span>
+<span class="kw">initContainers</span>:
+- <span class="kw">name</span>: model-downloader
+  <span class="kw">image</span>: goosefs-client:v2
+  <span class="kw">command</span>: ["/bin/sh", "-c"]
+  <span class="kw">args</span>:
+  - |
+    goosefs fs copyToLocal /models/qwen3-72b /local-nvme/models/qwen3-72b
+  <span class="kw">volumeMounts</span>:
+  - name: local-nvme
+    mountPath: /local-nvme
+
+<span class="com"># 等数据库就绪（简单场景用 nslookup 探测）</span>
+- <span class="kw">name</span>: wait-for-db
+  <span class="kw">image</span>: busybox:1.36
+  <span class="kw">command</span>: ['sh', '-c', 'until nslookup mysql-svc; do sleep 2; done']
+</pre>
+
+<div class="callout info">
+<b>initContainer vs Sidecar 的选择</b>：
+<ul class="tight" style="margin-top:6px">
+<li>需要"做完一件事再启动主容器"→ <b>initContainer</b>（如拉模型、等依赖）</li>
+<li>需要"跟主容器一起持续运行"→ <b>Sidecar</b>（如日志收集、Envoy 代理）</li>
+</ul>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+70GB 的推理模型从 GooseFS 拉到本地 NVMe 需要约 40 秒（~1.8GB/s）。如果放在 initContainer 里，主容器的 <code>startupProbe</code> 不需要为此预留时间。拉完才启动，逻辑清晰。但如果模型已经预热到节点 NVMe 了，initContainer 里只需要做一个 <code>ls /models/qwen3-72b/config.json</code> 校验即可，2 秒完成。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="probes"><span class="step">§3</span>三种探针 · 被 kubelet 杀 Pod 的罪魁祸首</h2>
+
+<div class="card">
+<p>kubelet 通过三种探针监控容器健康状态。<b>配错了就是线上事故</b>。</p>
+
+<table>
+<thead><tr><th>探针</th><th>作用</th><th>失败后果</th><th>何时执行</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:#6ee7b7"><b>startupProbe</b></td>
+  <td>确认容器已启动完成</td>
+  <td>超过 <code>failureThreshold × periodSeconds</code> → <b>杀容器重启</b></td>
+  <td>容器启动后立刻开始，成功一次后停止，交给 liveness</td>
+</tr>
+<tr>
+  <td style="color:#fbbf24"><b>livenessProbe</b></td>
+  <td>确认容器还活着</td>
+  <td>连续失败 <code>failureThreshold</code> 次 → <b>杀容器重启</b></td>
+  <td>startupProbe 成功后持续执行</td>
+</tr>
+<tr>
+  <td style="color:#7dd3fc"><b>readinessProbe</b></td>
+  <td>确认容器能接流量</td>
+  <td>失败 → <b>从 Service Endpoints 摘除</b>（不杀容器）</td>
+  <td>startupProbe 成功后持续执行</td>
+</tr>
+</tbody>
+</table>
+
+<h3>探针类型</h3>
+<ul class="tight">
+  <li><code>httpGet</code>：GET 请求，2xx/3xx 为成功</li>
+  <li><code>tcpSocket</code>：TCP 连接成功即成功</li>
+  <li><code>exec</code>：在容器内执行命令，exit 0 为成功</li>
+  <li><code>grpc</code>（K8S 1.24+）：gRPC Health Check 协议</li>
+</ul>
+
+<h3>推理服务的探针设计范例</h3>
+<pre><span class="com"># SGLang 推理服务 —— 启动加载模型可能要 60-120 秒</span>
+<span class="kw">startupProbe</span>:
+  httpGet:
+    path: /health          <span class="com"># SGLang 内置健康端点</span>
+    port: 30000
+  initialDelaySeconds: 10  <span class="com"># 容器启动后等 10s 再检</span>
+  periodSeconds: 5         <span class="com"># 每 5s 检一次</span>
+  failureThreshold: 30     <span class="com"># 最多容忍 30 次失败 = 10 + 30×5 = 160s 启动窗口</span>
+
+<span class="kw">livenessProbe</span>:
+  httpGet:
+    path: /health
+    port: 30000
+  periodSeconds: 10
+  failureThreshold: 3      <span class="com"># 连续 30s 不健康 → 重启</span>
+
+<span class="kw">readinessProbe</span>:
+  httpGet:
+    path: /health_generate  <span class="com"># 真正能推理才算 ready</span>
+    port: 30000
+  periodSeconds: 5
+  failureThreshold: 2      <span class="com"># 10s 不能推理 → 从 Service 摘除</span>
+</pre>
+
+<div class="callout bad">
+<b>最常见的错误</b>：没配 <code>startupProbe</code>，直接上 <code>livenessProbe</code>。如果 liveness 的 <code>initialDelaySeconds</code> 设得比模型加载时间短，kubelet 会在模型还没加载完时就判定"容器死了"→ 杀掉 → 重启 → 又没加载完 → 又杀掉 → <b>CrashLoopBackOff</b>。
+</div>
+
+<div class="callout info">
+<b>startupProbe 存在的意义</b>：它给了一个"启动宽限期"。在 startupProbe 成功之前，liveness 和 readiness 都不会执行。这样你可以给 startup 一个很大的窗口（如 160s），而 liveness 的周期可以设得很短（如 10s）——两全其美。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="restart"><span class="step">§4</span>重启策略 · CrashLoopBackOff 的根源</h2>
+
+<div class="card">
+<p>Pod spec 中的 <code>restartPolicy</code> 控制容器退出后 kubelet 的行为：</p>
+
+<table>
+<thead><tr><th>策略</th><th>行为</th><th>适用对象</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>Always</b>（默认）</td><td>容器退出后总是重启</td><td>长期运行的服务（Deployment / StatefulSet）</td></tr>
+<tr><td style="color:#fbbf24"><b>OnFailure</b></td><td>退出码非 0 时重启</td><td>Job（任务跑完就结束，失败才重试）</td></tr>
+<tr><td style="color:#f87171"><b>Never</b></td><td>永不重启</td><td>调试 / 一次性脚本</td></tr>
+</tbody>
+</table>
+
+<h3>CrashLoopBackOff 的退避机制</h3>
+<p>当容器反复崩溃时，kubelet 不会立刻重启，而是<b>指数退避</b>：</p>
+<pre>第 1 次重启：等 10s
+第 2 次：等 20s
+第 3 次：等 40s
+第 4 次：等 80s
+第 5 次：等 160s
+第 6 次及以后：等 300s（上限 5 分钟）
+
+<span class="com"># 成功运行超过 10 分钟后，退避计数器清零</span>
+</pre>
+
+<div class="callout warn">
+当你看到 <code>CrashLoopBackOff</code> 时，Pod 并没有"卡死"——它只是在等下一次重启。用 <code>kubectl logs --previous</code> 查看上一次容器的退出日志，才能找到真正的崩溃原因。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="shutdown"><span class="step">§5</span>优雅下线 · 为什么滚动更新时会 502</h2>
+
+<div class="card">
+<p>当 Pod 被删除（手动删除、滚动更新、节点驱逐），kubelet 执行以下步骤：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 280" width="900">
+  <!-- 时间线 -->
+  <line x1="50" y1="50" x2="850" y2="50" stroke="#262b38" stroke-width="2"/>
+
+  <!-- 事件标注 -->
+  <circle cx="100" cy="50" r="6" fill="#f87171"/>
+  <text x="100" y="30" text-anchor="middle" fill="#f87171" font-size="11" font-weight="600">DELETE</text>
+  <text x="100" y="75" fill="#8b93a7" font-size="10">Pod 进入 Terminating</text>
+
+  <circle cx="250" cy="50" r="6" fill="#fbbf24"/>
+  <text x="250" y="30" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">并行触发</text>
+
+  <!-- 两条并行线 -->
+  <line x1="250" y1="50" x2="250" y2="100" stroke="#fbbf24" stroke-width="1"/>
+  <line x1="250" y1="50" x2="250" y2="180" stroke="#7dd3fc" stroke-width="1"/>
+
+  <!-- 上线：preStop + SIGTERM -->
+  <rect x="280" y="80" width="300" height="50" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="295" y="100" fill="#fbbf24" font-size="11" font-weight="600">路径 A：容器侧</text>
+  <text x="295" y="118" fill="#8b93a7" font-size="10">① 执行 preStop hook → ② 发送 SIGTERM → ③ 等容器退出</text>
+
+  <!-- 下线：Endpoints 摘除 -->
+  <rect x="280" y="160" width="300" height="50" rx="8" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="295" y="180" fill="#7dd3fc" font-size="11" font-weight="600">路径 B：网络侧</text>
+  <text x="295" y="198" fill="#8b93a7" font-size="10">① 从 Endpoints 摘除 → ② kube-proxy 更新 iptables</text>
+
+  <!-- terminationGracePeriod -->
+  <rect x="620" y="80" width="180" height="50" rx="8" fill="#1f2937" stroke="#f87171"/>
+  <text x="635" y="100" fill="#f87171" font-size="11" font-weight="600">超时强杀</text>
+  <text x="635" y="118" fill="#8b93a7" font-size="10">到了 grace period → SIGKILL</text>
+
+  <circle cx="820" cy="50" r="6" fill="#6ee7b7"/>
+  <text x="820" y="30" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">Pod Gone</text>
+
+  <!-- 时间标注 -->
+  <text x="100" y="260" fill="#8b93a7" font-size="11">t=0</text>
+  <text x="710" y="260" fill="#8b93a7" font-size="11">t=terminationGracePeriodSeconds（默认 30s）</text>
+
+  <!-- 说明 -->
+  <text x="50" y="240" fill="#fbbf24" font-size="11.5">⚠️ 路径 A 和路径 B 是并行的！这就是 502 的根源——容器还没排空连接，但网络侧还没来得及摘流量。</text>
+</svg>
+</div>
+
+<h3>502 的经典原因</h3>
+<div class="callout bad">
+<b>时序竞态</b>：SIGTERM 发给容器后，容器立刻退出。但此时 kube-proxy 的 iptables 规则还没更新完（因为需要 apiserver → Endpoints Controller → kube-proxy 这条链路，通常要 1-3 秒）。在这 1-3 秒内，流量仍然被转发到已经退出的 Pod → <b>502</b>。
+</div>
+
+<h3>解法：preStop + sleep</h3>
+<pre><span class="kw">lifecycle</span>:
+  preStop:
+    exec:
+      command: ["/bin/sh", "-c", "sleep 5"]  <span class="com"># 等 5 秒让网络侧摘除完成</span>
+
+<span class="kw">terminationGracePeriodSeconds</span>: 60  <span class="com"># 给足时间：5s preStop + 推理请求排空</span>
+</pre>
+
+<p>逻辑：</p>
+<ul class="tight">
+  <li><code>preStop sleep 5</code>：容器收到 SIGTERM 前先等 5 秒，让网络侧有时间从 Endpoints 摘除</li>
+  <li>5 秒后 SIGTERM 到达，推理服务收到信号 → 停止接新请求 → 排空进行中的请求</li>
+  <li>最终在 <code>terminationGracePeriodSeconds</code> 内正常退出</li>
+</ul>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+推理服务的单次推理可能持续 10-60 秒（长 prompt + 长输出）。如果 <code>terminationGracePeriodSeconds</code> 只有默认的 30 秒，长推理请求会被强杀。建议设为 <b>max(预期最长推理时间) + preStop 时间 + 10s 余量</b>，例如 90 秒。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§6</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① 五阶段</div><div>Pending → Running → Succeeded/Failed/Unknown · Pending 时查 describe events 定位原因</div>
+  <div class="k">② initContainer</div><div>顺序执行、完成即退出 · 用来做"主容器启动前的准备"（拉模型、等依赖）</div>
+  <div class="k">③ 三种探针</div><div>startup（启动宽限）→ liveness（活着吗→杀）→ readiness（能服务吗→摘流量）</div>
+  <div class="k">④ 启动慢服务必配 startupProbe</div><div>否则 liveness 会在模型加载期间误杀容器 → CrashLoopBackOff</div>
+  <div class="k">⑤ 优雅下线</div><div>preStop + terminationGracePeriod · 路径 A（容器退出）和路径 B（网络摘除）是并行的</div>
+  <div class="k">⑥ 防 502</div><div>preStop sleep 几秒让 iptables 规则收敛 · grace period 要覆盖最长请求时间</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——Pod 是最小单元，但你不会直接管理它。Deployment / StatefulSet / DaemonSet / Job 才是日常使用的工作负载控制器。下一章看它们各自的设计思路和选择依据。→ <a href="03-workload-controllers.html" style="color:var(--brand)">03-workload-controllers.html</a>
+</div>
+</div>
+
+<div class="foot">
+第一层 · 02 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

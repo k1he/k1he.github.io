@@ -1,0 +1,515 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C9 · Tensor Core 基础 · WMMA 与 MMA 指令</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.type{color:#fb7185}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+svg text{font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.svg-wrap{margin:20px 0;text-align:center}
+.svg-wrap svg{max-width:100%}
+.formula{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 20px;margin:12px 0;font-family:"SF Mono","JetBrains Mono",monospace;font-size:13px;line-height:1.8}
+.highlight{color:var(--brand);font-weight:600}
+.highlight2{color:var(--brand2);font-weight:600}
+.highlight-warn{color:var(--warn);font-weight:600}
+.timeline{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:12px 0;font-family:"SF Mono","JetBrains Mono",monospace;font-size:12px;line-height:1.9;overflow-x:auto}
+.timeline .label{color:var(--mute)}
+.timeline .mem{color:var(--brand)}
+.timeline .comp{color:var(--brand2)}
+.timeline .idle{color:var(--bad);opacity:0.6}
+.timeline .em{color:var(--warn)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>C9 · Tensor Core 基础 · WMMA 与 MMA 指令 <span class="tag">CUDA GEMM 系列 · 10/15</span></h1>
+<p class="sub">Tensor Core 是 GPU GEMM 性能的终极来源——一条指令完成 16&times;8&times;16 的矩阵乘。这节从硬件原理到 WMMA API，打通"为什么 <code>tl.dot</code> 这么快"。</p>
+
+<!-- §1 -->
+<h2><span class="step">&sect;1</span>为什么需要 Tensor Core</h2>
+
+<div class="card">
+<h3>A100 GPU 性能对比</h3>
+<div class="formula">
+A100 GPU:<br>
+&nbsp;&nbsp;FP32 CUDA Cores: &nbsp;<span class="highlight-warn">19.5 TFLOPS</span><br>
+&nbsp;&nbsp;FP16 Tensor Cores: <span class="highlight">312 TFLOPS</span> &nbsp;&larr; 16x faster!<br><br>
+
+Without TC: max ~19.5 TFLOPS (FP32) or ~39 TFLOPS (FP16 on CUDA cores)<br>
+With TC: &nbsp;&nbsp;up to <span class="highlight">312 TFLOPS</span> (FP16 with FP32 accumulate)
+</div>
+</div>
+
+<div class="callout bad">
+不用 Tensor Core 的 GEMM，最多跑到理论峰值的 <span class="highlight-warn">~20%</span>。用了 TC &rarr; 才能达到 <span class="highlight">80-100%</span>。
+</div>
+
+<div class="callout info">
+这就是为什么 Triton 的 <code>tl.dot</code> 比 naive 的 <code>a[:, None] * b[None, :]</code> 快那么多——<code>tl.dot</code> 用了 Tensor Core。
+</div>
+
+<!-- §2 -->
+<h2><span class="step">&sect;2</span>Tensor Core 硬件原理</h2>
+
+<p>每个 Tensor Core 执行一个矩阵乘加（MMA）操作：</p>
+
+<div class="formula">
+D = A &times; B + C<br>
+where A: [m, k], &nbsp;B: [k, n], &nbsp;C: [m, n] &nbsp;&rarr; &nbsp;D: [m, n]
+</div>
+
+<div class="card">
+<h3>各代 GPU 的 Tensor Core 指令</h3>
+<table>
+<tr><th>GPU</th><th>指令</th><th>Shape (m,n,k)</th><th>输入类型</th><th>累加类型</th></tr>
+<tr><td>Volta (V100)</td><td><code>hmma.1688</code></td><td>16&times;16&times;16</td><td>FP16</td><td>FP16/FP32</td></tr>
+<tr><td>Ampere (A100)</td><td><code>mma.m16n8k16</code></td><td>16&times;8&times;16</td><td>FP16/BF16/TF32/INT8</td><td>FP32/INT32</td></tr>
+<tr><td>Hopper (H100)</td><td><code>mma + wgmma</code></td><td>64&times;256&times;16</td><td>FP16/FP8</td><td>FP32</td></tr>
+</table>
+</div>
+
+<div class="callout">
+一条 <code>mma</code> 指令 = 2&times;16&times;8&times;16 = <span class="highlight">4096 FLOPs</span>。A100 每个 SM 有 4 个 TC &rarr; 每 cycle 做 4&times;4096 = <span class="highlight">16384 FLOPs</span>。
+</div>
+
+<!-- SVG: Tensor Core 操作示意图 -->
+<div class="svg-wrap">
+<svg width="740" height="310" viewBox="0 0 740 310">
+  <defs>
+    <marker id="arr-g" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#6ee7b7" stroke-width="1.5"/>
+    </marker>
+    <marker id="arr-b" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#7dd3fc" stroke-width="1.5"/>
+    </marker>
+    <marker id="arr-p" markerWidth="8" markerHeight="6" refX="7" refY="3" orient="auto">
+      <path d="M0,0 L8,3 L0,6" fill="none" stroke="#fb7185" stroke-width="1.5"/>
+    </marker>
+  </defs>
+
+  <!-- Background -->
+  <rect width="740" height="310" fill="var(--panel)" rx="14"/>
+
+  <!-- A 矩阵 -->
+  <rect x="35" y="70" width="110" height="110" fill="rgba(110,231,183,0.08)" stroke="#6ee7b7" stroke-width="2" rx="6"/>
+  <text x="90" y="58" text-anchor="middle" fill="#6ee7b7" font-size="13" font-weight="600">A [16, 16]</text>
+  <!-- Grid -->
+  <line x1="62" y1="70" x2="62" y2="180" stroke="#6ee7b7" stroke-width="0.4" opacity="0.4"/>
+  <line x1="90" y1="70" x2="90" y2="180" stroke="#6ee7b7" stroke-width="0.4" opacity="0.4"/>
+  <line x1="118" y1="70" x2="118" y2="180" stroke="#6ee7b7" stroke-width="0.4" opacity="0.4"/>
+  <line x1="35" y1="97" x2="145" y2="97" stroke="#6ee7b7" stroke-width="0.4" opacity="0.4"/>
+  <line x1="35" y1="125" x2="145" y2="125" stroke="#6ee7b7" stroke-width="0.4" opacity="0.4"/>
+  <line x1="35" y1="152" x2="145" y2="152" stroke="#6ee7b7" stroke-width="0.4" opacity="0.4"/>
+  <text x="90" y="198" text-anchor="middle" fill="#8b93a7" font-size="11">FP16 输入</text>
+
+  <!-- B 矩阵 -->
+  <rect x="175" y="70" width="110" height="110" fill="rgba(125,211,252,0.08)" stroke="#7dd3fc" stroke-width="2" rx="6"/>
+  <text x="230" y="58" text-anchor="middle" fill="#7dd3fc" font-size="13" font-weight="600">B [16, 16]</text>
+  <!-- Grid -->
+  <line x1="202" y1="70" x2="202" y2="180" stroke="#7dd3fc" stroke-width="0.4" opacity="0.4"/>
+  <line x1="230" y1="70" x2="230" y2="180" stroke="#7dd3fc" stroke-width="0.4" opacity="0.4"/>
+  <line x1="258" y1="70" x2="258" y2="180" stroke="#7dd3fc" stroke-width="0.4" opacity="0.4"/>
+  <line x1="175" y1="97" x2="285" y2="97" stroke="#7dd3fc" stroke-width="0.4" opacity="0.4"/>
+  <line x1="175" y1="125" x2="285" y2="125" stroke="#7dd3fc" stroke-width="0.4" opacity="0.4"/>
+  <line x1="175" y1="152" x2="285" y2="152" stroke="#7dd3fc" stroke-width="0.4" opacity="0.4"/>
+  <text x="230" y="198" text-anchor="middle" fill="#8b93a7" font-size="11">FP16 输入</text>
+
+  <!-- Arrows into TC -->
+  <path d="M150 125 L360 125" fill="none" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arr-g)"/>
+  <path d="M290 125 L360 125" fill="none" stroke="#7dd3fc" stroke-width="1.5" marker-end="url(#arr-b)"/>
+
+  <!-- Tensor Core Box -->
+  <rect x="370" y="80" width="160" height="90" fill="#1a2332" stroke="#fbbf24" stroke-width="2.5" rx="12"/>
+  <text x="450" y="112" text-anchor="middle" fill="#fbbf24" font-size="16" font-weight="700">Tensor Core</text>
+  <text x="450" y="135" text-anchor="middle" fill="#e6e8ee" font-size="12">D = A &times; B + C</text>
+  <text x="450" y="158" text-anchor="middle" fill="#8b93a7" font-size="11">1 clock cycle</text>
+
+  <!-- Arrow out -->
+  <path d="M535 125 L580 125" fill="none" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arr-p)"/>
+
+  <!-- D 矩阵 -->
+  <rect x="590" y="70" width="110" height="110" fill="rgba(251,113,133,0.08)" stroke="#fb7185" stroke-width="2" rx="6"/>
+  <text x="645" y="58" text-anchor="middle" fill="#fb7185" font-size="13" font-weight="600">D [16, 16]</text>
+  <!-- Grid -->
+  <line x1="617" y1="70" x2="617" y2="180" stroke="#fb7185" stroke-width="0.4" opacity="0.4"/>
+  <line x1="645" y1="70" x2="645" y2="180" stroke="#fb7185" stroke-width="0.4" opacity="0.4"/>
+  <line x1="672" y1="70" x2="672" y2="180" stroke="#fb7185" stroke-width="0.4" opacity="0.4"/>
+  <line x1="590" y1="97" x2="700" y2="97" stroke="#fb7185" stroke-width="0.4" opacity="0.4"/>
+  <line x1="590" y1="125" x2="700" y2="125" stroke="#fb7185" stroke-width="0.4" opacity="0.4"/>
+  <line x1="590" y1="152" x2="700" y2="152" stroke="#fb7185" stroke-width="0.4" opacity="0.4"/>
+  <text x="645" y="198" text-anchor="middle" fill="#8b93a7" font-size="11">FP32 累加输出</text>
+
+  <!-- 底部性能标注 -->
+  <rect x="170" y="230" width="400" height="55" fill="rgba(251,191,36,0.06)" stroke="#fbbf24" stroke-width="1" rx="10"/>
+  <text x="370" y="253" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="600">一条 MMA: 2 &times; 16 &times; 8 &times; 16 = 4096 FLOPs</text>
+  <text x="370" y="274" text-anchor="middle" fill="#8b93a7" font-size="12">32 个 threads 协作 &middot; 数据分散在各 thread 的 register 中</text>
+</svg>
+</div>
+
+<!-- §3 -->
+<h2><span class="step">&sect;3</span>WMMA API (最高层抽象)</h2>
+
+<div class="card">
+<pre><span class="com">#include &lt;mma.h&gt;</span>
+<span class="kw">using namespace</span> nvcuda::wmma;
+
+<span class="com">// Fragment 类型 (warp 级别的矩阵碎片)</span>
+<span class="type">fragment</span>&lt;matrix_a, <span class="num">16</span>, <span class="num">16</span>, <span class="num">16</span>, <span class="type">half</span>, row_major&gt; a_frag;
+<span class="type">fragment</span>&lt;matrix_b, <span class="num">16</span>, <span class="num">16</span>, <span class="num">16</span>, <span class="type">half</span>, col_major&gt; b_frag;
+<span class="type">fragment</span>&lt;accumulator, <span class="num">16</span>, <span class="num">16</span>, <span class="num">16</span>, <span class="type">float</span>&gt; c_frag;
+
+<span class="com">// 初始化累加器</span>
+<span class="fn">fill_fragment</span>(c_frag, <span class="num">0.0f</span>);
+
+<span class="com">// 加载 (从 shared/global memory 到 fragment)</span>
+<span class="fn">load_matrix_sync</span>(a_frag, A_ptr, lda);  <span class="com">// lda = leading dimension</span>
+<span class="fn">load_matrix_sync</span>(b_frag, B_ptr, ldb);
+
+<span class="com">// 计算: D = A &times; B + C</span>
+<span class="fn">mma_sync</span>(c_frag, a_frag, b_frag, c_frag);
+
+<span class="com">// 存储 (fragment 到 global/shared)</span>
+<span class="fn">store_matrix_sync</span>(C_ptr, c_frag, ldc, mem_row_major);
+</pre>
+</div>
+
+<div class="card">
+<h3>关键概念</h3>
+<table>
+<tr><th>概念</th><th>说明</th></tr>
+<tr><td><span class="highlight">Fragment</span></td><td>Warp 级别的矩阵碎片。一个 fragment 分布在 warp 的 32 个 threads 中</td></tr>
+<tr><td><span class="highlight2">_sync 后缀</span></td><td>整个 warp 同步执行（因为 fragment 跨 32 threads）</td></tr>
+<tr><td><span class="highlight-warn">Shape (16, 16, 16)</span></td><td>m=16, n=16, k=16 — 一次操作的矩阵维度</td></tr>
+</table>
+</div>
+
+<div class="callout">
+WMMA 是 <span class="highlight">warp 级 API</span>——不是单个 thread 操作，而是 32 个 threads 协作完成一次 16&times;16&times;16 矩阵乘。
+</div>
+
+<!-- §4 -->
+<h2><span class="step">&sect;4</span>Fragment 的数据分布</h2>
+
+<p>Fragment 是分散存储在 32 个 threads 的 registers 中的。你不需要知道具体哪个 thread 存哪个元素——API 帮你管理。</p>
+
+<div class="card">
+<pre><span class="type">fragment</span>&lt;matrix_a, <span class="num">16</span>, <span class="num">16</span>, <span class="num">16</span>, <span class="type">half</span>, row_major&gt; a_frag;
+<span class="com">// a_frag 代表 16&times;16 = 256 个 half 元素</span>
+<span class="com">// 分散在 warp 的 32 个 threads 中</span>
+<span class="com">// 每个 thread 持有 256/32 = 8 个元素 (4 个 register)</span>
+</pre>
+</div>
+
+<!-- SVG: Fragment 数据分布图 -->
+<div class="svg-wrap">
+<svg width="720" height="360" viewBox="0 0 720 360">
+  <rect width="720" height="360" fill="var(--panel)" rx="14"/>
+
+  <text x="360" y="28" text-anchor="middle" fill="#e6e8ee" font-size="14" font-weight="600">Fragment 分布：16&times;16 矩阵 &rarr; 32 threads &times; 8 elements</text>
+
+  <!-- 16x16 矩阵示意 (用 8x8 简化表示) -->
+  <g transform="translate(30, 48)">
+    <text x="80" y="0" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">16&times;16 Matrix</text>
+
+    <!-- 色块网格 4x4 (每块代表 4x4) -->
+    <rect x="0" y="8" width="40" height="40" fill="rgba(110,231,183,0.2)" stroke="#6ee7b7" stroke-width="1" rx="3"/>
+    <rect x="40" y="8" width="40" height="40" fill="rgba(125,211,252,0.2)" stroke="#7dd3fc" stroke-width="1" rx="3"/>
+    <rect x="80" y="8" width="40" height="40" fill="rgba(251,191,36,0.2)" stroke="#fbbf24" stroke-width="1" rx="3"/>
+    <rect x="120" y="8" width="40" height="40" fill="rgba(167,139,250,0.2)" stroke="#a78bfa" stroke-width="1" rx="3"/>
+
+    <rect x="0" y="48" width="40" height="40" fill="rgba(248,113,113,0.2)" stroke="#f87171" stroke-width="1" rx="3"/>
+    <rect x="40" y="48" width="40" height="40" fill="rgba(251,113,133,0.2)" stroke="#fb7185" stroke-width="1" rx="3"/>
+    <rect x="80" y="48" width="40" height="40" fill="rgba(110,231,183,0.2)" stroke="#6ee7b7" stroke-width="1" rx="3"/>
+    <rect x="120" y="48" width="40" height="40" fill="rgba(125,211,252,0.2)" stroke="#7dd3fc" stroke-width="1" rx="3"/>
+
+    <rect x="0" y="88" width="40" height="40" fill="rgba(251,191,36,0.2)" stroke="#fbbf24" stroke-width="1" rx="3"/>
+    <rect x="40" y="88" width="40" height="40" fill="rgba(167,139,250,0.2)" stroke="#a78bfa" stroke-width="1" rx="3"/>
+    <rect x="80" y="88" width="40" height="40" fill="rgba(248,113,113,0.2)" stroke="#f87171" stroke-width="1" rx="3"/>
+    <rect x="120" y="88" width="40" height="40" fill="rgba(251,113,133,0.2)" stroke="#fb7185" stroke-width="1" rx="3"/>
+
+    <rect x="0" y="128" width="40" height="40" fill="rgba(125,211,252,0.2)" stroke="#7dd3fc" stroke-width="1" rx="3"/>
+    <rect x="40" y="128" width="40" height="40" fill="rgba(110,231,183,0.2)" stroke="#6ee7b7" stroke-width="1" rx="3"/>
+    <rect x="80" y="128" width="40" height="40" fill="rgba(251,191,36,0.2)" stroke="#fbbf24" stroke-width="1" rx="3"/>
+    <rect x="120" y="128" width="40" height="40" fill="rgba(167,139,250,0.2)" stroke="#a78bfa" stroke-width="1" rx="3"/>
+
+    <!-- Cell labels -->
+    <text x="20" y="32" text-anchor="middle" fill="#6ee7b7" font-size="9" font-weight="500">T0-3</text>
+    <text x="60" y="32" text-anchor="middle" fill="#7dd3fc" font-size="9" font-weight="500">T4-7</text>
+    <text x="100" y="32" text-anchor="middle" fill="#fbbf24" font-size="9" font-weight="500">T8-11</text>
+    <text x="140" y="32" text-anchor="middle" fill="#a78bfa" font-size="9" font-weight="500">T12-15</text>
+
+    <text x="20" y="72" text-anchor="middle" fill="#f87171" font-size="9" font-weight="500">T16-19</text>
+    <text x="60" y="72" text-anchor="middle" fill="#fb7185" font-size="9" font-weight="500">T20-23</text>
+    <text x="100" y="72" text-anchor="middle" fill="#6ee7b7" font-size="9" font-weight="500">T24-27</text>
+    <text x="140" y="72" text-anchor="middle" fill="#7dd3fc" font-size="9" font-weight="500">T28-31</text>
+
+    <text x="80" y="186" text-anchor="middle" fill="#8b93a7" font-size="10">每种颜色 = 不同 thread 组持有的区域</text>
+  </g>
+
+  <!-- 箭头 -->
+  <text x="215" y="130" fill="#8b93a7" font-size="24">&rarr;</text>
+  <text x="208" y="148" fill="#8b93a7" font-size="10">分布到</text>
+
+  <!-- Thread registers 图 -->
+  <g transform="translate(260, 48)">
+    <text x="200" y="0" text-anchor="middle" fill="#e6e8ee" font-size="12" font-weight="600">Warp: 32 Threads 的 Registers</text>
+
+    <!-- Thread 0 -->
+    <rect x="0" y="12" width="180" height="26" fill="rgba(110,231,183,0.1)" stroke="#6ee7b7" stroke-width="1" rx="5"/>
+    <text x="10" y="30" fill="#6ee7b7" font-size="10" font-weight="600">T0</text>
+    <rect x="35" y="17" width="16" height="16" fill="rgba(110,231,183,0.3)" stroke="#6ee7b7" stroke-width="0.5" rx="2"/>
+    <rect x="53" y="17" width="16" height="16" fill="rgba(110,231,183,0.3)" stroke="#6ee7b7" stroke-width="0.5" rx="2"/>
+    <rect x="71" y="17" width="16" height="16" fill="rgba(110,231,183,0.3)" stroke="#6ee7b7" stroke-width="0.5" rx="2"/>
+    <rect x="89" y="17" width="16" height="16" fill="rgba(110,231,183,0.3)" stroke="#6ee7b7" stroke-width="0.5" rx="2"/>
+    <text x="145" y="30" fill="#8b93a7" font-size="9">4 regs</text>
+
+    <!-- Thread 1 -->
+    <rect x="0" y="42" width="180" height="26" fill="rgba(125,211,252,0.1)" stroke="#7dd3fc" stroke-width="1" rx="5"/>
+    <text x="10" y="60" fill="#7dd3fc" font-size="10" font-weight="600">T1</text>
+    <rect x="35" y="47" width="16" height="16" fill="rgba(125,211,252,0.3)" stroke="#7dd3fc" stroke-width="0.5" rx="2"/>
+    <rect x="53" y="47" width="16" height="16" fill="rgba(125,211,252,0.3)" stroke="#7dd3fc" stroke-width="0.5" rx="2"/>
+    <rect x="71" y="47" width="16" height="16" fill="rgba(125,211,252,0.3)" stroke="#7dd3fc" stroke-width="0.5" rx="2"/>
+    <rect x="89" y="47" width="16" height="16" fill="rgba(125,211,252,0.3)" stroke="#7dd3fc" stroke-width="0.5" rx="2"/>
+    <text x="145" y="60" fill="#8b93a7" font-size="9">4 regs</text>
+
+    <!-- Thread 2 -->
+    <rect x="0" y="72" width="180" height="26" fill="rgba(251,191,36,0.1)" stroke="#fbbf24" stroke-width="1" rx="5"/>
+    <text x="10" y="90" fill="#fbbf24" font-size="10" font-weight="600">T2</text>
+    <rect x="35" y="77" width="16" height="16" fill="rgba(251,191,36,0.3)" stroke="#fbbf24" stroke-width="0.5" rx="2"/>
+    <rect x="53" y="77" width="16" height="16" fill="rgba(251,191,36,0.3)" stroke="#fbbf24" stroke-width="0.5" rx="2"/>
+    <rect x="71" y="77" width="16" height="16" fill="rgba(251,191,36,0.3)" stroke="#fbbf24" stroke-width="0.5" rx="2"/>
+    <rect x="89" y="77" width="16" height="16" fill="rgba(251,191,36,0.3)" stroke="#fbbf24" stroke-width="0.5" rx="2"/>
+    <text x="145" y="90" fill="#8b93a7" font-size="9">4 regs</text>
+
+    <!-- dots -->
+    <text x="90" y="118" text-anchor="middle" fill="#8b93a7" font-size="16">&vellip;</text>
+
+    <!-- Thread 30 -->
+    <rect x="0" y="125" width="180" height="26" fill="rgba(167,139,250,0.1)" stroke="#a78bfa" stroke-width="1" rx="5"/>
+    <text x="14" y="143" fill="#a78bfa" font-size="10" font-weight="600">T30</text>
+    <rect x="40" y="130" width="16" height="16" fill="rgba(167,139,250,0.3)" stroke="#a78bfa" stroke-width="0.5" rx="2"/>
+    <rect x="58" y="130" width="16" height="16" fill="rgba(167,139,250,0.3)" stroke="#a78bfa" stroke-width="0.5" rx="2"/>
+    <rect x="76" y="130" width="16" height="16" fill="rgba(167,139,250,0.3)" stroke="#a78bfa" stroke-width="0.5" rx="2"/>
+    <rect x="94" y="130" width="16" height="16" fill="rgba(167,139,250,0.3)" stroke="#a78bfa" stroke-width="0.5" rx="2"/>
+    <text x="145" y="143" fill="#8b93a7" font-size="9">4 regs</text>
+
+    <!-- Thread 31 -->
+    <rect x="0" y="155" width="180" height="26" fill="rgba(251,113,133,0.1)" stroke="#fb7185" stroke-width="1" rx="5"/>
+    <text x="14" y="173" fill="#fb7185" font-size="10" font-weight="600">T31</text>
+    <rect x="40" y="160" width="16" height="16" fill="rgba(251,113,133,0.3)" stroke="#fb7185" stroke-width="0.5" rx="2"/>
+    <rect x="58" y="160" width="16" height="16" fill="rgba(251,113,133,0.3)" stroke="#fb7185" stroke-width="0.5" rx="2"/>
+    <rect x="76" y="160" width="16" height="16" fill="rgba(251,113,133,0.3)" stroke="#fb7185" stroke-width="0.5" rx="2"/>
+    <rect x="94" y="160" width="16" height="16" fill="rgba(251,113,133,0.3)" stroke="#fb7185" stroke-width="0.5" rx="2"/>
+    <text x="145" y="173" fill="#8b93a7" font-size="9">4 regs</text>
+
+    <!-- 注释 -->
+    <text x="200" y="30" fill="#8b93a7" font-size="10">&larr; 每 reg = 32bit</text>
+    <text x="200" y="48" fill="#8b93a7" font-size="10">&nbsp;&nbsp;&nbsp;= 2 &times; half</text>
+    <text x="200" y="90" fill="#8b93a7" font-size="10">&larr; 4 regs &times; 2</text>
+    <text x="200" y="108" fill="#8b93a7" font-size="10">&nbsp;&nbsp;&nbsp;= 8 halfs/thread</text>
+  </g>
+
+  <!-- 底部汇总框 -->
+  <rect x="100" y="295" width="520" height="44" fill="rgba(110,231,183,0.06)" stroke="#6ee7b7" stroke-width="1" rx="10"/>
+  <text x="360" y="314" text-anchor="middle" fill="#6ee7b7" font-size="12">16&times;16 = <tspan font-weight="700">256 halfs</tspan> &divide; 32 threads = <tspan font-weight="700">8 halfs/thread</tspan> = <tspan font-weight="700">4 registers/thread</tspan></text>
+  <text x="360" y="332" text-anchor="middle" fill="#8b93a7" font-size="11">你不需要知道具体映射——WMMA API 替你管理分布细节</text>
+</svg>
+</div>
+
+<!-- §5 -->
+<h2><span class="step">&sect;5</span>WMMA 完整示例: 16&times;16 GEMM</h2>
+
+<div class="card">
+<pre><span class="com">#include &lt;cuda_runtime.h&gt;</span>
+<span class="com">#include &lt;mma.h&gt;</span>
+<span class="kw">using namespace</span> nvcuda::wmma;
+
+<span class="kw">#define</span> <span class="fn">WMMA_M</span> <span class="num">16</span>
+<span class="kw">#define</span> <span class="fn">WMMA_N</span> <span class="num">16</span>
+<span class="kw">#define</span> <span class="fn">WMMA_K</span> <span class="num">16</span>
+
+<span class="kw">__global__</span> <span class="type">void</span> <span class="fn">wmma_gemm_16x16</span>(
+    <span class="kw">const</span> <span class="type">half</span>* A, <span class="kw">const</span> <span class="type">half</span>* B, <span class="type">float</span>* C,
+    <span class="type">int</span> M, <span class="type">int</span> N, <span class="type">int</span> K
+) {
+    <span class="com">// 每个 warp 计算一个 16&times;16 的 C 块</span>
+    <span class="type">int</span> warp_row = (blockIdx.y * blockDim.y + threadIdx.y) / <span class="num">32</span> * WMMA_M;
+    <span class="type">int</span> warp_col = blockIdx.x * WMMA_N;
+
+    <span class="type">fragment</span>&lt;matrix_a, WMMA_M, WMMA_N, WMMA_K, <span class="type">half</span>, row_major&gt; a_frag;
+    <span class="type">fragment</span>&lt;matrix_b, WMMA_M, WMMA_N, WMMA_K, <span class="type">half</span>, row_major&gt; b_frag;
+    <span class="type">fragment</span>&lt;accumulator, WMMA_M, WMMA_N, WMMA_K, <span class="type">float</span>&gt; acc_frag;
+
+    <span class="fn">fill_fragment</span>(acc_frag, <span class="num">0.0f</span>);
+
+    <span class="kw">for</span> (<span class="type">int</span> k = <span class="num">0</span>; k &lt; K; k += WMMA_K) {
+        <span class="com">// Load A[warp_row:+16, k:k+16]</span>
+        <span class="fn">load_matrix_sync</span>(a_frag, A + warp_row * K + k, K);
+        <span class="com">// Load B[k:k+16, warp_col:+16]</span>
+        <span class="fn">load_matrix_sync</span>(b_frag, B + k * N + warp_col, N);
+        <span class="com">// Accumulate: acc = A &times; B + acc</span>
+        <span class="fn">mma_sync</span>(acc_frag, a_frag, b_frag, acc_frag);
+    }
+
+    <span class="com">// Store result</span>
+    <span class="fn">store_matrix_sync</span>(C + warp_row * N + warp_col, acc_frag, N, mem_row_major);
+}
+</pre>
+</div>
+
+<div class="callout info">
+注意：这是 <span class="highlight2">per-warp</span> 的。一个 warp (32 threads) 一起调 <code>mma_sync</code>，产生 16&times;16 输出。
+</div>
+
+<!-- §6 -->
+<h2><span class="step">&sect;6</span>PTX MMA 指令 (底层)</h2>
+
+<div class="card">
+<pre><span class="com">// PTX assembly (Ampere m16n8k16):</span>
+<span class="fn">mma.sync.aligned.m16n8k16.row.col.f32.f16.f16.f32</span>
+    {<span class="num">%d0</span>, <span class="num">%d1</span>, <span class="num">%d2</span>, <span class="num">%d3</span>},      <span class="com">// D: 4 f32 registers</span>
+    {<span class="num">%a0</span>, <span class="num">%a1</span>, <span class="num">%a2</span>, <span class="num">%a3</span>},      <span class="com">// A: 4 f16x2 registers (8 halfs)</span>
+    {<span class="num">%b0</span>, <span class="num">%b1</span>},                 <span class="com">// B: 2 f16x2 registers (4 halfs)</span>
+    {<span class="num">%c0</span>, <span class="num">%c1</span>, <span class="num">%c2</span>, <span class="num">%c3</span>};      <span class="com">// C: 4 f32 registers</span>
+</pre>
+</div>
+
+<div class="callout">
+每个 thread 提供 A 的 <span class="highlight">8 个元素</span>和 B 的 <span class="highlight2">4 个元素</span>，32 threads 一起凑出 16&times;8&times;16 的矩阵乘。
+</div>
+
+<div class="card">
+<h3>m16n8k16 每 Thread 的 Register 映射</h3>
+<table>
+<tr><th>操作数</th><th>寄存器数</th><th>数据量/thread</th><th>32 threads 合计</th></tr>
+<tr><td><span class="highlight">A (matrix_a)</span></td><td>4 &times; f16x2</td><td>8 个 half</td><td>32&times;8 = 256 halfs = 16&times;16</td></tr>
+<tr><td><span class="highlight2">B (matrix_b)</span></td><td>2 &times; f16x2</td><td>4 个 half</td><td>32&times;4 = 128 halfs = 16&times;8</td></tr>
+<tr><td><span class="highlight-warn">C/D (accumulator)</span></td><td>4 &times; f32</td><td>4 个 float</td><td>32&times;4 = 128 floats = 16&times;8</td></tr>
+</table>
+</div>
+
+<div class="callout warn">
+注意：Ampere 的原生指令是 <code>m16n8k16</code>（不是 16&times;16&times;16）。WMMA 的 16&times;16&times;16 实际上是编译器用两条 <code>m16n8k16</code> 拼起来的。
+</div>
+
+<!-- §7 -->
+<h2><span class="step">&sect;7</span>Tensor Core 的限制</h2>
+
+<div class="card">
+<table>
+<tr><th>限制</th><th>说明</th></tr>
+<tr><td><span class="highlight-warn">Warp-level only</span></td><td>单个 thread 无法独立使用 TC，必须整个 warp (32 threads) 协作</td></tr>
+<tr><td><span class="highlight-warn">固定 shape</span></td><td>m16n8k16 (Ampere)，不能自定义维度</td></tr>
+<tr><td><span class="highlight-warn">输入类型限制</span></td><td>FP16, BF16, TF32, INT8, FP8——不支持 FP32 输入</td></tr>
+<tr><td><span class="highlight-warn">需要对齐</span></td><td>内存地址 16-byte aligned</td></tr>
+<tr><td><span class="highlight-warn">Layout 要求</span></td><td>数据必须按特定 pattern 排列在 registers 中</td></tr>
+</table>
+</div>
+
+<div class="callout info">
+WMMA API 帮你隐藏了 layout 细节。PTX mma 需要你手动管理。CUTLASS 提供了中间层 (CuTe) 来简化。
+</div>
+
+<!-- §8 -->
+<h2><span class="step">&sect;8</span>对比 Triton 的 tl.dot</h2>
+
+<div class="card">
+<table>
+<tr><th></th><th><code>tl.dot</code></th><th>WMMA</th><th>PTX mma</th></tr>
+<tr><td><span class="highlight">抽象层次</span></td><td>最高 (tile 级)</td><td>中 (warp 级)</td><td>最低 (instruction 级)</td></tr>
+<tr><td><span class="highlight2">你需要管理</span></td><td>只需 tile shape</td><td>fragment load/store</td><td>register mapping + layout</td></tr>
+<tr><td><span class="highlight-warn">Shape 灵活性</span></td><td>任意 (编译器切分)</td><td>16&times;16&times;16 固定</td><td>m16n8k16 固定</td></tr>
+<tr><td>性能</td><td>~95% peak</td><td>~90% peak</td><td>~100% peak</td></tr>
+<tr><td>代码量</td><td>1 行</td><td>~10 行</td><td>~30 行</td></tr>
+</table>
+</div>
+
+<!-- SVG: 抽象层次图 -->
+<div class="svg-wrap">
+<svg width="660" height="180" viewBox="0 0 660 180">
+  <rect width="660" height="180" fill="var(--panel)" rx="14"/>
+
+  <text x="330" y="24" text-anchor="middle" fill="#8b93a7" font-size="12">抽象层次 (从高到低)</text>
+
+  <!-- tl.dot -->
+  <rect x="25" y="40" width="180" height="52" fill="rgba(110,231,183,0.1)" stroke="#6ee7b7" stroke-width="2" rx="10"/>
+  <text x="115" y="62" text-anchor="middle" fill="#6ee7b7" font-size="14" font-weight="600">tl.dot(a, b)</text>
+  <text x="115" y="80" text-anchor="middle" fill="#8b93a7" font-size="10">Triton &middot; tile-level &middot; 1 行</text>
+
+  <!-- WMMA -->
+  <rect x="240" y="40" width="180" height="52" fill="rgba(125,211,252,0.1)" stroke="#7dd3fc" stroke-width="2" rx="10"/>
+  <text x="330" y="62" text-anchor="middle" fill="#7dd3fc" font-size="14" font-weight="600">mma_sync()</text>
+  <text x="330" y="80" text-anchor="middle" fill="#8b93a7" font-size="10">WMMA &middot; warp-level &middot; ~10 行</text>
+
+  <!-- PTX mma -->
+  <rect x="455" y="40" width="180" height="52" fill="rgba(251,113,133,0.1)" stroke="#fb7185" stroke-width="2" rx="10"/>
+  <text x="545" y="62" text-anchor="middle" fill="#fb7185" font-size="14" font-weight="600">mma.m16n8k16</text>
+  <text x="545" y="80" text-anchor="middle" fill="#8b93a7" font-size="10">PTX &middot; instruction-level &middot; ~30 行</text>
+
+  <!-- Arrows -->
+  <path d="M210 66 L235 66" fill="none" stroke="#8b93a7" stroke-width="1.5" stroke-dasharray="3,2"/>
+  <path d="M425 66 L450 66" fill="none" stroke="#8b93a7" stroke-width="1.5" stroke-dasharray="3,2"/>
+
+  <!-- 编译关系 -->
+  <text x="115" y="112" text-anchor="middle" fill="#6ee7b7" font-size="10">编译为 &darr;</text>
+  <text x="330" y="112" text-anchor="middle" fill="#7dd3fc" font-size="10">编译为 &darr;</text>
+
+  <rect x="60" y="120" width="540" height="34" fill="rgba(251,191,36,0.06)" stroke="#fbbf24" stroke-width="1" rx="8"/>
+  <text x="330" y="142" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">最终都是同一套 Tensor Core 硬件在执行 SASS mma 指令</text>
+
+  <!-- Performance bar -->
+  <text x="115" y="170" text-anchor="middle" fill="#6ee7b7" font-size="10">~95% peak</text>
+  <text x="330" y="170" text-anchor="middle" fill="#7dd3fc" font-size="10">~90% peak</text>
+  <text x="545" y="170" text-anchor="middle" fill="#fb7185" font-size="10">~100% peak</text>
+</svg>
+</div>
+
+<!-- §9 -->
+<h2><span class="step">&sect;9</span>带走</h2>
+
+<div class="card">
+<table>
+<tr><th>#</th><th>要点</th></tr>
+<tr><td>1</td><td><span class="highlight">Tensor Core</span>: 一条指令做 16&times;8&times;16 matmul &rarr; 比 CUDA Cores 快 <span class="highlight-warn">16x</span></td></tr>
+<tr><td>2</td><td><span class="highlight2">WMMA API</span>: warp 级抽象，fragment 分布在 32 threads 中</td></tr>
+<tr><td>3</td><td><span class="highlight-warn">Flow</span>: <code>load_matrix_sync</code> &rarr; <code>mma_sync</code> &rarr; <code>store_matrix_sync</code></td></tr>
+<tr><td>4</td><td><code>tl.dot</code> 在底层就是 WMMA/MMA 指令——Triton 帮你选了最优的指令序列</td></tr>
+<tr><td>5</td><td>没有 Tensor Core 的 GEMM 最多 <span class="highlight-warn">~20% peak</span>；有了才能达到 <span class="highlight">80-100%</span></td></tr>
+</table>
+</div>
+
+<p class="foot">C9 · Tensor Core 基础 — CUDA GEMM 系列 10/15</p>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C12 · Split-K 与 Persistent Kernel · 高级并行策略</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.type{color:#fb7185}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+svg text{font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.svg-wrap{margin:20px 0;text-align:center}
+.svg-wrap svg{max-width:100%}
+.formula{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 20px;margin:12px 0;font-family:"SF Mono","JetBrains Mono",monospace;font-size:13px;line-height:1.8}
+.highlight{color:var(--brand);font-weight:600}
+.highlight2{color:var(--brand2);font-weight:600}
+.highlight-warn{color:var(--warn);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>C12 · Split-K 与 Persistent Kernel · 高级并行策略 <span class="tag">CUDA GEMM 系列 · 13/15</span></h1>
+<p class="sub">当标准 tile 分配不够用时（小 M 或极大 K），需要更高级的并行策略：Split-K 增加 wave 数，Persistent Kernel 消除 launch 开销。</p>
+
+<!-- §1 -->
+<h2><span class="step">§1</span>Split-K 回顾（CUDA 视角）</h2>
+
+<p>在 Triton T11 中我们介绍过 Split-K 的概念，现在用纯 CUDA 术语重新理解。</p>
+
+<div class="card">
+<p><span class="highlight-warn">问题：SM 空闲</span></p>
+<ul class="tight">
+  <li>当 M 很小（如 decode 阶段 M=1~8），output tile 数量很少</li>
+  <li>标准 grid = <code>cdiv(M, BM) &times; cdiv(N, BN)</code></li>
+  <li>M=4, BM=128 &rarr; 只有 1 行 tile &rarr; 可能只有 32~64 个 block</li>
+  <li>A100 有 108 个 SM，H100 有 132 个 SM，大量 SM 完全空闲</li>
+</ul>
+</div>
+
+<div class="card">
+<p><span class="highlight">解决方案：K 维度也并行</span></p>
+<ul class="tight">
+  <li>把 K 切成 <code>SPLIT_K</code> 份，每份由不同 block 处理</li>
+  <li>每个 block 只计算部分和（partial sum），最后 reduce</li>
+  <li>3D grid：<code>(num_tiles_n, num_tiles_m, SPLIT_K)</code></li>
+</ul>
+</div>
+
+<pre>
+<span class="com">// 3D grid launch — K 维度也参与并行</span>
+<span class="type">dim3</span> grid(<span class="fn">cdiv</span>(N, BN), <span class="fn">cdiv</span>(M, BM), SPLIT_K);
+
+<span class="kw">__global__</span> <span class="kw">void</span> <span class="fn">gemm_split_k</span>(
+    <span class="kw">const</span> <span class="type">half</span>* A, <span class="kw">const</span> <span class="type">half</span>* B, <span class="type">float</span>* C,
+    <span class="type">int</span> M, <span class="type">int</span> N, <span class="type">int</span> K
+) {
+    <span class="type">int</span> bid_m = blockIdx.y;
+    <span class="type">int</span> bid_n = blockIdx.x;
+    <span class="type">int</span> split_id = blockIdx.z;  <span class="com">// 当前 block 负责哪一段 K</span>
+
+    <span class="type">int</span> k_per_split = K / SPLIT_K;
+    <span class="type">int</span> k_start = split_id * k_per_split;
+    <span class="type">int</span> k_end = <span class="fn">min</span>(k_start + k_per_split, K);
+
+    <span class="com">// 只累加 [k_start, k_end) 范围内的部分和</span>
+    <span class="type">float</span> partial_sum = <span class="num">0.0f</span>;
+    <span class="kw">for</span> (<span class="type">int</span> k = k_start; k &lt; k_end; k += BK) {
+        <span class="com">// load A tile, B tile → shared memory</span>
+        <span class="com">// compute partial GEMM</span>
+        partial_sum += ...;
+    }
+
+    <span class="com">// Reduction: atomic add 到最终输出</span>
+    <span class="fn">atomicAdd</span>(&amp;C[row * N + col], partial_sum);
+}
+</pre>
+
+<div class="callout">
+Split-K 的核心思想：<span class="highlight">用空间换并行度</span>。牺牲一些 reduction 开销，换来更多 block 让所有 SM 都有活干。
+</div>
+
+<!-- §2 -->
+<h2><span class="step">§2</span>Atomic vs Two-Pass Reduction</h2>
+
+<h3>方案 1：atomicAdd（简单直接）</h3>
+
+<div class="card">
+<ul class="tight">
+  <li>每个 split block 直接用 <code>atomicAdd</code> 写到 C</li>
+  <li><span class="highlight">优点：</span>无额外显存开销，代码简单</li>
+  <li><span class="highlight-warn">缺点：</span>SPLIT_K 大时竞争严重</li>
+  <li><span class="highlight-warn">缺点：</span>FP16 atomicAdd 精度受限（需要 FP32 中间结果）</li>
+  <li><span class="highlight-warn">缺点：</span>结果不确定（non-deterministic）</li>
+</ul>
+</div>
+
+<h3>方案 2：Workspace + Reduction Kernel（两遍法）</h3>
+
+<pre>
+<span class="com">// Pass 1: 每个 split 写到独立的 workspace</span>
+<span class="type">float</span>* workspace;  <span class="com">// shape [SPLIT_K, M, N]</span>
+<span class="fn">cudaMalloc</span>(&amp;workspace, SPLIT_K * M * N * <span class="kw">sizeof</span>(<span class="type">float</span>));
+
+<span class="com">// 第一个 kernel: 不做 atomic，写到 workspace[split_id][row][col]</span>
+gemm_split_k_pass1&lt;&lt;&lt;grid3d, block&gt;&gt;&gt;(A, B, workspace, M, N, K, SPLIT_K);
+
+<span class="com">// Pass 2: 独立的 reduction kernel 沿 split 维度求和</span>
+<span class="type">dim3</span> grid2d(<span class="fn">cdiv</span>(N, <span class="num">32</span>), <span class="fn">cdiv</span>(M, <span class="num">32</span>));
+reduce_kernel&lt;&lt;&lt;grid2d, <span class="num">256</span>&gt;&gt;&gt;(workspace, C, M, N, SPLIT_K);
+
+<span class="com">// reduce_kernel 内部：</span>
+<span class="com">// C[i][j] = sum(workspace[s][i][j] for s in 0..SPLIT_K-1)</span>
+
+<span class="fn">cudaFree</span>(workspace);
+</pre>
+
+<div class="card">
+<table>
+<tr><th>对比</th><th>Atomic</th><th>Two-Pass</th></tr>
+<tr><td>额外显存</td><td>0</td><td>SPLIT_K &times; M &times; N &times; 4B</td></tr>
+<tr><td>精度</td><td>FP32 atomic 可保证</td><td>精确（先 FP32 累加再转换）</td></tr>
+<tr><td>竞争</td><td>SPLIT_K 大时严重</td><td>无竞争</td></tr>
+<tr><td>确定性</td><td>非确定</td><td>确定性结果</td></tr>
+<tr><td>Kernel 数</td><td>1</td><td>2</td></tr>
+<tr><td>适用</td><td>SPLIT_K &le; 4</td><td>SPLIT_K 任意大</td></tr>
+</table>
+</div>
+
+<div class="callout info">
+<strong>工程建议：</strong>对于 FP16 精度敏感的推理场景（如 LLM），Two-Pass 更可靠。SPLIT_K &le; 4 且精度要求不高时可直接用 atomic。
+</div>
+
+<!-- §3 -->
+<h2><span class="step">§3</span>Stream-K：动态工作分配</h2>
+
+<div class="callout warn">
+<strong>Split-K 的问题：</strong>K 不整除 SPLIT_K 时，有些 block 多做有些少做（load imbalance）。更严重的情况：不同 output tile 可能需要不同的 K 长度（如 mask/padding）。
+</div>
+
+<div class="card">
+<p><span class="highlight2">Stream-K 解决方案</span>（CUTLASS 3.x 引入）：</p>
+<ul class="tight">
+  <li>Launch 恰好 <code>num_SMs</code> 个 persistent block</li>
+  <li>把所有 K-iterations 组成一个全局 "stream"</li>
+  <li>每个 block 动态地 "stream" 消费下一段 K-chunk</li>
+  <li>没有固定分配 &rarr; <span class="highlight">完美 load balance</span></li>
+</ul>
+</div>
+
+<pre>
+<span class="com">// 传统 Split-K：Block i 处理固定的 tile 的第 split_i 段 K</span>
+<span class="com">//   Block 0 → tile(0,0), K[0:1024]       固定分配</span>
+<span class="com">//   Block 1 → tile(0,0), K[1024:2048]    固定分配</span>
+<span class="com">//   Block 2 → tile(0,0), K[2048:3000]    少做了！imbalance</span>
+
+<span class="com">// Stream-K：Block i 处理"下一个待处理的 K-chunk"（work-stealing）</span>
+<span class="com">//   Block 0 → tile(0,0) K[0:1024], tile(0,1) K[0:512]...</span>
+<span class="com">//   Block 1 → tile(0,0) K[1024:2048], tile(0,1) K[512:1536]...</span>
+<span class="com">//   每个 block 总工作量相等 → perfect balance</span>
+</pre>
+
+<div class="callout">
+<strong>Stream-K = Persistent Kernel + Dynamic Scheduling。</strong>这是目前最先进的 GEMM 并行策略，CUTLASS 3.x 和 cuBLAS 在小 M 场景默认使用。
+</div>
+
+<!-- §4 -->
+<h2><span class="step">§4</span>Persistent Kernel 概念</h2>
+
+<div class="card">
+<p><span class="highlight-warn">传统 GEMM：</span>每个 block 计算一个 tile 然后退出。grid 大小 = 总 tile 数。</p>
+<p><span class="highlight">Persistent GEMM：</span>每个 block <strong>不退出</strong>，循环处理多个 tile。grid 大小 = SM 数量。</p>
+</div>
+
+<pre>
+<span class="kw">__global__</span> <span class="kw">void</span> <span class="fn">gemm_persistent</span>(
+    <span class="kw">const</span> <span class="type">half</span>* A, <span class="kw">const</span> <span class="type">half</span>* B, <span class="type">half</span>* C,
+    <span class="type">int</span> M, <span class="type">int</span> N, <span class="type">int</span> K, <span class="type">int</span> total_tiles
+) {
+    <span class="type">int</span> num_tiles_n = <span class="fn">cdiv</span>(N, BN);
+
+    <span class="com">// 这个 block 会处理多个 tile！不退出！</span>
+    <span class="kw">for</span> (<span class="type">int</span> tile_id = blockIdx.x; tile_id &lt; total_tiles; tile_id += gridDim.x) {
+        <span class="type">int</span> tile_m = tile_id / num_tiles_n;
+        <span class="type">int</span> tile_n = tile_id % num_tiles_n;
+
+        <span class="com">// 计算当前 tile 的起始行列</span>
+        <span class="type">int</span> row_start = tile_m * BM;
+        <span class="type">int</span> col_start = tile_n * BN;
+
+        <span class="com">// ... 标准 GEMM tile 计算 ...</span>
+        <span class="type">float</span> acc[TM][TN] = {};
+        <span class="kw">for</span> (<span class="type">int</span> k = <span class="num">0</span>; k &lt; K; k += BK) {
+            <span class="com">// load A tile to shared</span>
+            <span class="com">// load B tile to shared</span>
+            <span class="com">// __syncthreads();</span>
+            <span class="com">// compute partial products</span>
+        }
+
+        <span class="com">// 写回结果</span>
+        <span class="com">// store acc to C[row_start..., col_start...]</span>
+
+        <span class="com">// 关键：不退出！继续下一个 tile</span>
+        <span class="fn">__syncthreads</span>();
+    }
+}
+
+<span class="com">// Launch: 恰好 num_SMs 个 block（A100 = 108）</span>
+gemm_persistent&lt;&lt;&lt;<span class="num">108</span>, <span class="num">256</span>&gt;&gt;&gt;(A, B, C, M, N, K, total_tiles);
+</pre>
+
+<div class="card">
+<p><span class="highlight">Persistent Kernel 的优势：</span></p>
+<ul class="tight">
+  <li><strong>零 launch 开销：</strong>多个 tile 在同一次 kernel launch 内完成</li>
+  <li><strong>更好的 L2 cache 利用：</strong>block 常驻 SM，相邻 tile 的数据可能还在 L2 中</li>
+  <li><strong>可实现 work-stealing：</strong>用 atomic counter 动态分配 tile</li>
+  <li><strong>适合 batched/grouped GEMM：</strong>多个小 GEMM 在一个 kernel 内完成</li>
+</ul>
+</div>
+
+<div class="callout warn">
+<strong>注意：</strong>Persistent kernel 要求 grid 大小 &le; SM 数量。如果 grid 太大，block 无法全部 resident，会导致死锁或性能下降。实际中一般 launch <code>num_SMs</code> 或 <code>num_SMs &times; occupancy</code> 个 block。
+</div>
+
+<!-- §5 -->
+<h2><span class="step">§5</span>Hopper 的 TMA + Warp Specialization</h2>
+
+<p>H100 (Hopper) 引入了两个革命性硬件特性，配合 persistent kernel 实现极致性能：</p>
+
+<h3>TMA（Tensor Memory Accelerator）</h3>
+
+<div class="card">
+<ul class="tight">
+  <li>专用硬件单元，负责 global memory &harr; shared memory 的 tile 拷贝</li>
+  <li><span class="highlight">不需要线程参与！</span>一条指令即可启动整个 tile 的异步拷贝</li>
+  <li>支持多维 tensor 描述符，自动处理 stride 和 boundary</li>
+  <li>释放了计算线程 — 它们可以专注于 MMA 运算</li>
+</ul>
+</div>
+
+<h3>Warp Specialization（Warp 专业化）</h3>
+
+<pre>
+<span class="com">// 传统模式（所有 warp 做相同工作）：</span>
+<span class="com">//   Warp 0: load → __sync → compute → load → __sync → compute</span>
+<span class="com">//   Warp 1: load → __sync → compute → load → __sync → compute</span>
+<span class="com">//   → 每个 warp 在 load 和 compute 间切换，有 pipeline bubble</span>
+
+<span class="com">// Warp Specialization（角色分化）：</span>
+<span class="com">//   Warp 0 (Producer): load → load → load → load → ...  [TMA]</span>
+<span class="com">//   Warp 1 (Producer): load → load → load → load → ...  [TMA]</span>
+<span class="com">//   Warp 2 (Consumer): compute → compute → compute → ... [Tensor Core]</span>
+<span class="com">//   Warp 3 (Consumer): compute → compute → compute → ... [Tensor Core]</span>
+<span class="com">//   → 真正的流水线！Producer 不停填 shared memory，Consumer 不停消费</span>
+<span class="com">//   → 通过 async barrier 同步，零空闲时间</span>
+</pre>
+
+<div class="card">
+<p><span class="highlight2">通信机制：</span>Producer 和 Consumer 之间通过 Hopper 新增的异步 barrier 同步，配合 TMA 实现零拷贝流水线。</p>
+</div>
+
+<div class="callout">
+这是 Hopper 能达到 <span class="highlight">~990 TFLOPS (FP8)</span> 的关键之一。CUTLASS 3.x 默认在 H100 上使用 TMA + Warp Specialization 模式。相比 Ampere "所有 warp 做同样事情"，利用率显著提升。
+</div>
+
+<!-- §6 -->
+<h2><span class="step">§6</span>何时使用哪种策略</h2>
+
+<div class="card">
+<table>
+<tr><th>场景</th><th>M&times;N tiles 数</th><th>推荐策略</th><th>原因</th></tr>
+<tr><td>大方阵 (4096&sup2;)</td><td>1024+</td><td>Standard GEMM</td><td>tile 数 >> SM 数，并行度足够</td></tr>
+<tr><td>中等 (1024&sup2;)</td><td>64</td><td>Standard + L2 Swizzle</td><td>刚好够 SM，优化缓存命中</td></tr>
+<tr><td>Decode (M=1~8)</td><td>1~32</td><td><span class="highlight">Split-K</span></td><td>SM 不够用，需要 K 维并行</td></tr>
+<tr><td>多个小 GEMM</td><td>varies</td><td><span class="highlight">Persistent Kernel</span></td><td>减少 launch overhead</td></tr>
+<tr><td>大小不一</td><td>varies</td><td><span class="highlight2">Stream-K</span></td><td>自动 load balance</td></tr>
+<tr><td>H100</td><td>any</td><td><span class="highlight2">TMA + Warp Spec</span></td><td>硬件最优路径</td></tr>
+</table>
+</div>
+
+<div class="callout info">
+<strong>经验法则：</strong>如果你的 GEMM 的 output tiles 数 &lt; 2 &times; num_SMs，就应该考虑 Split-K。如果你有很多连续的小 GEMM（如 batched inference），考虑 Persistent Kernel。cuBLAS 和 CUTLASS 会根据 M/N/K 自动选择策略（heuristic）。
+</div>
+
+<!-- §7 -->
+<h2><span class="step">§7</span>对比 Triton</h2>
+
+<div class="card">
+<table>
+<tr><th>CUDA 策略</th><th>Triton 对应</th><th>备注</th></tr>
+<tr><td>Split-K (atomic)</td><td>grid 加第 3 维 + <code>tl.atomic_add</code></td><td>完全支持，T11 已实现</td></tr>
+<tr><td>Split-K (two-pass)</td><td>两个独立 kernel</td><td>可行但需手动管理</td></tr>
+<tr><td>Persistent Kernel</td><td><span class="highlight-warn">不直接支持</span></td><td>需要 CUDA extension</td></tr>
+<tr><td>Stream-K</td><td><span class="highlight-warn">不直接支持</span></td><td>CUTLASS 专属</td></tr>
+<tr><td>TMA</td><td>Triton 3.0+ 部分支持</td><td>experimental API</td></tr>
+<tr><td>Warp Specialization</td><td><span class="highlight-warn">不支持</span></td><td>编程模型不兼容</td></tr>
+</table>
+</div>
+
+<div class="callout info">
+Split-K 在 Triton 里完全能做。但 <span class="highlight-warn">Persistent Kernel / Stream-K / Warp Specialization 是 CUDA-only 领域</span>——这就是为什么极限性能仍然需要 CUDA。Triton 适合快速原型和 90% 场景，最后的 10% 性能需要 CUDA + CUTLASS。
+</div>
+
+<!-- §8 -->
+<h2><span class="step">§8</span>带走</h2>
+
+<div class="card">
+<ol style="margin:0 0 0 18px;padding:0">
+  <li style="margin:8px 0"><strong>Split-K：</strong>K 维度也并行 &rarr; 增加 block 数 &rarr; SM 不空闲。适用于 decode 等小 M 场景。</li>
+  <li style="margin:8px 0"><strong>Persistent Kernel：</strong>block 不退出，循环处理多个 tile &rarr; 省 launch overhead，更好的 L2 cache 利用。</li>
+  <li style="margin:8px 0"><strong>Stream-K：</strong>Persistent + Dynamic Scheduling &rarr; 完美 load balance，CUTLASS 3.x 默认策略。</li>
+  <li style="margin:8px 0"><strong>Warp Specialization (Hopper)：</strong>Producer warps 用 TMA 加载，Consumer warps 用 Tensor Core 计算 &rarr; 真正的 pipeline。</li>
+  <li style="margin:8px 0"><strong>Triton 边界：</strong>Split-K 两边都能做，但 Persistent / Stream-K / Warp-Spec 需要 CUDA — 这是选择 CUDA 的理由。</li>
+</ol>
+</div>
+
+<p class="foot">C12 · Split-K 与 Persistent Kernel — CUDA GEMM 系列 13/15</p>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,368 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>01 · Mini-SGLang 整体架构与核心技术</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.65 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1200px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:30px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:28px}
+h2{font-size:20px;margin:36px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h3{font-size:16px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.grid.cols-2{grid-template-columns:1fr 1fr}
+.grid.cols-3{grid-template-columns:repeat(3,1fr)}
+.grid.cols-4{grid-template-columns:repeat(4,1fr)}
+@media (max-width:900px){.grid.cols-2,.grid.cols-3,.grid.cols-4{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;font-size:12.5px}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.55}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.kbd{background:#1f2430;color:#cbd5e1;border:1px solid #2f3646;border-radius:4px;padding:1px 6px;font-size:12px}
+.badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:#1f2430;color:#cbd5e1;border:1px solid var(--line);margin-right:6px}
+.b-brand{background:rgba(110,231,183,.12);color:var(--brand);border-color:rgba(110,231,183,.3)}
+.b-info{background:rgba(125,211,252,.12);color:var(--brand2);border-color:rgba(125,211,252,.3)}
+.b-warn{background:rgba(251,191,36,.12);color:var(--warn);border-color:rgba(251,191,36,.3)}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mute);font-weight:500;font-size:12.5px}
+.pill{display:inline-block;padding:1px 8px;border-radius:99px;font-size:11px}
+ul.tight{margin:6px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.kvp{color:var(--mute)}
+hr.s{border:none;border-top:1px dashed var(--line);margin:14px 0}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:18px;overflow:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:40px;text-align:center}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+a{color:var(--brand2);text-decoration:none}
+a:hover{text-decoration:underline}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Mini-SGLang 整体架构与核心技术 <span class="tag">01</span></h1>
+<div class="sub">基于 commit <code>20fcd7f</code> · ~5,000 行 Python · 一份 LLM 推理引擎的"透明实现"</div>
+
+<div class="toc">
+  <a href="#overview">总览</a>
+  <a href="#process">进程拓扑</a>
+  <a href="#modules">模块映射</a>
+  <a href="#tech">五大核心技术</a>
+  <a href="#dataflow">数据流</a>
+  <a href="#perf">性能要点</a>
+</div>
+
+<!-- ========== 1. Overview ========== -->
+<h2 id="overview">一、它是什么 / 为什么值得读</h2>
+<div class="card">
+<p>
+Mini-SGLang 是 SGLang 的<strong>"教学版精简实现"</strong>：用约 5000 行 Python 复现一个工业级 LLM 推理引擎。它不是"小玩具"——
+官方 benchmark 在 H200 上跑 Qwen3-32B/TP4 已能与 SGLang 主版本同台对比。它真正的价值在于：
+</p>
+<ul class="tight">
+  <li><span class="badge b-brand">完整</span> 覆盖 Tokenizer / Scheduler / Engine / KVCache / Attention Backend / CUDA Graph / TP / Sampler 全链路</li>
+  <li><span class="badge b-brand">现代</span> Radix Cache、Chunked Prefill、Overlap Scheduling、FlashInfer/FlashAttention/TRTLLM 多后端切换</li>
+  <li><span class="badge b-brand">可读</span> 全量 type annotation、模块边界清晰、几乎没有"为优化牺牲可读性"的代码</li>
+</ul>
+<div class="callout">
+<strong>学习建议：</strong>把 mini-sglang 当成"理解 SGLang/vLLM 的钥匙"。读完这套文档后再去看 SGLang 源码，会发现绝大多数概念都能直接对上号。
+</div>
+</div>
+
+<!-- ========== 2. Process Topology ========== -->
+<h2 id="process">二、进程拓扑（Process Topology）</h2>
+<p>Mini-SGLang 不是单进程 monolith，而是<strong>由 4 类进程通过 ZMQ + NCCL 协作</strong>。这是它最容易被忽略，但最重要的设计决策之一。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1100 480" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#7dd3fc"/>
+    </marker>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#fbbf24"/>
+    </marker>
+  </defs>
+  <!-- User -->
+  <g>
+    <rect x="20" y="200" width="120" height="60" rx="10" fill="#1a1f2b" stroke="#2f3646"/>
+    <text x="80" y="225" text-anchor="middle" fill="#e6e8ee" font-size="14">User / Client</text>
+    <text x="80" y="245" text-anchor="middle" fill="#8b93a7" font-size="11">curl / OpenAI SDK</text>
+  </g>
+  <!-- API Server -->
+  <g>
+    <rect x="190" y="180" width="160" height="100" rx="10" fill="#1f2937" stroke="#3b82f6"/>
+    <text x="270" y="205" text-anchor="middle" fill="#e6e8ee" font-size="13" font-weight="600">API Server</text>
+    <text x="270" y="225" text-anchor="middle" fill="#8b93a7" font-size="11">FastAPI + uvicorn</text>
+    <text x="270" y="245" text-anchor="middle" fill="#8b93a7" font-size="11">/v1/chat/completions</text>
+    <text x="270" y="263" text-anchor="middle" fill="#7dd3fc" font-size="11">FrontendManager</text>
+  </g>
+  <!-- Tokenizer -->
+  <g>
+    <rect x="400" y="60" width="170" height="100" rx="10" fill="#1f2937" stroke="#a78bfa"/>
+    <text x="485" y="85" text-anchor="middle" fill="#e6e8ee" font-size="13" font-weight="600">Tokenizer Worker × N</text>
+    <text x="485" y="105" text-anchor="middle" fill="#8b93a7" font-size="11">tokenize_worker()</text>
+    <text x="485" y="123" text-anchor="middle" fill="#8b93a7" font-size="11">text → input_ids (int32)</text>
+    <text x="485" y="141" text-anchor="middle" fill="#a78bfa" font-size="11">also acts as De-tokenizer</text>
+  </g>
+  <!-- Detokenizer -->
+  <g>
+    <rect x="400" y="300" width="170" height="100" rx="10" fill="#1f2937" stroke="#a78bfa"/>
+    <text x="485" y="325" text-anchor="middle" fill="#e6e8ee" font-size="13" font-weight="600">De-tokenizer × 1</text>
+    <text x="485" y="345" text-anchor="middle" fill="#8b93a7" font-size="11">DetokenizeManager</text>
+    <text x="485" y="363" text-anchor="middle" fill="#8b93a7" font-size="11">token → 增量字符串</text>
+    <text x="485" y="381" text-anchor="middle" fill="#a78bfa" font-size="11">CJK / surrogate 处理</text>
+  </g>
+  <!-- Scheduler Rank0 -->
+  <g>
+    <rect x="640" y="60" width="180" height="170" rx="10" fill="#1f2937" stroke="#6ee7b7"/>
+    <text x="730" y="85" text-anchor="middle" fill="#e6e8ee" font-size="13" font-weight="600">Scheduler · TP Rank 0</text>
+    <text x="730" y="106" text-anchor="middle" fill="#8b93a7" font-size="11">PrefillManager</text>
+    <text x="730" y="124" text-anchor="middle" fill="#8b93a7" font-size="11">DecodeManager</text>
+    <text x="730" y="142" text-anchor="middle" fill="#8b93a7" font-size="11">CacheManager (Radix)</text>
+    <text x="730" y="160" text-anchor="middle" fill="#8b93a7" font-size="11">TableManager</text>
+    <text x="730" y="180" text-anchor="middle" fill="#6ee7b7" font-size="11">↓ owns Engine</text>
+    <text x="730" y="200" text-anchor="middle" fill="#fbbf24" font-size="11">overlap_loop()</text>
+    <text x="730" y="218" text-anchor="middle" fill="#8b93a7" font-size="11">[primary, talks to ZMQ]</text>
+  </g>
+  <!-- Scheduler Rank1..N -->
+  <g>
+    <rect x="850" y="60" width="200" height="170" rx="10" fill="#1f2937" stroke="#6ee7b7" stroke-dasharray="4 3"/>
+    <text x="950" y="85" text-anchor="middle" fill="#e6e8ee" font-size="13" font-weight="600">Scheduler · TP Rank 1..N-1</text>
+    <text x="950" y="106" text-anchor="middle" fill="#8b93a7" font-size="11">同样的 4 个 Manager</text>
+    <text x="950" y="124" text-anchor="middle" fill="#8b93a7" font-size="11">同样的 Engine</text>
+    <text x="950" y="142" text-anchor="middle" fill="#8b93a7" font-size="11">不直接收 ZMQ 消息</text>
+    <text x="950" y="160" text-anchor="middle" fill="#fbbf24" font-size="11">从 rank0 接收广播</text>
+    <text x="950" y="195" text-anchor="middle" fill="#6ee7b7" font-size="11">每 rank 绑定 cuda:i</text>
+    <text x="950" y="215" text-anchor="middle" fill="#8b93a7" font-size="11">[shard 模型权重]</text>
+  </g>
+  <!-- GPU bus -->
+  <g>
+    <rect x="640" y="290" width="410" height="120" rx="10" fill="#0f1a14" stroke="#34d399"/>
+    <text x="845" y="315" text-anchor="middle" fill="#34d399" font-size="13" font-weight="600">NCCL / pynccl (heavy tensor)</text>
+    <text x="845" y="338" text-anchor="middle" fill="#8b93a7" font-size="11">all-reduce / all-gather across TP ranks</text>
+    <text x="845" y="362" text-anchor="middle" fill="#8b93a7" font-size="11">activation, weight shard, attn output</text>
+    <text x="845" y="386" text-anchor="middle" fill="#fbbf24" font-size="11">GLOO process group: control sync (CPU)</text>
+  </g>
+
+  <!-- arrows -->
+  <line x1="140" y1="230" x2="190" y2="230" stroke="#7dd3fc" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="150" y="220" fill="#7dd3fc" font-size="10">HTTP</text>
+
+  <line x1="350" y1="200" x2="400" y2="120" stroke="#7dd3fc" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="360" y="160" fill="#7dd3fc" font-size="10">ZMQ Push</text>
+
+  <line x1="400" y1="350" x2="350" y2="260" stroke="#7dd3fc" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="350" y="320" fill="#7dd3fc" font-size="10">ZMQ Pull</text>
+
+  <line x1="570" y1="110" x2="640" y2="120" stroke="#7dd3fc" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="580" y="100" fill="#7dd3fc" font-size="10">UserMsg</text>
+
+  <line x1="640" y1="170" x2="570" y2="350" stroke="#7dd3fc" stroke-width="2" marker-end="url(#arr)"/>
+  <text x="580" y="265" fill="#7dd3fc" font-size="10">DetokenizeMsg</text>
+
+  <line x1="820" y1="120" x2="850" y2="120" stroke="#fbbf24" stroke-width="2" marker-end="url(#arr2)"/>
+  <text x="822" y="110" fill="#fbbf24" font-size="10">ZMQ Pub/Sub</text>
+
+  <line x1="730" y1="230" x2="730" y2="290" stroke="#34d399" stroke-width="2" marker-end="url(#arr)" />
+  <line x1="950" y1="230" x2="950" y2="290" stroke="#34d399" stroke-width="2" marker-end="url(#arr)" />
+</svg>
+</div>
+
+<div class="grid cols-2" style="margin-top:16px">
+  <div class="card">
+    <h3>4 类进程 · 1 个原则</h3>
+    <p><strong>"Control 走 ZMQ，Tensor 走 NCCL"</strong> —— 所有控制消息（请求、token、abort）通过 ZeroMQ 跨进程，所有重型张量（activation、weight）通过 NCCL/pynccl 跨 GPU。这一点是性能与可扩展性的关键。</p>
+    <ul class="tight">
+      <li><span class="badge b-info">API Server</span> 1 个，FastAPI</li>
+      <li><span class="badge b-info">Tokenizer</span> N 个（默认 1，可调），独立进程避免阻塞</li>
+      <li><span class="badge b-info">De-tokenizer</span> 1 个，复用 tokenize_worker 函数</li>
+      <li><span class="badge b-info">Scheduler</span> = TP size，每 GPU 一个，<u>每个独立进程</u></li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>为什么 Scheduler 一个 GPU 一个进程？</h3>
+    <p>这是为了<strong>规避 Python GIL</strong>。每个 TP rank 独立的 Python 解释器，独立的 CUDA stream，独立的内存。多卡之间通过 NCCL 同步张量、通过 GLOO process group 同步 CPU 状态、通过 ZMQ Pub/Sub 同步控制消息（rank0 广播给其他 rank）。</p>
+    <p class="kvp">入口源码：<code>python/minisgl/server/launch.py</code> 中 <code>_run_scheduler</code> 用 <code>mp.Process</code> spawn 出 N 个调度器进程。</p>
+  </div>
+</div>
+
+<!-- ========== 3. Modules ========== -->
+<h2 id="modules">三、源码模块映射（90 个 .py 文件）</h2>
+<p>把 <code>python/minisgl/</code> 拆开看，每个子包都对应"现代推理引擎"的一个标准组件。建议按下表的"学习顺序"读源码。</p>
+
+<div class="card" style="padding:0">
+<table>
+<thead><tr><th>顺序</th><th>模块</th><th>关键文件</th><th>角色</th><th>类比 SGLang</th></tr></thead>
+<tbody>
+<tr><td>①</td><td><code>core.py</code></td><td>Req · Batch · Context · SamplingParams</td><td>所有数据类的"宪法"</td><td>同名</td></tr>
+<tr><td>②</td><td><code>message/</code></td><td>backend.py / frontend.py / tokenizer.py</td><td>4 类进程之间的消息协议（msgpack）</td><td>类似 io_struct.py</td></tr>
+<tr><td>③</td><td><code>server/</code></td><td>launch.py · api_server.py · args.py</td><td>FastAPI + 多进程编排</td><td>http_server.py</td></tr>
+<tr><td>④</td><td><code>tokenizer/</code></td><td>tokenize.py · detokenize.py · server.py</td><td>独立 worker，HF tokenizer 包装</td><td>tokenizer_manager</td></tr>
+<tr><td>⑤</td><td><code>scheduler/</code></td><td>scheduler.py · prefill.py · decode.py · cache.py · table.py · io.py</td><td><strong>本系列重点</strong>：调度核心</td><td>scheduler.py</td></tr>
+<tr><td>⑥</td><td><code>kvcache/</code></td><td>radix_cache.py · naive_cache.py · mha_pool.py</td><td>KV 物理池 + Radix 前缀树</td><td>radix_attention.py</td></tr>
+<tr><td>⑦</td><td><code>engine/</code></td><td>engine.py · graph.py · sample.py</td><td>单 GPU 计算引擎 + CUDA Graph + 采样</td><td>model_runner.py</td></tr>
+<tr><td>⑧</td><td><code>attention/</code></td><td>fa.py · fi.py · trtllm.py · base.py</td><td>注意力后端（多实现）</td><td>attention/</td></tr>
+<tr><td>⑨</td><td><code>models/</code></td><td>llama.py · qwen3.py · qwen3_moe.py · weight.py</td><td>模型定义 + 权重加载</td><td>models/</td></tr>
+<tr><td>⑩</td><td><code>layers/</code></td><td>linear.py · attention.py · norm.py · rotary.py</td><td>TP-aware 基础层</td><td>layers/</td></tr>
+<tr><td>⑪</td><td><code>distributed/</code></td><td>impl.py · info.py</td><td>TP all-reduce/all-gather 包装</td><td>distributed/</td></tr>
+<tr><td>⑫</td><td><code>kernel/</code></td><td>radix.py · index.py · pynccl.py + triton/</td><td>tvm-ffi 绑定的自研 CUDA/Triton kernel</td><td>sgl-kernel</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ========== 4. Five Tech ========== -->
+<h2 id="tech">四、五大核心技术（含源码锚点）</h2>
+
+<div class="grid cols-2">
+
+<div class="card">
+<h3>① Radix Cache · 前缀复用</h3>
+<p>多请求共享 system prompt / few-shot 上下文时，重复 prefix 的 KV 不重算。实现是一棵<strong>页对齐的 Radix Tree</strong>。</p>
+<p class="kvp">源码：<code>kvcache/radix_cache.py</code></p>
+<ul class="tight">
+  <li><code>RadixTreeNode</code>：每节点存 (key=token_ids, value=KV物理页索引), 带 <code>ref_count</code> 与 <code>timestamp</code></li>
+  <li><code>match_prefix()</code>：树游走 + <code>fast_compare_key</code> CUDA kernel 比对</li>
+  <li><code>insert_prefix()</code>：找到分歧点后挂新节点；<code>split_at()</code> 按页对齐切分</li>
+  <li><code>evict()</code>：用<strong>最小堆</strong>按 timestamp 淘汰 ref_count==0 的叶子节点</li>
+</ul>
+<div class="callout">关键点：<strong>页对齐</strong>（page_size 可配 1/16/32/64）让 KV 复用与 paged attention 兼容；<strong>ref_count</strong> 锁住正在使用的前缀，evict 不会动它。</div>
+</div>
+
+<div class="card">
+<h3>② Chunked Prefill · 长 context 削峰</h3>
+<p>来自 Sarathi-Serve。把长 prompt 切成 chunk，跨多个 batch 喂给 GPU，避免单次 prefill 的峰值显存爆 OOM。</p>
+<p class="kvp">源码：<code>scheduler/prefill.py · ChunkedReq</code></p>
+<pre><code><span class="kw">class</span> <span class="fn">ChunkedReq</span>(Req):
+    <span class="kw">def</span> <span class="fn">append_host</span>(self, next_token):
+        <span class="kw">raise</span> <span class="fn">NotImplementedError</span>(<span class="str">"ChunkedReq should not be sampled"</span>)
+    <span class="kw">@property</span>
+    <span class="kw">def</span> <span class="fn">can_decode</span>(self) -> <span class="kw">bool</span>:
+        <span class="kw">return</span> <span class="kw">False</span>  <span class="com"># 不进 decode 队列</span></code></pre>
+<p>核心是 <code>PrefillAdder</code> 维护 <code>token_budget = max_extend_tokens</code>（默认 8192），每次只装到不超额为止。</p>
+</div>
+
+<div class="card">
+<h3>③ Overlap Scheduling · 隐藏 CPU 开销</h3>
+<p>NanoFlow 提出。<strong>本批 GPU 在算的同时，CPU 已经在为下一批准备调度数据</strong>。</p>
+<p class="kvp">源码：<code>scheduler/scheduler.py · overlap_loop</code></p>
+<ul class="tight">
+  <li>用<u>两条 stream</u>：<code>self.stream</code> 跑调度元数据 H2D，<code>self.engine.stream</code> 跑模型 forward</li>
+  <li><code>overlap_loop(last_data)</code>：调度本批 → 异步 launch forward → 同时处理 last_data 结果</li>
+  <li>关键 stream 同步：<code>self.engine.stream.wait_stream(self.stream)</code></li>
+</ul>
+<p>可用 <span class="kbd">MINISGL_DISABLE_OVERLAP_SCHEDULING=1</span> 关闭做 ablation。</p>
+</div>
+
+<div class="card">
+<h3>④ Tensor Parallelism · 多卡扩展</h3>
+<p>每个 GPU 一个 Scheduler 进程，权重按 column/row parallel sharded。</p>
+<p class="kvp">源码：<code>distributed/impl.py</code> · <code>layers/linear.py</code> · <code>kernel/pynccl.py</code></p>
+<ul class="tight">
+  <li>QKV/MLP up: <code>ColumnParallelLinear</code></li>
+  <li>O/MLP down: <code>RowParallelLinear</code> + all-reduce</li>
+  <li>小张量优先用<strong>自研 pynccl</strong>，避免 NCCL 启动开销</li>
+  <li>CPU 控制流通过 GLOO process group barrier 同步</li>
+</ul>
+</div>
+
+<div class="card">
+<h3>⑤ Optimized Kernels · 多后端切换</h3>
+<p>三套 attention backend，prefill/decode 可独立选择。</p>
+<p class="kvp">源码：<code>attention/{fa,fi,trtllm}.py</code></p>
+<table style="margin-top:6px">
+<tr><th>后端</th><th>优势</th><th>page_size</th></tr>
+<tr><td>FlashAttention 3 (fa)</td><td>Hopper prefill 最快</td><td>任意</td></tr>
+<tr><td>FlashInfer (fi)</td><td>decode 通用最强</td><td>任意</td></tr>
+<tr><td>TensorRT-LLM (trtllm)</td><td>SM100 (Blackwell) 首选</td><td>仅 16/32/64</td></tr>
+</table>
+<p>启动逻辑见 <code>engine.py · _adjust_config</code>：H100 默认 <code>fa,fi</code>，B100 默认 <code>trtllm</code>。</p>
+</div>
+
+<div class="card">
+<h3>⑥ CUDA Graph · 消除 launch 开销</h3>
+<p>decode 阶段每步只生成 1 token，kernel launch overhead 占比极高 → 用 CUDA Graph 录制后 replay。</p>
+<p class="kvp">源码：<code>engine/graph.py</code></p>
+<ul class="tight">
+  <li>预先按 <code>cuda_graph_bs</code> 多个粒度录制（1, 2, 4, 8, ..., max_bs）</li>
+  <li><code>pad_batch()</code> 把当前 batch 用 dummy_req 补齐到最近的录制粒度</li>
+  <li>prefill / 超出最大 bs 时回落到 eager 模式</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ========== 5. Data Flow ========== -->
+<h2 id="dataflow">五、消息系统：四类进程怎么"对话"</h2>
+
+<div class="card">
+<p>所有跨进程消息都在 <code>message/</code>，用 msgpack 编解码，4 个 base 类对应 4 类进程之间的方向：</p>
+<table>
+<thead><tr><th>消息类型</th><th>方向</th><th>典型成员</th></tr></thead>
+<tbody>
+<tr><td><code>BaseTokenizerMsg</code></td><td>API → Tokenizer</td><td><code>TokenizeMsg</code> / <code>AbortMsg</code></td></tr>
+<tr><td><code>BaseBackendMsg</code></td><td>Tokenizer → Scheduler / 其他 rank</td><td><code>UserMsg</code>(已分词) / <code>AbortBackendMsg</code> / <code>BatchBackendMsg</code></td></tr>
+<tr><td><code>BaseTokenizerMsg</code> (反向)</td><td>Scheduler → De-tokenizer</td><td><code>DetokenizeMsg</code> (含 next_token, finished)</td></tr>
+<tr><td><code>BaseFrontendMsg</code></td><td>De-tokenizer → API</td><td><code>UserReply</code> (含增量字符串)</td></tr>
+</tbody>
+</table>
+<hr class="s">
+<p>ZMQ socket 类型映射：</p>
+<ul class="tight">
+  <li><span class="badge b-info">PUSH/PULL</span> 用于 tokenizer↔api、tokenizer↔scheduler 等单生产-单消费链路</li>
+  <li><span class="badge b-info">PUB/SUB</span> 用于 rank0 → 其他 ranks 的广播（多 GPU 时）</li>
+  <li>所有地址用 <code>ipc:///tmp/minisgl_*</code> 同机本地通信，零网络拷贝</li>
+</ul>
+</div>
+
+<!-- ========== 6. Perf summary ========== -->
+<h2 id="perf">六、性能要点速览</h2>
+<div class="grid cols-3">
+  <div class="card">
+    <h3>吞吐</h3>
+    <p>H200 单卡 Qwen3-0.6B / Qwen3-14B 256 并发，与 SGLang 相当。<br>关键：CUDA Graph + Overlap Scheduling 双开。</p>
+  </div>
+  <div class="card">
+    <h3>显存</h3>
+    <p>KV pool 在 <code>Engine._determine_num_pages</code> 里用 <code>memory_ratio</code>（默认 ~0.85）自动切分，剩余给 activation。</p>
+  </div>
+  <div class="card">
+    <h3>延迟</h3>
+    <p>Hopper 上 prefill 用 <code>fa</code>，decode 用 <code>fi</code>，是经验最优组合。decode 同时享受 CUDA Graph 与 overlap。</p>
+  </div>
+</div>
+
+<div class="card">
+<h3>启动一行命令背后发生了什么</h3>
+<pre><code><span class="com"># 用户输入：</span>
+python -m minisgl --model "Qwen/Qwen3-32B" --tp 4
+
+<span class="com"># launch_server() 做的事 (server/launch.py):</span>
+1. parse_args                                  -> ServerArgs
+2. mp.spawn × 4   -> _run_scheduler            -> 4 个 Scheduler 进程，绑定 cuda:0..3
+3. mp.spawn × 1   -> tokenize_worker (detok)   -> 1 个 De-tokenizer
+4. mp.spawn × N   -> tokenize_worker (tok)     -> N 个 Tokenizer
+5. ack_queue 等所有 worker 就绪
+6. uvicorn.run(app)                            -> FastAPI 起在 :1919</code></pre>
+</div>
+
+<div class="foot">
+<strong>下一步 →</strong> <a href="03-scheduler-core.html">02 · 调度层深度学习</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

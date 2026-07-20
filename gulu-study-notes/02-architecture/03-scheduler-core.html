@@ -1,0 +1,609 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>02 · Scheduler 深度学习</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.65 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1200px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:30px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:28px}
+h2{font-size:20px;margin:36px 0 12px;padding-bottom:8px;border-bottom:1px solid var(--line)}
+h3{font-size:16px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:16px 0 6px;color:#fbbf24}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:20px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.grid.cols-2{grid-template-columns:1fr 1fr}
+.grid.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.grid.cols-2,.grid.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace;font-size:12.5px}
+pre{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow:auto;line-height:1.6}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.var{color:#fda4af}
+.kbd{background:#1f2430;color:#cbd5e1;border:1px solid #2f3646;border-radius:4px;padding:1px 6px;font-size:12px}
+.badge{display:inline-block;font-size:11px;padding:2px 8px;border-radius:99px;background:#1f2430;color:#cbd5e1;border:1px solid var(--line);margin-right:6px}
+.b-brand{background:rgba(110,231,183,.12);color:var(--brand);border-color:rgba(110,231,183,.3)}
+.b-info{background:rgba(125,211,252,.12);color:var(--brand2);border-color:rgba(125,211,252,.3)}
+.b-warn{background:rgba(251,191,36,.12);color:var(--warn);border-color:rgba(251,191,36,.3)}
+.b-bad{background:rgba(248,113,113,.12);color:var(--bad);border-color:rgba(248,113,113,.3)}
+table{width:100%;border-collapse:collapse;margin-top:8px}
+th,td{padding:10px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mute);font-weight:500;font-size:12.5px}
+ul.tight{margin:6px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.kvp{color:var(--mute)}
+hr.s{border:none;border-top:1px dashed var(--line);margin:14px 0}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:12px;padding:18px;overflow:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:40px;text-align:center}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:10px 14px;border-radius:0 8px 8px 0;margin:10px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+a{color:var(--brand2);text-decoration:none}
+a:hover{text-decoration:underline}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px}
+.fileref{display:inline-block;background:#1f2430;color:#7dd3fc;border:1px solid var(--line);padding:2px 8px;border-radius:6px;font-family:"SF Mono",monospace;font-size:11.5px;margin:4px 4px 0 0}
+.path-tree{background:var(--code);border:1px solid var(--line);border-radius:8px;padding:14px 18px;font-family:"SF Mono",monospace;font-size:12.5px;line-height:1.8;color:#cbd5e1}
+.path-tree .dim{color:#6b7280}
+.line-no{color:#4b5563;display:inline-block;width:34px;text-align:right;padding-right:8px;user-select:none}
+.hl{background:rgba(251,191,36,.12);display:block;margin:0 -16px;padding:0 16px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Scheduler 深度学习 <span class="tag">02</span></h1>
+<div class="sub">深入 <code>python/minisgl/scheduler/</code> · 7 个文件 · ~700 行 · Mini-SGLang 的"心脏"</div>
+
+<div class="toc">
+  <a href="#why">为什么调度是核心</a>
+  <a href="#layout">模块布局</a>
+  <a href="#datacls">数据类</a>
+  <a href="#mainloop">主循环</a>
+  <a href="#prefill">PrefillManager</a>
+  <a href="#decode">DecodeManager</a>
+  <a href="#cache">CacheManager</a>
+  <a href="#table">TableManager</a>
+  <a href="#io">IOMixin</a>
+  <a href="#study">学习方法</a>
+</div>
+
+<!-- ========== 1 ========== -->
+<h2 id="why">一、为什么调度层是核心</h2>
+<div class="card">
+<p>对于 LLM 推理引擎而言：</p>
+<ul class="tight">
+  <li><strong>Engine</strong>（model forward）是<u>"肌肉"</u>——拼算力</li>
+  <li><strong>Scheduler</strong> 是<u>"大脑"</u>——决定每一步喂给 GPU 什么 batch</li>
+</ul>
+<p>调度的决策直接决定了：<strong>显存利用率</strong>、<strong>throughput</strong>、<strong>tail latency</strong>、<strong>是否 OOM</strong>。这一层的设计差异，是 vLLM、SGLang、TensorRT-LLM 各自风格的根本来源。</p>
+<div class="callout">
+<strong>Mini-SGLang 调度层的"风味"：</strong>
+<ul class="tight">
+  <li>Continuous Batching（混合 prefill + decode 的 inflight batching）</li>
+  <li>Prefill-first 策略（先调度 prefill，再 decode）</li>
+  <li>Chunked Prefill 与 Radix Cache 一等公民</li>
+  <li>Overlap Scheduling 用两个 CUDA stream 隐藏 CPU 开销</li>
+  <li>TP 多卡：rank0 调度 + 广播给其他 rank</li>
+</ul>
+</div>
+</div>
+
+<!-- ========== 2 ========== -->
+<h2 id="layout">二、scheduler/ 子包文件布局</h2>
+<div class="path-tree">
+python/minisgl/scheduler/
+├── <span style="color:#6ee7b7">__init__.py</span>           <span class="dim"># 暴露 Scheduler / SchedulerConfig</span>
+├── <span style="color:#fbbf24">config.py</span>             <span class="dim"># SchedulerConfig（继承 EngineConfig），ZMQ 地址</span>
+├── <span style="color:#fbbf24">scheduler.py</span>          <span class="dim"># ★ Scheduler 主类，run_forever / overlap_loop / normal_loop</span>
+├── <span style="color:#fbbf24">prefill.py</span>            <span class="dim"># PrefillManager + PrefillAdder + ChunkedReq</span>
+├── <span style="color:#fbbf24">decode.py</span>             <span class="dim"># DecodeManager（最小，&lt;50 行）</span>
+├── <span style="color:#fbbf24">cache.py</span>              <span class="dim"># CacheManager: KV 物理页 + Radix Tree 桥接</span>
+├── <span style="color:#fbbf24">table.py</span>              <span class="dim"># TableManager: 槽位号分配（max_running_req 个槽）</span>
+├── <span style="color:#fbbf24">io.py</span>                 <span class="dim"># SchedulerIOMixin: ZMQ 收发 + TP 广播</span>
+└── <span style="color:#fbbf24">utils.py</span>              <span class="dim"># PendingReq / ScheduleResult dataclass</span>
+</div>
+
+<div class="grid cols-3" style="margin-top:16px">
+  <div class="card"><h3>"调度三件套"</h3>
+    <p>核心是这三个 Manager 互相协作：</p>
+    <p><span class="badge b-brand">PrefillManager</span><span class="badge b-brand">DecodeManager</span><span class="badge b-brand">CacheManager</span></p>
+    <p>+ <span class="badge b-info">TableManager</span> 提供"请求槽位号"。</p>
+  </div>
+  <div class="card"><h3>调度层"不做什么"</h3>
+    <p>它<strong>不</strong>跑 model forward，<strong>不</strong>采样，<strong>不</strong>持有权重。它只决定<u>哪些 Req 进哪个 Batch</u>，然后交给 <code>self.engine.forward_batch()</code>。</p>
+  </div>
+  <div class="card"><h3>每个 TP rank 都有一个 Scheduler</h3>
+    <p>它们<strong>调度决策完全相同</strong>（rank0 广播）。但 Engine 持有的权重 shard 不同。</p>
+  </div>
+</div>
+
+<!-- ========== 3 数据类 ========== -->
+<h2 id="datacls">三、四个核心数据类（来自 core.py）</h2>
+
+<div class="card">
+<h3>Req — 请求状态机</h3>
+<p class="kvp">源码：<code>core.py:28-68</code></p>
+<pre><code><span class="line-no">28</span><span class="kw">@dataclass</span>(eq=False)
+<span class="line-no">29</span><span class="kw">class</span> <span class="fn">Req</span>:
+<span class="line-no">30</span>    input_ids: torch.Tensor    <span class="com"># cpu, int32, 当前已知的所有 token</span>
+<span class="line-no">31</span>    table_idx: int             <span class="com"># 在 page_table 中的行号 = 这个请求的"槽"</span>
+<span class="line-no">32</span>    cached_len: int            <span class="com"># Radix 命中 + 已写入 KV 的 token 数</span>
+<span class="line-no">33</span>    output_len: int            <span class="com"># sampling_params.max_tokens</span>
+<span class="line-no">34</span>    uid: int                   <span class="com"># 用户请求唯一 id</span>
+<span class="line-no">35</span>    sampling_params: SamplingParams
+<span class="line-no">36</span>    cache_handle: BaseCacheHandle  <span class="com"># 锁住的 Radix 节点 handle</span>
+<span class="line-no">38</span>    <span class="kw">def</span> <span class="fn">__post_init__</span>(self):
+<span class="line-no">40</span>        self.device_len = len(self.input_ids)
+<span class="line-no">41</span>        self.max_device_len = len(self.input_ids) + self.output_len
+<span class="line-no">52</span>    <span class="kw">def</span> <span class="fn">complete_one</span>(self):     <span class="com"># 完成一步 forward 后</span>
+<span class="line-no">53</span>        self.cached_len = self.device_len
+<span class="line-no">54</span>        self.device_len += 1
+<span class="line-no">59</span>    <span class="kw">@property</span>
+<span class="line-no">60</span>    <span class="kw">def</span> <span class="fn">can_decode</span>(self) -> bool:
+<span class="line-no">61</span>        <span class="kw">return</span> self.remain_len &gt; 0</code></pre>
+
+<div class="callout warn">
+<strong>三个长度的关系（重点！理解错就读不下去）：</strong>
+<table style="margin-top:8px">
+<tr><th>字段</th><th>含义</th><th>变化时机</th></tr>
+<tr><td><code>cached_len</code></td><td>"已经写入 KV cache、attention 可读" 的前缀长度</td><td>每次 forward 完，<code>complete_one</code> 推进</td></tr>
+<tr><td><code>device_len</code></td><td>"当前这一步 forward 想要算到的长度"（即 <code>cached_len + extend_len</code>）</td><td>scheduler 准备 batch 时设定</td></tr>
+<tr><td><code>max_device_len</code></td><td>"理论上最长能涨到这"</td><td>初始化时定，= input + max_tokens</td></tr>
+<tr><td><code>extend_len</code></td><td>= <code>device_len - cached_len</code>，即"本次 forward 新增 token 数"</td><td>derived</td></tr>
+</table>
+</div>
+</div>
+
+<div class="grid cols-2">
+<div class="card">
+<h3>Batch — 一次 forward 的输入</h3>
+<pre><code><span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="fn">Batch</span>:
+    reqs: List[Req]
+    phase: Literal[<span class="str">"prefill"</span>, <span class="str">"decode"</span>]
+    <span class="com"># 由 scheduler 填充：</span>
+    input_ids: torch.Tensor
+    positions: torch.Tensor
+    out_loc: torch.Tensor       <span class="com"># 写回 KV cache 的物理位置</span>
+    padded_reqs: List[Req]      <span class="com"># 含 dummy_req 用于 CUDA Graph 凑数</span>
+    <span class="com"># 由 attention backend 填充：</span>
+    attn_metadata: BaseAttnMetadata</code></pre>
+<p><strong>纯 prefill batch</strong> 或 <strong>纯 decode batch</strong>，二选一。本版 Mini-SGLang 不做 prefill+decode 混合（这点和 SGLang 主线是相同的）。</p>
+</div>
+
+<div class="card">
+<h3>PendingReq — 还没被调度的请求</h3>
+<p class="kvp">源码：<code>scheduler/utils.py</code></p>
+<pre><code><span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="fn">PendingReq</span>:
+    uid: int
+    input_ids: torch.Tensor
+    sampling_params: SamplingParams
+    chunked_req: ChunkedReq | <span class="kw">None</span> = <span class="kw">None</span></code></pre>
+<p>Tokenizer 把 <code>UserMsg</code> 推过来后，第一站就是被包成 <code>PendingReq</code> 进 <code>PrefillManager.pending_list</code>。<code>chunked_req</code> 字段记录"上一个 chunk 用过的 cache handle 和 table_idx"——chunked prefill 的关键。</p>
+</div>
+</div>
+
+<!-- ========== 4 主循环 ========== -->
+<h2 id="mainloop">四、Scheduler 主循环（最关键的 60 行）</h2>
+
+<p>所有调度都从这两个函数发起。先看更复杂的 <code>overlap_loop</code>（默认开启），后面再对比 <code>normal_loop</code>。</p>
+
+<div class="card">
+<p class="kvp">源码：<code>scheduler/scheduler.py:83-131</code></p>
+<pre><code><span class="line-no">83</span><span class="kw">def</span> <span class="fn">overlap_loop</span>(self, last_data: ForwardData | <span class="kw">None</span>) -> ForwardData | <span class="kw">None</span>:
+<span class="line-no">84</span>    <span class="com">"""
+<span class="line-no">85</span>    The main loop of overlapping scheduling and execution.
+<span class="line-no">86</span>    It will overlap the execution of current batch and processing of last batch's results.
+<span class="line-no">87</span>    """</span>
+<span class="line-no">90</span>    blocking = <span class="kw">not</span> (
+<span class="line-no">91</span>        last_data <span class="kw">is not</span> <span class="kw">None</span>          <span class="com"># 有上一批要处理</span>
+<span class="line-no">92</span>        <span class="kw">or</span> self.prefill_manager.runnable  <span class="com"># 有 pending prefill</span>
+<span class="line-no">93</span>        <span class="kw">or</span> self.decode_manager.runnable   <span class="com"># 有正在 decode</span>
+<span class="line-no">94</span>    )
+<span class="line-no">95</span>    <span class="hl"><span class="kw">for</span> msg <span class="kw">in</span> self.<span class="fn">receive_msg</span>(blocking=blocking):  <span class="com"># [I/O] 收 ZMQ</span></span>
+<span class="line-no">96</span>        self.<span class="fn">_process_one_msg</span>(msg)                       <span class="com"># 入队 / abort / exit</span>
+<span class="line-no">98</span>    <span class="hl">forward_input = self.<span class="fn">_schedule_next_batch</span>()           <span class="com"># [SCHED] 选 batch</span></span>
+<span class="line-no">99</span>    ongoing_data = <span class="kw">None</span>
+<span class="line-no">100</span>    <span class="kw">if</span> forward_input <span class="kw">is not</span> <span class="kw">None</span>:
+<span class="line-no">101</span>        <span class="kw">with</span> self.engine_stream_ctx:                <span class="com"># 切到 engine.stream</span>
+<span class="line-no">102</span>            self.engine.stream.<span class="fn">wait_stream</span>(self.stream)
+<span class="line-no">103</span>            <span class="hl">ongoing_data = (forward_input, self.<span class="fn">_forward</span>(forward_input))  <span class="com"># [GPU] 异步</span></span>
+<span class="line-no">105</span>    <span class="hl">self.<span class="fn">_process_last_data</span>(last_data)                  <span class="com"># [CPU] 处理上一批结果</span></span>
+<span class="line-no">106</span>    <span class="kw">return</span> ongoing_data</code></pre>
+
+<div class="callout">
+<strong>读这段代码的关键洞察：</strong> 第 100-103 行 launch 完 forward 是<u>非阻塞</u>的（异步 CUDA kernel），所以紧接着 105 行 <code>_process_last_data</code> 在 CPU 上运行时，<strong>GPU 已经在跑这一批的 forward 了</strong>。下一轮循环再回来时，这一批就变成了 <code>last_data</code>，可以采样、写回 token、回复 detokenizer。这就是 overlap scheduling 的精髓。
+</div>
+</div>
+
+<h3>四个步骤拆解</h3>
+<div class="grid cols-2">
+
+<div class="card">
+<h4>Step 1 · 收消息（_process_one_msg）</h4>
+<p class="kvp">源码：<code>scheduler.py:169-198</code></p>
+<pre><code><span class="kw">def</span> <span class="fn">_process_one_msg</span>(self, msg):
+    <span class="kw">if</span> isinstance(msg, BatchBackendMsg):
+        <span class="kw">for</span> msg <span class="kw">in</span> msg.data:
+            self.<span class="fn">_process_one_msg</span>(msg)        <span class="com"># 递归拆 batch</span>
+    <span class="kw">elif</span> isinstance(msg, ExitMsg):
+        <span class="kw">raise</span> <span class="fn">KeyboardInterrupt</span>
+    <span class="kw">elif</span> isinstance(msg, UserMsg):
+        <span class="com"># 截断到 max_seq_len, 把 UserMsg 包成 PendingReq</span>
+        self.prefill_manager.<span class="fn">add_one_req</span>(msg)
+    <span class="kw">elif</span> isinstance(msg, AbortBackendMsg):
+        req_to_free = self.prefill_manager.<span class="fn">abort_req</span>(msg.uid)
+        req_to_free = req_to_free <span class="kw">or</span> self.decode_manager.<span class="fn">abort_req</span>(msg.uid)
+        <span class="kw">if</span> req_to_free:
+            self.<span class="fn">_free_req_resources</span>(req_to_free)</code></pre>
+<p>注意 abort 会同时尝试在 prefill 和 decode 队列里找——因为请求生命周期跨两个状态机。</p>
+</div>
+
+<div class="card">
+<h4>Step 2 · 选 batch（_schedule_next_batch）</h4>
+<p class="kvp">源码：<code>scheduler.py:219-225</code></p>
+<pre><code><span class="kw">def</span> <span class="fn">_schedule_next_batch</span>(self) -> ForwardInput | <span class="kw">None</span>:
+    <span class="com"># TODO: support other policies: e.g. DECODE first</span>
+    batch = (
+        self.prefill_manager.<span class="fn">schedule_next_batch</span>(self.prefill_budget)
+        <span class="kw">or</span> self.decode_manager.<span class="fn">schedule_next_batch</span>()
+    )
+    <span class="kw">return</span> self.<span class="fn">_prepare_batch</span>(batch) <span class="kw">if</span> batch <span class="kw">else</span> <span class="kw">None</span></code></pre>
+<div class="callout warn">
+<strong>"Prefill-first" 策略</strong>：每次先尝试组一个 prefill batch，组不出来才走 decode。这是经典 SGLang 风格——优先消化新请求，让 TTFT 更稳定。代码里 TODO 说将来可能支持 "decode first"。
+</div>
+</div>
+
+<div class="card">
+<h4>Step 3 · 准备 batch（_prepare_batch）</h4>
+<p class="kvp">源码：<code>scheduler.py:204-217</code></p>
+<pre><code><span class="kw">def</span> <span class="fn">_prepare_batch</span>(self, batch) -> ForwardInput:
+    self.engine.graph_runner.<span class="fn">pad_batch</span>(batch)         <span class="com"># 对齐 CUDA Graph 粒度</span>
+    self.cache_manager.<span class="fn">allocate_paged</span>(batch.reqs)    <span class="com"># 给本次 forward 分配 KV 物理页</span>
+    batch.positions = <span class="fn">_make_positions</span>(batch, self.device)
+    input_mapping = <span class="fn">_make_input_tuple</span>(batch, self.device)
+    write_mapping = <span class="fn">_make_write_tuple</span>(batch, self.device)
+    batch.out_loc = self.engine.page_table[input_mapping]
+    self.engine.attn_backend.<span class="fn">prepare_metadata</span>(batch)
+    <span class="kw">return</span> <span class="fn">ForwardInput</span>(
+        batch=batch,
+        sample_args=self.engine.sampler.<span class="fn">prepare</span>(batch),
+        input_tuple=input_mapping,
+        write_tuple=write_mapping,
+    )</code></pre>
+<p>这里发生了所有"为 GPU 算前最后一公里"的元数据制作：positions tensor、input mapping、写回位置、attention metadata、sampling 参数张量化。</p>
+</div>
+
+<div class="card">
+<h4>Step 4 · 处理上批结果（_process_last_data）</h4>
+<p class="kvp">源码：<code>scheduler.py:138-167</code></p>
+<pre><code><span class="kw">def</span> <span class="fn">_process_last_data</span>(self, last_data):
+    <span class="kw">if</span> last_data <span class="kw">is</span> <span class="kw">None</span>: <span class="kw">return</span>
+    batch, (_, next_tokens_cpu, copy_done) = last_data[0].batch, last_data[1]
+    copy_done.<span class="fn">synchronize</span>()                       <span class="com"># 等 D2H copy 完</span>
+    <span class="kw">with</span> self.cache_manager.<span class="fn">lazy_free_region</span>():    <span class="com"># 批量释放页</span>
+        <span class="kw">for</span> i, req <span class="kw">in</span> enumerate(batch.reqs):
+            <span class="kw">if</span> isinstance(req, ChunkedReq): <span class="kw">continue</span>  <span class="com"># 没采样, 跳过</span>
+            next_token = next_tokens_cpu[i]
+            req.<span class="fn">append_host</span>(next_token.<span class="fn">unsqueeze</span>(0))
+            finished = <span class="kw">not</span> req.can_decode <span class="kw">or</span> next_token == eos
+            reply.<span class="fn">append</span>(<span class="fn">DetokenizeMsg</span>(req.uid, next_token, finished))
+            <span class="kw">if</span> finished:
+                self.decode_manager.<span class="fn">remove_req</span>(req)
+                self.<span class="fn">_free_req_resources</span>(req)
+            <span class="kw">elif</span> batch.is_prefill:
+                self.cache_manager.<span class="fn">cache_req</span>(req, finished=<span class="kw">False</span>)
+    self.<span class="fn">send_result</span>(reply)</code></pre>
+<p>注意 prefill 完成后才 <code>cache_req(finished=False)</code> 把这段插入 Radix Tree——这是后续请求能享受 prefix cache 的关键。</p>
+</div>
+</div>
+
+<h3>overlap_loop vs normal_loop 的差异</h3>
+<div class="card">
+<table>
+<tr><th>维度</th><th>normal_loop</th><th>overlap_loop</th></tr>
+<tr><td>CUDA stream</td><td>仅 engine.stream</td><td>scheduler.stream + engine.stream</td></tr>
+<tr><td>函数签名</td><td><code>() → None</code></td><td><code>(last_data) → next_data</code></td></tr>
+<tr><td>处理顺序</td><td>收 → 调度 → forward → 处理</td><td>收 → 调度 → launch forward → 同时处理 last</td></tr>
+<tr><td>开关</td><td><code>MINISGL_DISABLE_OVERLAP_SCHEDULING=1</code></td><td>默认</td></tr>
+<tr><td>开销隐藏</td><td>无</td><td>CPU 调度延迟被 GPU forward 时间吃掉</td></tr>
+</table>
+</div>
+
+<!-- ========== 5 PrefillManager ========== -->
+<h2 id="prefill">五、PrefillManager · 最复杂的子模块</h2>
+
+<div class="card">
+<p>它要同时回答 4 个问题：</p>
+<ol class="tight">
+  <li>排队的 PendingReq 谁能进本批？（容量约束）</li>
+  <li>这个 req 的前缀有多少能从 Radix Cache 直接复用？</li>
+  <li>剩下要算的 token 装得下吗？要不要切 chunk？</li>
+  <li>chunk 后下一次怎么"接续"——上次的 KV 别再算第二遍。</li>
+</ol>
+</div>
+
+<div class="grid cols-2">
+<div class="card">
+<h3>PrefillAdder · 装箱器</h3>
+<p class="kvp">源码：<code>prefill.py:32-113</code></p>
+<pre><code><span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="fn">PrefillAdder</span>:
+    token_budget: int       <span class="com"># 本批最大 token 数</span>
+    reserved_size: int      <span class="com"># 已为 inflight decode 预留的空间</span>
+    cache_manager: CacheManager
+    table_manager: TableManager
+
+    <span class="kw">def</span> <span class="fn">_try_allocate_one</span>(self, req):
+        <span class="kw">if</span> self.table_manager.available_size == 0:
+            <span class="kw">return</span> <span class="kw">None</span>                  <span class="com"># 槽位耗尽</span>
+        handle = self.cache_manager.<span class="fn">match_req</span>(req).cuda_handle
+        cached_len = handle.cached_len
+        extend_len = req.input_len - cached_len
+        estimated_len = extend_len + req.output_len   <span class="com"># 估计这个 req 总共要占多少</span>
+
+        <span class="kw">if</span> estimated_len + self.reserved_size &gt; self.cache_manager.available_size:
+            <span class="kw">return</span> <span class="kw">None</span>                  <span class="com"># 装不下，放弃</span>
+        self.cache_manager.<span class="fn">lock</span>(handle)        <span class="com"># 锁住命中的前缀</span>
+        <span class="kw">if</span> estimated_len + self.reserved_size &gt; self.cache_manager.available_size:
+            <span class="kw">return</span> self.cache_manager.<span class="fn">unlock</span>(handle)  <span class="com"># 锁后再 check 一次</span>
+
+        table_idx = self.table_manager.<span class="fn">allocate</span>()
+        <span class="kw">if</span> cached_len &gt; 0:                          <span class="com"># 命中部分填回 token_pool / page_table</span>
+            ...
+        <span class="kw">return</span> handle, table_idx</code></pre>
+</div>
+
+<div class="card">
+<h3>chunked vs full prefill</h3>
+<p class="kvp">源码：<code>prefill.py:65-90</code></p>
+<pre><code><span class="kw">def</span> <span class="fn">_add_one_req</span>(self, pending_req, cache_handle, table_idx, cached_len):
+    remain_len = pending_req.input_len - cached_len
+    chunk_size = min(self.token_budget, remain_len)
+    is_chunked = chunk_size &lt; remain_len
+    CLS = ChunkedReq <span class="kw">if</span> is_chunked <span class="kw">else</span> Req
+    self.token_budget -= chunk_size
+    self.reserved_size += remain_len + pending_req.output_len
+    <span class="com"># 把当前 chunk 的 token id 拷到 device token_pool</span>
+    _slice = slice(cached_len, cached_len + chunk_size)
+    device_ids = self.table_manager.token_pool[table_idx, _slice]
+    device_ids.<span class="fn">copy_</span>(pending_req.input_ids[_slice].<span class="fn">pin_memory</span>(), non_blocking=<span class="kw">True</span>)
+    <span class="kw">return</span> CLS(
+        input_ids=pending_req.input_ids[: cached_len + chunk_size],
+        table_idx=table_idx, cached_len=cached_len, ...
+    )</code></pre>
+<div class="callout">
+<strong>ChunkedReq 的特殊性</strong>：它继承 Req 但 <code>can_decode = False</code>，<code>append_host</code> 抛异常——确保它不会被采样、不会进 decode 队列。下一轮 schedule 时会作为"已存在 chunk"继续推进。
+</div>
+</div>
+</div>
+
+<div class="card">
+<h3>schedule_next_batch · 串起 PrefillAdder</h3>
+<p class="kvp">源码：<code>prefill.py:126-151</code></p>
+<pre><code><span class="kw">def</span> <span class="fn">schedule_next_batch</span>(self, prefill_budget):
+    <span class="kw">if</span> len(self.pending_list) == 0:
+        <span class="kw">return</span> <span class="kw">None</span>
+    adder = <span class="fn">PrefillAdder</span>(
+        token_budget=prefill_budget,
+        reserved_size=self.decode_manager.inflight_tokens,  <span class="com"># 给 decode 让位</span>
+        cache_manager=self.cache_manager,
+        table_manager=self.table_manager,
+    )
+    reqs, chunked_list = [], []
+    <span class="kw">for</span> pending_req <span class="kw">in</span> self.pending_list:
+        <span class="kw">if</span> req := adder.<span class="fn">try_add_one</span>(pending_req):
+            pending_req.chunked_req = <span class="kw">None</span>
+            <span class="kw">if</span> isinstance(req, ChunkedReq):
+                pending_req.chunked_req = req           <span class="com"># 记下来下次接续</span>
+                chunked_list.<span class="fn">append</span>(pending_req)
+            reqs.<span class="fn">append</span>(req)
+        <span class="kw">else</span>:
+            <span class="kw">break</span>                                       <span class="com"># 装不下了，停</span>
+    <span class="kw">if</span> len(reqs) == 0: <span class="kw">return</span> <span class="kw">None</span>
+    self.pending_list = chunked_list + self.pending_list[len(reqs):]  <span class="com"># 未完 chunk 排首位</span>
+    <span class="kw">return</span> <span class="fn">Batch</span>(reqs=reqs, phase=<span class="str">"prefill"</span>)</code></pre>
+
+<div class="callout warn">
+<strong>极易看漏的细节：</strong>
+<ul class="tight">
+  <li><code>reserved_size = decode_manager.inflight_tokens</code>——为正在 decode 的请求预留显存，避免 prefill 把 KV 池吃光导致 decode 之后 OOM。</li>
+  <li><code>self.pending_list = chunked_list + self.pending_list[len(reqs):]</code>——已被切 chunk 的请求，下一轮调度优先尝试，避免被新来的请求抢占。</li>
+</ul>
+</div>
+</div>
+
+<!-- ========== 6 DecodeManager ========== -->
+<h2 id="decode">六、DecodeManager · 最简单也最关键</h2>
+<div class="card">
+<p class="kvp">源码：<code>decode.py</code> 全文（仅 40 行）</p>
+<pre><code><span class="kw">@dataclass</span>
+<span class="kw">class</span> <span class="fn">DecodeManager</span>:
+    page_size: int
+    running_reqs: Set[Req] = field(default_factory=set)
+
+    <span class="kw">def</span> <span class="fn">filter_reqs</span>(self, reqs):    <span class="com"># 每次 forward 后被调用</span>
+        self.running_reqs = {r <span class="kw">for</span> r <span class="kw">in</span> self.running_reqs.<span class="fn">union</span>(reqs) <span class="kw">if</span> r.can_decode}
+
+    <span class="kw">@property</span>
+    <span class="kw">def</span> <span class="fn">inflight_tokens</span>(self) -> <span class="kw">int</span>:
+        tokens_reserved = (self.page_size - 1) * len(self.running_reqs)  <span class="com"># 每 req 预留 1 page</span>
+        <span class="kw">return</span> sum(r.remain_len <span class="kw">for</span> r <span class="kw">in</span> self.running_reqs) + tokens_reserved
+
+    <span class="kw">def</span> <span class="fn">schedule_next_batch</span>(self):
+        <span class="kw">if</span> <span class="kw">not</span> self.runnable: <span class="kw">return</span> <span class="kw">None</span>
+        <span class="kw">return</span> <span class="fn">Batch</span>(reqs=list(self.running_reqs), phase=<span class="str">"decode"</span>)</code></pre>
+
+<div class="callout">
+<strong>关键设计：</strong>
+<ul class="tight">
+  <li><code>running_reqs</code> 是 <strong>Set</strong>——同一个 req 不会进两次。</li>
+  <li><code>filter_reqs(reqs)</code> 在每次 forward 之后被 <code>scheduler._forward</code> 调用，<u>把 prefill 完成、可以 decode 的 req 加进来</u>。</li>
+  <li><code>inflight_tokens</code> 是 prefill 的"让位计算"——它估计这些 decode req 还会消耗多少 KV，为它们留好。</li>
+  <li><code>schedule_next_batch</code> 简单粗暴：<u>所有 running_reqs 一锅端</u>，没有 batch size 上限（上限由 cuda_graph_max_bs / max_running_req 间接控制）。</li>
+</ul>
+</div>
+</div>
+
+<!-- ========== 7 CacheManager ========== -->
+<h2 id="cache">七、CacheManager · KV 物理页 + Radix 桥接</h2>
+<div class="card">
+<p>它是<strong>"物理页池 + 前缀树"</strong> 的结合层。Engine 提供 <code>page_table</code> 和 <code>num_pages</code>，CacheManager 负责：</p>
+<ul class="tight">
+  <li>用 <code>free_slots</code>（一个 GPU 上的 int32 tensor）维护空闲页号</li>
+  <li>用 <code>prefix_cache</code>（RadixPrefixCache）维护可复用前缀</li>
+  <li>把"按页分配"和"按 token 写 page_table"两个粒度桥接起来</li>
+</ul>
+<h3>关键函数地图</h3>
+<table>
+<tr><th>函数</th><th>作用</th><th>被谁调用</th></tr>
+<tr><td><code>match_req(req)</code></td><td>用 input_ids[:-1] 走 Radix tree，返回 MatchResult</td><td>PrefillAdder._try_allocate_one</td></tr>
+<tr><td><code>lock / unlock(handle)</code></td><td>调 RadixPrefixCache.lock_handle 加 ref_count</td><td>PrefillAdder · cache_req</td></tr>
+<tr><td><code>allocate_paged(reqs)</code></td><td>批量为 batch 中所有 req 分配它们 forward 缺的页</td><td>scheduler._prepare_batch</td></tr>
+<tr><td><code>cache_req(req, finished)</code></td><td>把 req.cached_len 内的 KV 插入 Radix tree，并释放冗余页</td><td>scheduler._process_last_data</td></tr>
+<tr><td><code>lazy_free_region()</code></td><td>contextmanager: 批量收集要 free 的页，退出时一次性 cat</td><td>scheduler._process_last_data</td></tr>
+<tr><td><code>_allocate(n)</code></td><td>从 free_slots 切，不够就调 evict</td><td>allocate_paged</td></tr>
+</table>
+
+<h3>cache_req 的"五段式注释"——必读</h3>
+<pre><code><span class="com"># ==================================== valid cache region ====================================
+# [0, req.cached_len)                       This part is valid for attention kernel read/write.
+# [0, old_handle.cached_len)                This part is in the prefix cache before prefill.
+# [old_handle.cached_len, req.cached_len)   This part is allocated by cache manager for this request.
+# ================================== allocated cache region ==================================
+# [old_handle.cached_len, cached_len)       This part was not in the prefix cache when prefill,
+#                                           but later cached by other requests.
+#                                           We must free them to avoid memory leak.
+# [cached_len, new_handle.cached_len)       This part is newly inserted into the prefix cache.
+# [new_handle.cached_len, req.cached_len)   This part is tailing part that can not inserted into
+#                                           the prefix cache.
+#                                           We should free it if the request has finished.</span></code></pre>
+<div class="callout warn">这是整个 cache 模块最难的地方——共有 4 个长度量、3 段区间，且涉及"另一个请求并发插入了同样前缀"的竞争场景。<strong>建议把这段注释打印出来贴显示器旁。</strong></div>
+</div>
+
+<!-- ========== 8 Table ========== -->
+<h2 id="table">八、TableManager · 简单但必要</h2>
+<div class="card">
+<p class="kvp">源码：<code>table.py</code> 全文（22 行）</p>
+<pre><code><span class="kw">class</span> <span class="fn">TableManager</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, max_running_reqs, page_table):
+        self._free_slots = list(range(max_running_reqs))
+        self.page_table = page_table       <span class="com"># [max_running_req+1, max_seq_len], int32</span>
+        self.token_pool = torch.<span class="fn">zeros_like</span>(page_table, dtype=torch.int32)
+
+    <span class="kw">def</span> <span class="fn">allocate</span>(self) -> <span class="kw">int</span>:
+        <span class="kw">return</span> self._free_slots.<span class="fn">pop</span>()
+
+    <span class="kw">def</span> <span class="fn">free</span>(self, slot):
+        self._free_slots.<span class="fn">append</span>(slot)</code></pre>
+<p><strong>它是请求 ID（<code>table_idx</code>）的发号器。</strong> max_running_req 决定了系统能同时容纳多少 active req。<code>page_table</code> 和 <code>token_pool</code> 都按 <code>[max_running_req+1, max_seq_len]</code> 形状预分配——多出的 1 行给 dummy_req（CUDA Graph padding 用）。</p>
+</div>
+
+<!-- ========== 9 IO ========== -->
+<h2 id="io">九、SchedulerIOMixin · 单卡/多卡的 ZMQ 抽象</h2>
+<div class="card">
+<p class="kvp">源码：<code>io.py</code></p>
+<p>这一层把"是否 TP > 1"的复杂性封装在一个 mixin 里。Scheduler 只调 <code>self.receive_msg(blocking)</code>，背后实际行为根据 rank 而不同：</p>
+
+<table>
+<tr><th>场景</th><th>receive_msg 实际指向</th><th>行为</th></tr>
+<tr><td>TP=1</td><td><code>_recv_msg_single_rank</code></td><td>直接从 tokenizer 拉</td></tr>
+<tr><td>TP&gt;1, rank==0</td><td><code>_recv_msg_multi_rank0</code></td><td>从 tokenizer 拉 → 用 PUB 广播给其他 rank → broadcast 数量到 GLOO</td></tr>
+<tr><td>TP&gt;1, rank&gt;0</td><td><code>_recv_msg_multi_rank1</code></td><td>从 GLOO 收 broadcast 长度 → 从 SUB 收对应数量消息</td></tr>
+</table>
+
+<div class="callout">
+<strong>为什么要用 GLOO 同步消息数量？</strong> ZMQ PUB/SUB 是"send-and-forget"的，没法保证非 rank0 的 SUB 一定能在某个时刻收到 N 条消息。所以 rank0 先用 GLOO process group broadcast 一个 int32 告诉其他 rank "我刚 PUB 了 N 条"，其他 rank 才知道循环 N 次接收。这是<u>显式 control sync</u>，避免分布式调度状态不一致。
+</div>
+
+<pre><code><span class="kw">def</span> <span class="fn">_recv_msg_multi_rank0</span>(self, blocking):
+    <span class="com"># ... 收 + broadcast PUB ...</span>
+    src_tensor = torch.<span class="fn">tensor</span>(len(pending_raw_msgs))
+    self.tp_cpu_group.<span class="fn">broadcast</span>(src_tensor, root=0).<span class="fn">wait</span>()  <span class="com"># GLOO!</span>
+    <span class="kw">for</span> raw <span class="kw">in</span> pending_raw_msgs:
+        self._send_into_ranks.<span class="fn">put_raw</span>(raw)
+        pending_msgs.<span class="fn">append</span>(self._recv_from_tokenizer.<span class="fn">decode</span>(raw))
+    <span class="kw">return</span> pending_msgs</code></pre>
+</div>
+
+<!-- ========== 10 学习方法 ========== -->
+<h2 id="study">十、推荐学习路径</h2>
+
+<div class="grid cols-2">
+<div class="card">
+<h3>第一遍 · 跑起来 + 打日志</h3>
+<ol class="tight">
+  <li>用 dummy weights 起服务（避免下载模型）：<code>python -m minisgl --model "Qwen/Qwen3-0.6B" --use-dummy-weight</code></li>
+  <li>在 <code>scheduler.py</code> 的 <code>_schedule_next_batch</code> 入口加 <code>print(batch.phase, len(batch.reqs))</code></li>
+  <li><code>curl localhost:1919/generate</code> 发几个请求，观察 prefill→decode 切换</li>
+  <li>关闭 overlap：<code>MINISGL_DISABLE_OVERLAP_SCHEDULING=1</code> 再跑一次，对比日志</li>
+</ol>
+</div>
+
+<div class="card">
+<h3>第二遍 · 顺源码读</h3>
+<p>按这个调用栈顺序读，逻辑是连贯的：</p>
+<div class="fileref">scheduler.run_forever</div>
+<div class="fileref">scheduler.overlap_loop</div>
+<div class="fileref">scheduler.receive_msg (io.py)</div>
+<div class="fileref">scheduler._process_one_msg</div>
+<div class="fileref">prefill.add_one_req</div>
+<div class="fileref">scheduler._schedule_next_batch</div>
+<div class="fileref">prefill.schedule_next_batch</div>
+<div class="fileref">prefill.PrefillAdder.try_add_one</div>
+<div class="fileref">cache.match_req → radix_cache.match_prefix</div>
+<div class="fileref">scheduler._prepare_batch</div>
+<div class="fileref">cache.allocate_paged</div>
+<div class="fileref">scheduler._forward → engine.forward_batch</div>
+<div class="fileref">scheduler._process_last_data</div>
+<div class="fileref">cache.cache_req → radix_cache.insert_prefix</div>
+</div>
+
+<div class="card">
+<h3>第三遍 · 改代码验证理解</h3>
+<ul class="tight">
+  <li>把 prefill-first 改成 decode-first，看 TTFT/throughput 怎么变</li>
+  <li>把 <code>reserved_size</code> 干掉，构造大 prompt 触发 decode 端 OOM</li>
+  <li>把 <code>filter_reqs</code> 移除，看会不会重复调度同一 req</li>
+  <li>注释掉 <code>cache_req</code>，看 Radix Cache 命中率掉到 0 的吞吐损失</li>
+</ul>
+</div>
+
+<div class="card">
+<h3>第四遍 · 对比 SGLang 主线</h3>
+<p>带着 mini-sglang 的脑图回去看：</p>
+<ul class="tight">
+  <li>SGLang 的 <code>SchedulePolicy</code>、<code>RadixCache</code>、<code>PrefillAdder</code> 是同一套</li>
+  <li>SGLang 多了：speculative decoding、grammar、constrained decoding、host KV</li>
+  <li>这些都是 mini-sglang 故意省掉的——读完它你能知道"哪些是必须的、哪些是高级特性"</li>
+</ul>
+</div>
+</div>
+
+<div class="callout">
+<strong>读完后你应该能回答：</strong>
+<ol class="tight">
+  <li>为什么 prefill 和 decode 不能混进同一个 batch？(attn metadata 不兼容)</li>
+  <li>为什么 prefill 之后 cache_req(finished=False) 就行，不需要立刻 evict？(ref_count 锁住了)</li>
+  <li>chunked req 在两次 schedule 之间，物理 KV 占用怎么处理？(table_idx + cache_handle 都保持，下次接续)</li>
+  <li>overlap_loop 比 normal_loop 快多少？(取决于 CPU/GPU 时间比，10%~30% 常见)</li>
+</ol>
+</div>
+
+<div class="foot">
+<strong>← 上一节</strong> <a href="01-system-overview.html">01 · 整体架构</a> &nbsp;·&nbsp;
+<strong>下一节 →</strong> <a href="02-request-lifecycle.html">03 · 单请求全流程时序</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>T1 · 编程模型 · Grid / Program / Block</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+@media (max-width:900px){.cols-2{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+details{margin:12px 0}
+summary{cursor:pointer;color:var(--brand);font-weight:500;padding:6px 0}
+summary:hover{text-decoration:underline}
+details[open] summary{margin-bottom:8px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>T1 · 编程模型 · Grid / Program / Block <span class="tag">Triton 系列 · 2/15</span></h1>
+<p class="sub">理解 Triton 的核心抽象——每个 program 处理一组数据。学完这节，你会清楚地知道 grid 有多少个 program、每个 program 负责数据的哪一块。</p>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<h2><span class="step">§1</span>CUDA vs Triton：两种分工方式</h2>
+
+<div class="card">
+<table>
+<tr><th>概念</th><th>CUDA</th><th>Triton</th></tr>
+<tr><td>并行单位</td><td>Thread（一个线程处理一个元素）</td><td>Program（一个 program 处理一批元素）</td></tr>
+<tr><td>组织方式</td><td>Grid → Block → Thread</td><td>Grid → Program</td></tr>
+<tr><td>坐标获取</td><td><code>blockIdx.x * blockDim.x + threadIdx.x</code></td><td><code>tl.program_id(0)</code></td></tr>
+<tr><td>向量化</td><td>手动（pragma, intrinsics）</td><td>自动（<code>tl.arange</code>）</td></tr>
+<tr><td>Shared Memory</td><td>手动 <code>__shared__</code></td><td>编译器自动管理</td></tr>
+</table>
+</div>
+
+<div class="callout">
+Triton 把 thread + shared memory 的复杂度隐藏了——你只需要告诉它「我这个 program 要处理哪些数据」，剩下的由编译器决定。
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<h2><span class="step">§2</span>三个核心概念</h2>
+
+<h3>Program</h3>
+<p>一个执行单元。它不是 one thread，而是一组线程合作处理一批数据。用 <code>program_id</code> 标识自己的编号。</p>
+
+<h3>Grid</h3>
+<p>所有 programs 的集合。<code>Grid=(N,)</code> 表示有 N 个 programs 并行。</p>
+
+<h3>BLOCK_SIZE</h3>
+<p>每个 program 处理的元素数量。</p>
+
+<div class="card" style="text-align:center">
+<p style="font-size:16px;margin:0 0 8px;color:var(--brand)">核心公式</p>
+<pre style="display:inline-block;text-align:left;margin:0">
+总数据量 = grid_size × BLOCK_SIZE
+grid_size = cdiv(N, BLOCK_SIZE)
+</pre>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<h2><span class="step">§3</span>一维 Grid：向量分工</h2>
+
+<p>假设有一个长度为 16 的向量，<code>BLOCK_SIZE=4</code>，则需要 4 个 programs：</p>
+
+<div class="svg-wrap">
+<svg width="680" height="160" viewBox="0 0 680 160" xmlns="http://www.w3.org/2000/svg">
+  <!-- 背景 -->
+  <rect x="0" y="0" width="680" height="160" fill="none"/>
+
+  <!-- 标题 -->
+  <text x="340" y="20" text-anchor="middle" fill="#8b93a7" font-size="12" font-family="SF Mono, monospace">向量 (N=16, BLOCK_SIZE=4)</text>
+
+  <!-- Program 0: 绿色 #6ee7b7 -->
+  <rect x="40" y="40" width="36" height="36" rx="4" fill="#6ee7b7" opacity="0.25" stroke="#6ee7b7" stroke-width="1.5"/>
+  <rect x="80" y="40" width="36" height="36" rx="4" fill="#6ee7b7" opacity="0.25" stroke="#6ee7b7" stroke-width="1.5"/>
+  <rect x="120" y="40" width="36" height="36" rx="4" fill="#6ee7b7" opacity="0.25" stroke="#6ee7b7" stroke-width="1.5"/>
+  <rect x="160" y="40" width="36" height="36" rx="4" fill="#6ee7b7" opacity="0.25" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="58" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">0</text>
+  <text x="98" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">1</text>
+  <text x="138" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">2</text>
+  <text x="178" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">3</text>
+  <text x="118" y="100" text-anchor="middle" fill="#6ee7b7" font-size="11" font-family="SF Mono, monospace">Program 0</text>
+
+  <!-- Program 1: 蓝色 #7dd3fc -->
+  <rect x="210" y="40" width="36" height="36" rx="4" fill="#7dd3fc" opacity="0.25" stroke="#7dd3fc" stroke-width="1.5"/>
+  <rect x="250" y="40" width="36" height="36" rx="4" fill="#7dd3fc" opacity="0.25" stroke="#7dd3fc" stroke-width="1.5"/>
+  <rect x="290" y="40" width="36" height="36" rx="4" fill="#7dd3fc" opacity="0.25" stroke="#7dd3fc" stroke-width="1.5"/>
+  <rect x="330" y="40" width="36" height="36" rx="4" fill="#7dd3fc" opacity="0.25" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="228" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">4</text>
+  <text x="268" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">5</text>
+  <text x="308" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">6</text>
+  <text x="348" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">7</text>
+  <text x="288" y="100" text-anchor="middle" fill="#7dd3fc" font-size="11" font-family="SF Mono, monospace">Program 1</text>
+
+  <!-- Program 2: 黄色 #fbbf24 -->
+  <rect x="380" y="40" width="36" height="36" rx="4" fill="#fbbf24" opacity="0.25" stroke="#fbbf24" stroke-width="1.5"/>
+  <rect x="420" y="40" width="36" height="36" rx="4" fill="#fbbf24" opacity="0.25" stroke="#fbbf24" stroke-width="1.5"/>
+  <rect x="460" y="40" width="36" height="36" rx="4" fill="#fbbf24" opacity="0.25" stroke="#fbbf24" stroke-width="1.5"/>
+  <rect x="500" y="40" width="36" height="36" rx="4" fill="#fbbf24" opacity="0.25" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="398" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">8</text>
+  <text x="438" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">9</text>
+  <text x="478" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">10</text>
+  <text x="518" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">11</text>
+  <text x="458" y="100" text-anchor="middle" fill="#fbbf24" font-size="11" font-family="SF Mono, monospace">Program 2</text>
+
+  <!-- Program 3: 粉色 #fb7185 -->
+  <rect x="550" y="40" width="36" height="36" rx="4" fill="#fb7185" opacity="0.25" stroke="#fb7185" stroke-width="1.5"/>
+  <rect x="590" y="40" width="36" height="36" rx="4" fill="#fb7185" opacity="0.25" stroke="#fb7185" stroke-width="1.5"/>
+  <rect x="630" y="40" width="36" height="36" rx="4" fill="#fb7185" opacity="0.25" stroke="#fb7185" stroke-width="1.5"/>
+  <rect x="670" y="40" width="36" height="36" rx="4" fill="#fb7185" opacity="0.25" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="568" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">12</text>
+  <text x="608" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">13</text>
+  <text x="648" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">14</text>
+  <text x="688" y="63" text-anchor="middle" fill="#e6e8ee" font-size="13" font-family="SF Mono, monospace">15</text>
+  <text x="628" y="100" text-anchor="middle" fill="#fb7185" font-size="11" font-family="SF Mono, monospace">Program 3</text>
+
+  <!-- 分隔线 -->
+  <line x1="203" y1="35" x2="203" y2="82" stroke="#262b38" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="373" y1="35" x2="373" y2="82" stroke="#262b38" stroke-width="1" stroke-dasharray="3,3"/>
+  <line x1="543" y1="35" x2="543" y2="82" stroke="#262b38" stroke-width="1" stroke-dasharray="3,3"/>
+
+  <!-- 底部标注 -->
+  <text x="340" y="140" text-anchor="middle" fill="#8b93a7" font-size="11">grid_size = cdiv(16, 4) = 4 个 programs</text>
+</svg>
+</div>
+
+<p>每个 program 的计算过程：</p>
+<pre>
+<span class="com"># 每个 program 拿到自己的编号</span>
+pid = tl.<span class="fn">program_id</span>(<span class="num">0</span>)           <span class="com"># 0, 1, 2, 3</span>
+block_start = pid * <span class="num">4</span>             <span class="com"># 0, 4, 8, 12</span>
+offsets = block_start + tl.<span class="fn">arange</span>(<span class="num">0</span>, <span class="num">4</span>)  <span class="com"># [0..3], [4..7], [8..11], [12..15]</span>
+</pre>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<h2><span class="step">§4</span>二维 Grid：矩阵分工</h2>
+
+<p>一个 8×8 矩阵，<code>BLOCK_M=4, BLOCK_N=4</code>，形成 2×2 = 4 个 programs：</p>
+
+<div class="svg-wrap">
+<svg width="520" height="420" viewBox="0 0 520 420" xmlns="http://www.w3.org/2000/svg">
+  <!-- 标题 -->
+  <text x="280" y="20" text-anchor="middle" fill="#8b93a7" font-size="12" font-family="SF Mono, monospace">矩阵 (8×8, BLOCK_M=4, BLOCK_N=4)</text>
+
+  <!-- 行列标注 -->
+  <text x="60" y="45" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">col 0</text>
+  <text x="105" y="45" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">1</text>
+  <text x="140" y="45" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">2</text>
+  <text x="175" y="45" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">3</text>
+  <text x="230" y="45" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">4</text>
+  <text x="265" y="45" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">5</text>
+  <text x="300" y="45" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">6</text>
+  <text x="335" y="45" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">7</text>
+
+  <!-- Program (0,0): 绿色 - 左上 4x4 -->
+  <rect x="50" y="55" width="150" height="140" rx="6" fill="#6ee7b7" opacity="0.15" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="125" y="130" text-anchor="middle" fill="#6ee7b7" font-size="13" font-weight="bold">Program (0,0)</text>
+  <text x="125" y="150" text-anchor="middle" fill="#6ee7b7" font-size="10" font-family="SF Mono, monospace">pid_m=0, pid_n=0</text>
+
+  <!-- Program (0,1): 蓝色 - 右上 4x4 -->
+  <rect x="210" y="55" width="150" height="140" rx="6" fill="#7dd3fc" opacity="0.15" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="285" y="130" text-anchor="middle" fill="#7dd3fc" font-size="13" font-weight="bold">Program (0,1)</text>
+  <text x="285" y="150" text-anchor="middle" fill="#7dd3fc" font-size="10" font-family="SF Mono, monospace">pid_m=0, pid_n=1</text>
+
+  <!-- Program (1,0): 黄色 - 左下 4x4 -->
+  <rect x="50" y="205" width="150" height="140" rx="6" fill="#fbbf24" opacity="0.15" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="125" y="280" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="bold">Program (1,0)</text>
+  <text x="125" y="300" text-anchor="middle" fill="#fbbf24" font-size="10" font-family="SF Mono, monospace">pid_m=1, pid_n=0</text>
+
+  <!-- Program (1,1): 粉色 - 右下 4x4 -->
+  <rect x="210" y="205" width="150" height="140" rx="6" fill="#fb7185" opacity="0.15" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="285" y="280" text-anchor="middle" fill="#fb7185" font-size="13" font-weight="bold">Program (1,1)</text>
+  <text x="285" y="300" text-anchor="middle" fill="#fb7185" font-size="10" font-family="SF Mono, monospace">pid_m=1, pid_n=1</text>
+
+  <!-- 分割线 -->
+  <line x1="205" y1="50" x2="205" y2="350" stroke="#262b38" stroke-width="1" stroke-dasharray="4,3"/>
+  <line x1="45" y1="200" x2="365" y2="200" stroke="#262b38" stroke-width="1" stroke-dasharray="4,3"/>
+
+  <!-- 行标注 -->
+  <text x="30" y="80" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">r0</text>
+  <text x="30" y="115" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">r1</text>
+  <text x="30" y="150" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">r2</text>
+  <text x="30" y="185" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">r3</text>
+  <text x="30" y="230" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">r4</text>
+  <text x="30" y="265" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">r5</text>
+  <text x="30" y="300" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">r6</text>
+  <text x="30" y="335" fill="#8b93a7" font-size="10" font-family="SF Mono, monospace">r7</text>
+
+  <!-- 底部标注 -->
+  <text x="280" y="380" text-anchor="middle" fill="#8b93a7" font-size="11">grid = (cdiv(8,4), cdiv(8,4)) = (2, 2) → 共 4 个 programs</text>
+
+  <!-- 右侧标注 -->
+  <text x="400" y="130" fill="#8b93a7" font-size="11" font-family="SF Mono, monospace">← BLOCK_N=4 →</text>
+  <text x="400" y="280" fill="#8b93a7" font-size="11" font-family="SF Mono, monospace" transform="rotate(90,400,280)">← BLOCK_M=4 →</text>
+</svg>
+</div>
+
+<h3>两种方式定义二维 Grid</h3>
+
+<div class="grid cols-2">
+<div class="card">
+<p style="color:var(--brand);margin:0 0 8px;font-weight:600">方式 1：真正的 2D Grid</p>
+<pre>
+grid = (num_pid_m, num_pid_n)
+
+<span class="com"># kernel 内部</span>
+pid_m = tl.<span class="fn">program_id</span>(<span class="num">0</span>)
+pid_n = tl.<span class="fn">program_id</span>(<span class="num">1</span>)
+</pre>
+</div>
+<div class="card">
+<p style="color:var(--brand2);margin:0 0 8px;font-weight:600">方式 2：1D Grid 映射到 2D</p>
+<pre>
+grid = (num_pid_m * num_pid_n, )
+
+<span class="com"># kernel 内部</span>
+pid = tl.<span class="fn">program_id</span>(<span class="num">0</span>)
+pid_m = pid // num_pid_n
+pid_n = pid % num_pid_n
+</pre>
+</div>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<h2><span class="step">§5</span>cdiv：向上取整</h2>
+
+<div class="card">
+<pre>
+triton.<span class="fn">cdiv</span>(a, b) = (a + b - <span class="num">1</span>) // b
+</pre>
+</div>
+
+<p>例子：<code>N=100, BLOCK=32</code> → <code>cdiv(100, 32) = 4</code> 个 programs</p>
+
+<table>
+<tr><th>Program</th><th>元素范围</th><th>有效元素数</th></tr>
+<tr><td>Program 0</td><td>[0, 31]</td><td>32</td></tr>
+<tr><td>Program 1</td><td>[32, 63]</td><td>32</td></tr>
+<tr><td>Program 2</td><td>[64, 95]</td><td>32</td></tr>
+<tr><td style="color:var(--warn)">Program 3</td><td style="color:var(--warn)">[96, 99]</td><td style="color:var(--warn)">4 ← 只有 4 个有效元素！</td></tr>
+</table>
+
+<div class="callout warn">
+最后一个 program 可能只有部分元素是有效的——这就是为什么后面每个 kernel 都需要 <code>mask</code>。
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<h2><span class="step">§6</span>grid 的三种写法</h2>
+
+<pre>
+<span class="com"># 写法 1：直接元组</span>
+grid = (<span class="num">4</span>,)
+kernel[grid](...)
+
+<span class="com"># 写法 2：用变量计算</span>
+grid = (triton.<span class="fn">cdiv</span>(N, BLOCK_SIZE),)
+kernel[grid](...)
+
+<span class="com"># 写法 3：lambda（推荐）—— 可以访问 meta 里的 constexpr</span>
+grid = <span class="kw">lambda</span> meta: (triton.<span class="fn">cdiv</span>(N, meta[<span class="str">'BLOCK_SIZE'</span>]),)
+kernel[grid](..., BLOCK_SIZE=<span class="num">1024</span>)
+</pre>
+
+<div class="callout info">
+写法 3 最常用：grid 在 kernel 编译后才确定（因为 <code>BLOCK_SIZE</code> 是编译时才知道的 <code>tl.constexpr</code>）。
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<h2><span class="step">§7</span>练习：画出分工图</h2>
+
+<div class="card">
+<p><strong>题目 1：</strong><code>N=10, BLOCK=4</code> → 几个 programs？每个负责什么？最后一个有几个有效元素？</p>
+
+<details>
+<summary>点击查看答案</summary>
+<p><code>cdiv(10, 4) = 3</code> 个 programs</p>
+<ul class="tight">
+<li>Program 0：元素 [0, 1, 2, 3] — 4 个有效</li>
+<li>Program 1：元素 [4, 5, 6, 7] — 4 个有效</li>
+<li>Program 2：元素 [8, 9] — <strong>只有 2 个有效元素</strong>，offsets [10, 11] 需要 mask 屏蔽</li>
+</ul>
+</details>
+</div>
+
+<div class="card">
+<p><strong>题目 2：</strong><code>M=6, N=8, BLOCK_M=4, BLOCK_N=4</code> → 几个 programs？画出每个 program 的区域。</p>
+
+<details>
+<summary>点击查看答案</summary>
+<p><code>grid = (cdiv(6,4), cdiv(8,4)) = (2, 2)</code> → 共 <strong>4 个 programs</strong></p>
+<table>
+<tr><th>Program</th><th>行范围</th><th>列范围</th><th>备注</th></tr>
+<tr><td>(0, 0)</td><td>行 0-3</td><td>列 0-3</td><td>全有效</td></tr>
+<tr><td>(0, 1)</td><td>行 0-3</td><td>列 4-7</td><td>全有效</td></tr>
+<tr><td>(1, 0)</td><td>行 4-5</td><td>列 0-3</td><td>行 mask：只有 2 行有效</td></tr>
+<tr><td>(1, 1)</td><td>行 4-5</td><td>列 4-7</td><td>行 mask：只有 2 行有效</td></tr>
+</table>
+</details>
+</div>
+
+<!-- ════════════════════════════════════════════════════════════════════ -->
+<h2><span class="step">§8</span>带走这三句话</h2>
+
+<div class="card">
+<ol>
+<li style="margin:8px 0"><strong>Triton 的 program ≈ CUDA 的 block</strong>（但你不需要管里面的线程）</li>
+<li style="margin:8px 0"><strong>Grid 就是 programs 的数组</strong>——一维处理向量，二维处理矩阵</li>
+<li style="margin:8px 0"><strong>最后一个 program 处理的数据可能不足 BLOCK_SIZE</strong>——永远记得 mask</li>
+</ol>
+</div>
+
+<p class="foot">T1 · 编程模型 — Triton 系列 2/15</p>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

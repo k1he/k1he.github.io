@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Fused MoE Triton Kernel 深读 — 咕噜的学习笔记</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--purple);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--purple);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--purple)}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--purple);color:var(--purple)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Fused MoE Triton Kernel 深读 <span class="tag">MoE · 05/07</span></h1>
+<p class="sub">逐步拆解 fused_experts_impl 的五步计算流程 — 从 token 排序到 Triton GEMM 调用</p>
+
+<div class="toc">
+  <a href="#entry">入口函数</a>
+  <a href="#align">moe_align_block_size</a>
+  <a href="#gemm1">Up GEMM</a>
+  <a href="#activation">Activation</a>
+  <a href="#gemm2">Down GEMM</a>
+  <a href="#combine">Combine</a>
+  <a href="#chunk">64K Chunk 策略</a>
+  <a href="#tma">TMA 支持</a>
+  <a href="#config">Config 调优</a>
+</div>
+
+<!-- Section: Entry -->
+<h2 id="entry"><span class="step">01</span>fused_experts_impl 入口函数</h2>
+
+<p>这是 Triton MoE kernel 的主入口，位于 <code>fused_moe_triton/fused_moe.py</code>。它编排整个 Expert 计算的五步流程：</p>
+
+<div class="card">
+<pre><code><span class="kw">def</span> <span class="fn">fused_experts_impl</span>(
+    hidden_states: torch.Tensor,      <span class="com"># [num_tokens, hidden_size]</span>
+    w1: torch.Tensor,                 <span class="com"># [num_experts, 2*inter, hidden] (gate_up)</span>
+    w2: torch.Tensor,                 <span class="com"># [num_experts, hidden, inter] (down)</span>
+    topk_weights: torch.Tensor,       <span class="com"># [num_tokens, top_k]</span>
+    topk_ids: torch.Tensor,           <span class="com"># [num_tokens, top_k]</span>
+    activation: <span class="fn">str</span> = <span class="str">"silu"</span>,
+    apply_router_weight_on_input: <span class="fn">bool</span> = <span class="kw">False</span>,
+    use_fp8_w8a8: <span class="fn">bool</span> = <span class="kw">False</span>,
+    w1_scale: Optional[torch.Tensor] = <span class="kw">None</span>,
+    w2_scale: Optional[torch.Tensor] = <span class="kw">None</span>,
+    ...
+):
+    <span class="com"># 五步计算流程在此编排</span>
+    ...</code></pre>
+</div>
+
+<!-- Section: Align -->
+<h2 id="align"><span class="step">02</span>Step 1: moe_align_block_size — Token 排序</h2>
+
+<p>第一步是按 expert 对 token 进行排序和对齐。这是高效并行计算的基础：</p>
+
+<div class="card">
+<pre><code><span class="com"># 输入: topk_ids [num_tokens, top_k] — 每个 token 选了哪些 expert</span>
+<span class="com"># 输出: 按 expert 排好序的 token 索引</span>
+
+sorted_token_ids, expert_ids, num_tokens_post_padded = (
+    <span class="fn">moe_align_block_size</span>(
+        topk_ids=topk_ids,           <span class="com"># [M, top_k]</span>
+        block_size=BLOCK_SIZE_M,     <span class="com"># Triton tile 大小, 通常 64 或 128</span>
+        num_experts=num_experts,
+    )
+)
+<span class="com"># sorted_token_ids: [num_tokens_post_padded]</span>
+<span class="com">#   → 按 expert 分组排列的 token index</span>
+<span class="com">#   → padding 到 BLOCK_SIZE_M 的倍数（用 num_tokens 填充无效位）</span>
+<span class="com"># expert_ids: [num_experts + 1]</span>
+<span class="com">#   → 每个 expert 对应 token 的起始 offset</span>
+<span class="com"># num_tokens_post_padded: scalar</span>
+<span class="com">#   → padding 后的总 token 数</span></code></pre>
+</div>
+
+<div class="callout">
+<strong>为什么需要 align？</strong> Triton kernel 以 tile (BLOCK_SIZE_M × BLOCK_SIZE_K) 为单位处理。如果某个 expert 分配到的 token 数不是 BLOCK_SIZE_M 的倍数，就需要 padding。排序后，同一个 expert 的 token 在内存中连续，避免了随机访问。
+</div>
+
+<!-- Section: GEMM1 -->
+<h2 id="gemm1"><span class="step">03</span>Step 2: invoke_fused_moe_kernel (Up GEMM)</h2>
+
+<p>第一个 GEMM：<code>hidden_states @ w1.T</code>，得到 gate_up 的中间结果。</p>
+
+<div class="card">
+<pre><code><span class="com"># 分配中间缓存</span>
+intermediate_cache1 = torch.empty(
+    (num_tokens * top_k, <span class="num">2</span> * intermediate_size),
+    dtype=hidden_states.dtype,
+    device=hidden_states.device,
+)
+
+<span class="com"># 调用 Triton kernel</span>
+<span class="fn">invoke_fused_moe_kernel</span>(
+    A=hidden_states,              <span class="com"># [num_tokens, hidden_size]</span>
+    B=w1,                         <span class="com"># [num_experts, 2*inter, hidden]</span>
+    C=intermediate_cache1,        <span class="com"># [num_tokens*top_k, 2*inter]</span>
+    A_scale=a1_scale,
+    B_scale=w1_scale,
+    sorted_token_ids=sorted_token_ids,
+    expert_ids=expert_ids,
+    num_tokens_post_padded=num_tokens_post_padded,
+    topk_weights=topk_weights,
+    <span class="com"># 如果 apply_router_weight_on_input=True，在这里乘权重</span>
+    mul_routed_weight=apply_router_weight_on_input,
+    top_k=top_k,
+    config=config,                <span class="com"># Triton tuning 参数</span>
+    compute_type=compute_type,
+    use_fp8_w8a8=use_fp8_w8a8,
+)</code></pre>
+</div>
+
+<div class="card">
+<h3>Triton Kernel 内部逻辑 (简化)</h3>
+<pre><code><span class="com"># fused_moe_kernel 的核心循环</span>
+@triton.jit
+<span class="kw">def</span> <span class="fn">fused_moe_kernel</span>(
+    A_ptr, B_ptr, C_ptr,
+    sorted_token_ids_ptr, expert_ids_ptr,
+    ...
+):
+    <span class="com"># 确定当前 tile 处理哪个 expert 的哪些 token</span>
+    pid_m = tl.program_id(<span class="num">0</span>)
+    pid_n = tl.program_id(<span class="num">1</span>)
+
+    <span class="com"># 从 sorted_token_ids 读取实际 token index</span>
+    token_ids = tl.load(sorted_token_ids_ptr + offs_m)
+
+    <span class="com"># 从 expert_ids 确定当前 expert 的权重偏移</span>
+    expert_id = tl.load(expert_ids_ptr + pid_m // blocks_per_expert)
+
+    <span class="com"># A[token_ids] @ B[expert_id] → C[pid_m, pid_n]</span>
+    <span class="com"># 标准 tiled GEMM 循环</span>
+    <span class="kw">for</span> k <span class="kw">in</span> range(<span class="num">0</span>, K, BLOCK_SIZE_K):
+        a = tl.load(A_ptr + token_ids[:, <span class="kw">None</span>] * K + k_range)
+        b = tl.load(B_ptr + expert_id * N * K + ...)
+        acc += tl.dot(a, b)
+
+    <span class="com"># 写回结果</span>
+    tl.store(C_ptr + ..., acc)</code></pre>
+</div>
+
+<!-- Section: Activation -->
+<h2 id="activation"><span class="step">04</span>Step 3: Activation — SiLU-and-Mul</h2>
+
+<p>对 Up GEMM 的输出做激活运算：</p>
+
+<div class="card">
+<pre><code><span class="com"># intermediate_cache1 shape: [num_tokens*top_k, 2*intermediate_size]</span>
+<span class="com"># 前半部分是 gate_proj 结果，后半部分是 up_proj 结果</span>
+
+<span class="com"># SiLU-and-Mul: silu(gate) * up</span>
+intermediate_cache2 = torch.empty(
+    (num_tokens * top_k, intermediate_size), ...
+)
+
+<span class="com"># 激活操作</span>
+<span class="kw">if</span> activation == <span class="str">"silu"</span>:
+    <span class="fn">silu_and_mul</span>(intermediate_cache1, intermediate_cache2)
+    <span class="com"># 等价于: cache2 = silu(cache1[:, :inter]) * cache1[:, inter:]</span>
+<span class="kw">elif</span> activation == <span class="str">"gelu"</span>:
+    <span class="fn">gelu_and_mul</span>(intermediate_cache1, intermediate_cache2)
+
+<span class="com"># 可选: Clamp 防止溢出 (用于 FP8 场景)</span>
+<span class="kw">if</span> gemm1_limit <span class="kw">is not None</span>:
+    intermediate_cache2.clamp_(min=-gemm1_limit, max=gemm1_limit)</code></pre>
+</div>
+
+<div class="callout warn">
+<strong>gemm1_limit 的作用：</strong> 在 FP8 量化场景下，中间激活值可能超出 FP8 表示范围。<code>gemm1_limit</code> 将值截断到安全区间，防止第二个 GEMM 溢出。典型值为 <code>torch.finfo(torch.float8_e4m3fn).max ≈ 448</code>。
+</div>
+
+<!-- Section: GEMM2 -->
+<h2 id="gemm2"><span class="step">05</span>Step 4: invoke_fused_moe_kernel (Down GEMM)</h2>
+
+<p>第二个 GEMM：<code>activated_output @ w2.T</code>，将中间结果投影回 hidden_size：</p>
+
+<div class="card">
+<pre><code><span class="com"># Down GEMM</span>
+<span class="fn">invoke_fused_moe_kernel</span>(
+    A=intermediate_cache2,        <span class="com"># [num_tokens*top_k, intermediate_size]</span>
+    B=w2,                         <span class="com"># [num_experts, hidden_size, intermediate_size]</span>
+    C=intermediate_cache3,        <span class="com"># [num_tokens*top_k, hidden_size]</span>
+    A_scale=a2_scale,
+    B_scale=w2_scale,
+    sorted_token_ids=sorted_token_ids,
+    expert_ids=expert_ids,
+    num_tokens_post_padded=num_tokens_post_padded,
+    topk_weights=topk_weights,
+    <span class="com"># 如果权重没在 GEMM1 应用，在这里乘</span>
+    mul_routed_weight=(<span class="kw">not</span> apply_router_weight_on_input),
+    top_k=top_k,
+    config=config,
+    compute_type=compute_type,
+    use_fp8_w8a8=use_fp8_w8a8,
+    <span class="com"># SM90+ 可用 TMA 加速 (Hopper)</span>
+    use_tma=use_tma,
+)</code></pre>
+</div>
+
+<!-- Section: Combine -->
+<h2 id="combine"><span class="step">06</span>Step 5: Combine — 多 Expert 加权求和</h2>
+
+<p>最后一步将同一个 token 被不同 expert 处理的结果合并：</p>
+
+<div class="card">
+<pre><code><span class="com"># intermediate_cache3: [num_tokens * top_k, hidden_size]</span>
+<span class="com"># 需要按 token 聚合 top_k 个 expert 的输出</span>
+
+<span class="com"># 方式 1: moe_sum_reduce (自定义 CUDA kernel)</span>
+<span class="kw">if</span> use_moe_sum_reduce:
+    output = <span class="fn">moe_sum_reduce</span>(
+        intermediate_cache3.view(num_tokens, top_k, hidden_size)
+    )
+    <span class="com"># 直接在 reduce kernel 中完成 topk_weights 加权</span>
+
+<span class="com"># 方式 2: 手动 reshape + 加权求和</span>
+<span class="kw">else</span>:
+    output = intermediate_cache3.view(num_tokens, top_k, hidden_size)
+    <span class="com"># 如果权重已经在 GEMM 中乘过了，直接 sum</span>
+    <span class="kw">if</span> apply_router_weight_on_input:
+        output = output.sum(dim=<span class="num">1</span>)
+    <span class="kw">else</span>:
+        <span class="com"># topk_weights: [num_tokens, top_k, 1]</span>
+        output = (output * topk_weights.unsqueeze(-<span class="num">1</span>)).sum(dim=<span class="num">1</span>)</code></pre>
+</div>
+
+<!-- Section: Chunk -->
+<h2 id="chunk"><span class="step">07</span>64K CHUNK_SIZE 策略</h2>
+
+<p>当 token 数量很大时（如长 prefill），中间缓存的内存占用可能爆炸。SGLang 使用分块策略：</p>
+
+<div class="card">
+<pre><code>CHUNK_SIZE = <span class="num">65536</span>  <span class="com"># 64K tokens per chunk</span>
+
+<span class="kw">if</span> num_tokens > CHUNK_SIZE:
+    <span class="com"># 分块处理，避免 OOM</span>
+    <span class="kw">for</span> chunk_start <span class="kw">in</span> range(<span class="num">0</span>, num_tokens, CHUNK_SIZE):
+        chunk_end = min(chunk_start + CHUNK_SIZE, num_tokens)
+        chunk_hidden = hidden_states[chunk_start:chunk_end]
+        chunk_topk_ids = topk_ids[chunk_start:chunk_end]
+        chunk_topk_weights = topk_weights[chunk_start:chunk_end]
+
+        <span class="com"># 对 chunk 执行完整的 5 步流程</span>
+        chunk_output = <span class="fn">fused_experts_impl</span>(
+            chunk_hidden, w1, w2,
+            chunk_topk_weights, chunk_topk_ids, ...
+        )
+        output[chunk_start:chunk_end] = chunk_output</code></pre>
+</div>
+
+<div class="callout info">
+<strong>内存分析：</strong> 对于 <code>intermediate_size=14336</code>，<code>top_k=8</code>，<code>dtype=bf16</code>：每 token 中间缓存 ≈ <code>8 × 14336 × 2 × 2 bytes ≈ 448 KB</code>。64K tokens 约需 28 GB。分块后峰值内存可控。
+</div>
+
+<!-- Section: TMA -->
+<h2 id="tma"><span class="step">08</span>TMA 支持 (SM90+ / Hopper)</h2>
+
+<p>在 Hopper (H100/H200) 架构上，第二个 GEMM 可使用 TMA (Tensor Memory Accelerator) 加速全局内存加载：</p>
+
+<div class="card">
+<pre><code><span class="com"># 判断是否启用 TMA</span>
+use_tma = (
+    torch.cuda.get_device_capability()[<span class="num">0</span>] >= <span class="num">9</span>  <span class="com"># SM90+</span>
+    <span class="kw">and not</span> use_fp8_w8a8                       <span class="com"># TMA kernel 暂不支持 FP8</span>
+    <span class="kw">and</span> SGLANG_USE_TMA                          <span class="com"># 环境变量控制</span>
+)
+
+<span class="com"># TMA kernel 使用描述符 (descriptor) 代替指针算术</span>
+<span class="com"># 优势: 硬件预取 + 减少地址计算开销</span>
+<span class="kw">if</span> use_tma:
+    <span class="fn">invoke_fused_moe_kernel_tma</span>(
+        A=intermediate_cache2,
+        B=w2,                     <span class="com"># 需要特定的内存布局</span>
+        C=intermediate_cache3,
+        ...
+    )</code></pre>
+</div>
+
+<!-- Section: Config -->
+<h2 id="config"><span class="step">09</span>Triton Config 调优参数</h2>
+
+<p>Triton kernel 性能高度依赖 tile 配置。SGLang 通过 autotuning 搜索最优配置：</p>
+
+<div class="card">
+<h3>核心配置参数</h3>
+<table>
+<thead>
+<tr><th>参数</th><th>含义</th><th>典型值</th><th>影响</th></tr>
+</thead>
+<tbody>
+<tr><td><code>BLOCK_SIZE_M</code></td><td>M 维度 tile 大小</td><td>64, 128</td><td>影响 token 分组粒度</td></tr>
+<tr><td><code>BLOCK_SIZE_N</code></td><td>N 维度 tile 大小</td><td>64, 128, 256</td><td>影响输出并行度</td></tr>
+<tr><td><code>BLOCK_SIZE_K</code></td><td>K 维度 tile 大小</td><td>32, 64</td><td>影响内积累积次数</td></tr>
+<tr><td><code>GROUP_SIZE_M</code></td><td>M 维度 swizzle 组</td><td>1, 4, 8</td><td>影响 L2 Cache 命中率</td></tr>
+<tr><td><code>num_warps</code></td><td>每 block warp 数</td><td>4, 8</td><td>影响占用率和寄存器压力</td></tr>
+<tr><td><code>num_stages</code></td><td>流水线 stage 数</td><td>2, 3, 4</td><td>影响内存隐藏延迟</td></tr>
+</tbody>
+</table>
+</div>
+
+<div class="card">
+<h3>Autotuning 流程</h3>
+<pre><code><span class="com"># 搜索最优配置</span>
+<span class="kw">def</span> <span class="fn">try_get_optimal_moe_config</span>(
+    M: <span class="fn">int</span>,        <span class="com"># token 数</span>
+    N: <span class="fn">int</span>,        <span class="com"># 输出维度</span>
+    K: <span class="fn">int</span>,        <span class="com"># 输入维度</span>
+    topk: <span class="fn">int</span>,
+    dtype: <span class="fn">str</span>,
+    is_marlin: <span class="fn">bool</span>,
+):
+    <span class="com"># 先查预计算的配置文件 (per-GPU cached)</span>
+    config = <span class="fn">load_cached_config</span>(gpu_name, M, N, K, dtype)
+    <span class="kw">if</span> config:
+        <span class="kw">return</span> config
+
+    <span class="com"># 未命中则使用默认配置</span>
+    <span class="kw">return</span> {
+        <span class="str">"BLOCK_SIZE_M"</span>: <span class="num">128</span>,
+        <span class="str">"BLOCK_SIZE_N"</span>: <span class="num">128</span>,
+        <span class="str">"BLOCK_SIZE_K"</span>: <span class="num">64</span>,
+        <span class="str">"GROUP_SIZE_M"</span>: <span class="num">8</span>,
+        <span class="str">"num_warps"</span>: <span class="num">8</span>,
+        <span class="str">"num_stages"</span>: <span class="num">3</span>,
+    }</code></pre>
+</div>
+
+<div class="callout warn">
+<strong>调优经验：</strong> 对于 decode（M 很小，1~8），应使用较小的 <code>BLOCK_SIZE_M=64</code>；对于 prefill（M 很大），<code>BLOCK_SIZE_M=128</code> 通常更优。不同 GPU（A100 vs H100）的最优配置差异显著，务必使用对应 GPU 的配置文件。
+</div>
+
+<!-- Navigation -->
+<div class="nav">
+  <a href="04-fused-moe-layer.html">← 04 FusedMoE Layer</a>
+  <a href="06-expert-parallelism.html">06 Expert Parallelism →</a>
+</div>
+
+<p class="foot">咕噜的学习笔记 · MoE Deep Dive · Page 05/07</p>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,501 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Trace 阅读与瓶颈排查 · 从 nsys-rep 中读出性能问题</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+@media (max-width:900px){.cols-2{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-left-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.pattern-box{border:2px solid var(--line);border-radius:12px;padding:18px;margin:12px 0}
+.pattern-box h4{margin-top:0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Trace 阅读与瓶颈排查 <span class="tag">Nsight Systems · 03/04</span></h1>
+<div class="sub">拿到 nsys-rep 之后怎么"读"？本章教你识别 6 种典型瓶颈模式——GPU 空闲、CPU 瓶颈、隐式同步、数据搬运与通信、CUDA Stream 竞争、内存瓶颈。</div>
+
+<div class="toc">
+  <a href="#method">§0 排查方法论</a>
+  <a href="#pattern1">§1 GPU 空闲</a>
+  <a href="#pattern2">§2 CPU 瓶颈</a>
+  <a href="#pattern3">§3 隐式同步</a>
+  <a href="#pattern4">§4 数据搬运与通信</a>
+  <a href="#pattern5">§5 CUDA Stream 竞争</a>
+  <a href="#pattern6">§6 内存瓶颈</a>
+  <a href="#decision">§7 决策树</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="method"><span class="step">§0</span>排查方法论 · 三步定位</h2>
+
+<div class="card">
+<div class="svg-wrap">
+<svg viewBox="0 0 900 200" width="900">
+  <rect x="30" y="60" width="250" height="80" rx="12" fill="rgba(110,231,183,.1)" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="155" y="90" text-anchor="middle" fill="#6ee7b7" font-weight="700" font-size="14">Step 1: 看大盘</text>
+  <text x="155" y="115" text-anchor="middle" fill="#8b93a7" font-size="11">GPU SM Utilization%</text>
+  <text x="155" y="132" text-anchor="middle" fill="#8b93a7" font-size="11">CUDA HW 行空白比例</text>
+
+  <path d="M280 100 L320 100" stroke="#6ee7b7" stroke-width="2" marker-end="url(#arr3)"/>
+
+  <rect x="320" y="60" width="250" height="80" rx="12" fill="rgba(125,211,252,.1)" stroke="#7dd3fc" stroke-width="2"/>
+  <text x="445" y="90" text-anchor="middle" fill="#7dd3fc" font-weight="700" font-size="14">Step 2: 看时间线</text>
+  <text x="445" y="115" text-anchor="middle" fill="#8b93a7" font-size="11">CPU 行 vs CUDA HW 行</text>
+  <text x="445" y="132" text-anchor="middle" fill="#8b93a7" font-size="11">找 gap 在哪一行</text>
+
+  <path d="M570 100 L610 100" stroke="#7dd3fc" stroke-width="2" marker-end="url(#arr3)"/>
+
+  <rect x="610" y="60" width="250" height="80" rx="12" fill="rgba(251,191,36,.1)" stroke="#fbbf24" stroke-width="2"/>
+  <text x="735" y="90" text-anchor="middle" fill="#fbbf24" font-weight="700" font-size="14">Step 3: 看单 kernel</text>
+  <text x="735" y="115" text-anchor="middle" fill="#8b93a7" font-size="11">哪个 kernel 占时间最多</text>
+  <text x="735" y="132" text-anchor="middle" fill="#8b93a7" font-size="11">它的瓶颈类型是什么</text>
+
+  <defs><marker id="arr3" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#8b93a7"/></marker></defs>
+
+  <text x="450" y="180" text-anchor="middle" fill="#c4b5fd" font-size="12">从宏观到微观 · 先判断"哪一类问题"，再深入"哪个具体 kernel"</text>
+</svg>
+</div>
+
+<h3>Quick Check：命令行快速判断</h3>
+<pre><span class="com"># 不开 GUI，快速看 GPU kernel 统计</span>
+nsys stats --report=gpkern sglang_trace.nsys-rep
+
+<span class="com"># 看 CUDA API 统计（找同步调用）</span>
+nsys stats --report=cudaapi sglang_trace.nsys-rep
+
+<span class="com"># 看 NCCL 通信统计</span>
+nsys stats --report=nccl sglang_trace.nsys-rep
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="pattern1"><span class="step">§1</span>模式一：GPU 空闲 · "GPU 大部分时间在发呆"</h2>
+
+<div class="card">
+<div class="pattern-box" style="border-color:var(--bad)">
+<h4 style="color:var(--bad)">nsys 中的症状</h4>
+<ul class="tight">
+  <li>CUDA HW 行有大段<b>空白</b>——GPU 没在执行任何 kernel</li>
+  <li>GPU SM Utilization < 50%（在 nvml 行看）</li>
+  <li>总 wall time 远大于 GPU kernel 总时间</li>
+</ul>
+</div>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 160" width="900">
+  <text x="10" y="45" fill="#7dd3fc" font-size="11" font-weight="600">CPU 线程</text>
+  <rect x="70" y="30" width="120" height="25" rx="4" fill="#7dd3fc" opacity=".6"/>
+  <text x="80" y="47" fill="#0b0d12" font-size="9">data load</text>
+  <rect x="200" y="30" width="200" height="25" rx="4" fill="#7dd3fc" opacity=".4"/>
+  <text x="210" y="47" fill="#0b0d12" font-size="9">transform (CPU-heavy)</text>
+  <rect x="420" y="30" width="60" height="25" rx="4" fill="#7dd3fc" opacity=".6"/>
+  <text x="425" y="47" fill="#0b0d12" font-size="9">launch</text>
+  <rect x="550" y="30" width="180" height="25" rx="4" fill="#7dd3fc" opacity=".4"/>
+  <text x="560" y="47" fill="#0b0d12" font-size="9">data load (next batch)</text>
+
+  <text x="10" y="100" fill="#6ee7b7" font-size="11" font-weight="600">CUDA HW</text>
+  <rect x="70" y="85" width="780" height="25" rx="4" fill="#1a1f2b" stroke="#262b38"/>
+  <rect x="440" y="85" width="100" height="25" rx="4" fill="#6ee7b7" opacity=".6"/>
+  <text x="455" y="102" fill="#0b0d12" font-size="9">kernel</text>
+
+  <rect x="70" y="85" width="360" height="25" rx="4" fill="rgba(248,113,113,.1)" stroke="#f87171" stroke-dasharray="4 2"/>
+  <text x="250" y="130" text-anchor="middle" fill="#f87171" font-size="11">GPU IDLE — 在等 CPU 准备数据</text>
+  <rect x="550" y="85" width="300" height="25" rx="4" fill="rgba(248,113,113,.1)" stroke="#f87171" stroke-dasharray="4 2"/>
+  <text x="700" y="130" text-anchor="middle" fill="#f87171" font-size="11">GPU IDLE — 又在等</text>
+</svg>
+</div>
+
+<h3>常见原因与修复</h3>
+<table>
+<thead><tr><th>原因</th><th>nsys 中的验证</th><th>修复策略</th></tr></thead>
+<tbody>
+<tr><td>DataLoader 太慢</td><td>CPU 线程行中 <code>pthread_mutex_lock</code> 等待长</td><td><code>num_workers=8, pin_memory=True</code></td></tr>
+<tr><td>CPU 预处理重</td><td>CPU 行密集，CUDA HW 行空白</td><td>把 transform 移到 GPU 或离线化</td></tr>
+<tr><td>模型太小 / batch 太小</td><td>kernel 很快结束，但 launch 间隙大</td><td>增大 batch size / CUDA Graph</td></tr>
+<tr><td>频繁 CPU-GPU 同步</td><td>CUDA API 行出现 <code>cudaStreamSynchronize</code></td><td>见 §3 隐式同步</td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+<b>黄金法则</b>：GPU idle 意味着你的 GPU 算力<b>白白浪费</b>。解决思路永远是：让 GPU 有事做——要么让 CPU 更快喂数据，要么让 GPU 的 kernel 更密集。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="pattern2"><span class="step">§2</span>模式二：CPU 瓶颈 · "CPU 在拼命干，GPU 在等"</h2>
+
+<div class="card">
+<div class="pattern-box" style="border-color:var(--brand2)">
+<h4 style="color:var(--brand2)">nsys 中的症状</h4>
+<ul class="tight">
+  <li>CPU 线程行<b>密密麻麻</b>，CUDA HW 行<b>稀疏</b></li>
+  <li>OS Runtime 行有大量 <code>malloc</code> / <code>free</code> / <code>pthread</code> 调用</li>
+  <li>GPU SM Utilization < 40%</li>
+</ul>
+</div>
+
+<h3>典型场景：Python GIL 限制</h3>
+<pre><span class="com"># 单线程 Python 推理：GIL 导致 CPU 无法并行 launch kernel</span>
+<span class="com"># nsys 中看到：CPU 线程只有一个活跃，kernel launch 之间有大段空白</span>
+
+<span class="com"># 修复：使用多进程 (torchrun) 或 CUDA Graph 减少 launch 开销</span>
+</pre>
+
+<h3>典型场景：数据加载瓶颈</h3>
+<pre><span class="com"># nsys 中看到：CPU 线程在 pthread_mutex_lock 上等待</span>
+<span class="com"># 修复：DataLoader 调优</span>
+DataLoader(
+    dataset,
+    num_workers=<span class="num">8</span>,             <span class="com"># GPU 数 × 4</span>
+    pin_memory=<span class="num">True</span>,            <span class="com"># H2D 快 2x</span>
+    persistent_workers=<span class="num">True</span>,    <span class="com"># 不杀 worker 进程</span>
+    prefetch_factor=<span class="num">3</span>,          <span class="com"># 预取队列深度</span>
+)
+</pre>
+
+<h3>诊断命令</h3>
+<pre><span class="com"># 看 CPU 热点函数（需要 --sample=cpu）</span>
+nsys stats --report=cpu sglang_trace.nsys-rep
+
+<span class="com"># 看 OS Runtime 调用统计</span>
+nsys stats --report=osrt sglang_trace.nsys-rep
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="pattern3"><span class="step">§3</span>模式三：隐式同步 · "一行代码让 GPU 停摆"</h2>
+
+<div class="card">
+<div class="pattern-box" style="border-color:var(--bad)">
+<h4 style="color:var(--bad)">nsys 中的症状</h4>
+<ul class="tight">
+  <li>CUDA API 行出现 <code>cudaStreamSynchronize</code> 或 <code>cudaDeviceSynchronize</code></li>
+  <li>CUDA HW 行突然出现<b>空白间隙</b>，然后恢复</li>
+  <li>同步调用期间，GPU 排队的 kernel 全部排空后 GPU 空闲</li>
+</ul>
+</div>
+
+<div class="callout bad" style="font-size:15px">
+<b>性能杀手 No.1</b>：隐式同步让 CPU 停下来等 GPU 完成，GPU 排队中的 kernel 被排空，之后 GPU 只能等 CPU 继续投喂。<b>整条流水线断裂</b>。
+</div>
+
+<h3>常见的隐式同步触发点</h3>
+<table>
+<thead><tr><th>操作</th><th>为什么触发同步</th><th>替代方案</th></tr></thead>
+<tbody>
+<tr><td><code>.item()</code></td><td>需要把 GPU 标量拷贝到 CPU → 必须等 GPU 算完</td><td>累积 tensor，周期性 <code>.item()</code></td></tr>
+<tr><td><code>print(tensor)</code></td><td>隐式 <code>.item()</code></td><td>用 <code>tensor.shape</code> 或 <code>tensor.dtype</code> 代替</td></tr>
+<tr><td><code>.cpu()</code></td><td>D2H 拷贝必须等 GPU 就绪</td><td>用 <code>non_blocking=True</code></td></tr>
+<tr><td><code>if tensor > 0:</code></td><td>需要 CPU 端的 bool 值</td><td>用 <code>torch.where</code> 在 GPU 上做判断</td></tr>
+<tr><td>读 <code>.grad</code>（刚 backward 后）</td><td>梯度还在 GPU 上</td><td>延迟读取，或用 hook</td></tr>
+<tr><td><code>torch.cuda.synchronize()</code></td><td>显式同步</td><td>只在 benchmark 时使用</td></tr>
+</tbody>
+</table>
+
+<h3>真实案例：一行 .item() 吃掉 15% 性能</h3>
+<pre><span class="com"># ❌ 每步都同步</span>
+<span class="kw">for</span> step <span class="kw">in</span> range(steps):
+    loss = train_step()
+    running_loss += loss.<span class="fn">item</span>()  <span class="com"># ← 每步都触发 cudaStreamSynchronize!</span>
+
+<span class="com"># ✅ 累积 tensor，周期性同步</span>
+loss_accum += loss.<span class="fn">detach</span>()
+<span class="kw">if</span> step % <span class="num">50</span> == <span class="num">0</span>:
+    <span class="fn">print</span>(<span class="str">f"loss: </span>{loss_accum.<span class="fn">item</span>()/50:.4f}<span class="str">"</span>)
+    loss_accum = <span class="num">0</span>
+</pre>
+
+<h3>在 nsys 中检测隐式同步</h3>
+<pre><span class="com"># 方法一：GUI 中搜索 cudaStreamSynchronize</span>
+<span class="com"># 在 nsys GUI 的 Events 窗口搜索框输入 "Synchronize"</span>
+
+<span class="com"># 方法二：命令行统计</span>
+nsys stats --report=cudaapi sglang_trace.nsys-rep | grep -i sync
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="pattern4"><span class="step">§4</span>模式四：数据搬运与通信 · H2D/D2H/NCCL</h2>
+
+<div class="card">
+<div class="pattern-box" style="border-color:var(--warn)">
+<h4 style="color:var(--warn)">nsys 中的症状</h4>
+<ul class="tight">
+  <li>Memcpy 行有大量 <code>Memcpy HtoD</code> / <code>Memcpy DtoH</code> 事件</li>
+  <li>NCCL 行有大量 <code>AllReduce</code> / <code>AllGather</code> 事件</li>
+  <li>这些事件的时间占比 > 20%</li>
+</ul>
+</div>
+
+<h3>数据搬运速度对比</h3>
+<table>
+<thead><tr><th>传输类型</th><th>典型带宽</th><th>1GB 耗时</th><th>nsys 中怎么看</th></tr></thead>
+<tbody>
+<tr><td>HBM (GPU 内部)</td><td>~3350 GB/s</td><td>~0.3ms</td><td>CUDA HW 行的 kernel</td></tr>
+<tr><td>NVLink (GPU 间)</td><td>~900 GB/s</td><td>~1.1ms</td><td>NCCL 行</td></tr>
+<tr><td>PCIe Gen5 (CPU↔GPU)</td><td>~60 GB/s</td><td>~17ms</td><td>Memcpy 行</td></tr>
+<tr><td>PCIe Gen4 (CPU↔GPU)</td><td>~25 GB/s</td><td>~40ms</td><td>Memcpy 行</td></tr>
+<tr><td>RDMA (跨节点)</td><td>~100 Gb/s</td><td>~80ms</td><td>NCCL / 自定义 RDMA 行</td></tr>
+</tbody>
+</table>
+
+<h3>优化策略</h3>
+<pre><span class="com"># H2D 优化：用 non_blocking 异步传输</span>
+inputs = inputs.<span class="fn">cuda</span>(non_blocking=<span class="num">True</span>)
+
+<span class="com"># 数据预取：用单独 CUDA Stream 重叠计算和传输</span>
+<span class="kw">class</span> <span class="fn">DataPrefetcher</span>:
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, loader):
+        self.loader = iter(loader)
+        self.stream = torch.cuda.<span class="fn">Stream</span>()
+        self.preload()
+
+    <span class="kw">def</span> <span class="fn">preload</span>(self):
+        <span class="kw">try</span>:
+            self.next_input, self.next_target = <span class="fn">next</span>(self.loader)
+        <span class="kw">except</span> StopIteration:
+            self.next_input = self.next_target = <span class="num">None</span>
+            <span class="kw">return</span>
+        <span class="kw">with</span> torch.cuda.<span class="fn">stream</span>(self.stream):
+            self.next_input = self.next_input.<span class="fn">cuda</span>(non_blocking=<span class="num">True</span>)
+            self.next_target = self.next_target.<span class="fn">cuda</span>(non_blocking=<span class="num">True</span>)
+</pre>
+
+<h3>PD 分离场景下的 KV Transfer</h3>
+<pre><span class="com"># nsys 中看 Mooncake RDMA 传输</span>
+<span class="com"># NCCL 行或自定义 NVTX 标注中看到 "kv_transfer" 区间</span>
+<span class="com"># 如果 KV Transfer 时间占比 > 30%，说明 D 侧 KV Pool 不足或 RDMA 带宽未打满</span>
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="pattern5"><span class="step">§5</span>模式五：CUDA Stream 竞争 · nsys 才能发现的问题</h2>
+
+<div class="card">
+<div class="pattern-box" style="border-color:var(--purple)">
+<h4 style="color:var(--purple)">nsys 中的症状</h4>
+<ul class="tight">
+  <li>多个 CUDA Stream 上的 kernel 在时间上<b>重叠</b></li>
+  <li>但 GPU 总利用率没有显著提升——说明 Stream 之间在<b>争抢 GPU 资源</b></li>
+  <li>某些 Stream 上的 kernel 执行时间<b>异常变长</b>（被另一个 Stream 的 kernel 抢占）</li>
+</ul>
+</div>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 200" width="900">
+  <text x="10" y="35" fill="#6ee7b7" font-size="11" font-weight="600">Stream 7 (decode)</text>
+  <rect x="100" y="20" width="250" height="22" rx="4" fill="#6ee7b7" opacity=".5"/>
+  <text x="110" y="35" fill="#0b0d12" font-size="9">decode kernel</text>
+  <rect x="400" y="20" width="300" height="22" rx="4" fill="#6ee7b7" opacity=".5"/>
+  <text x="410" y="35" fill="#0b0d12" font-size="9">decode kernel (被拖慢!)</text>
+
+  <text x="10" y="75" fill="#fbbf24" font-size="11" font-weight="600">Stream 13 (HiCache D2H)</text>
+  <rect x="200" y="60" width="180" height="22" rx="4" fill="#fbbf24" opacity=".5"/>
+  <text x="210" y="75" fill="#0b0d12" font-size="9">D2H transfer</text>
+  <rect x="500" y="60" width="200" height="22" rx="4" fill="#fbbf24" opacity=".5"/>
+  <text x="510" y="75" fill="#0b0d12" font-size="9">D2H transfer</text>
+
+  <text x="10" y="115" fill="#fb7185" font-size="11" font-weight="600">Stream 15 (HiCache H2D)</text>
+  <rect x="250" y="100" width="150" height="22" rx="4" fill="#fb7185" opacity=".5"/>
+  <text x="260" y="115" fill="#0b0d12" font-size="9">H2D 回填</text>
+
+  <text x="10" y="155" fill="#8b93a7" font-size="11" font-weight="600">Stream 7 (evict)</text>
+  <rect x="300" y="140" width="120" height="22" rx="4" fill="#8b93a7" opacity=".5"/>
+  <text x="310" y="155" fill="#0b0d12" font-size="9">evict 释放</text>
+
+  <!-- 冲突标注 -->
+  <rect x="200" y="15" width="300" height="155" rx="6" fill="rgba(248,113,113,.08)" stroke="#f87171" stroke-dasharray="4 2"/>
+  <text x="350" y="190" text-anchor="middle" fill="#f87171" font-size="11">D2H 和 evict 同时访问同一块显存 → 竞争 + decode 被拖慢</text>
+</svg>
+</div>
+
+<div class="callout bad">
+<b>这是 PyTorch Profiler 看不到的问题</b>。PyTorch Profiler 只记录 op 级别的耗时，不会告诉你"这个 decode kernel 执行时间变长是因为另一个 Stream 上的 D2H 在争抢显存带宽"。只有 nsys 的多 Stream 时间线才能看到这种竞争。
+</div>
+
+<h3>真实案例：HiCache D2H/H2D 与 evict 的 Stream 竞争</h3>
+<pre><span class="com"># P800 GLM5 PD 分离集群中，HiCache 长期运行后 host memory 碎片化</span>
+<span class="com"># nsys 中看到：</span>
+<span class="com">#   - Stream 7 (decode) 的 kernel 执行时间从 0.06s 逐步增长到 0.3s</span>
+<span class="com">#   - Stream 13 (HiCache D2H) 和 Stream 15 (H2D) 的传输时间也在增长</span>
+<span class="com">#   - 两者在时间上重叠，争抢显存带宽</span>
+<span class="com">#   - evict 操作与 D2H/H2D 访问同一块显存 → 非法访问风险</span>
+<span class="com">#</span>
+<span class="com"># 修复：增加 D2H/H2D 同步保护，修复 host memory 碎片化</span>
+<span class="com"># 修复后：12h 压测无衰减</span>
+</pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="pattern6"><span class="step">§6</span>模式六：内存瓶颈 · OOM 与碎片化</h2>
+
+<div class="card">
+<div class="pattern-box" style="border-color:var(--warn)">
+<h4 style="color:var(--warn)">nsys 中的症状</h4>
+<ul class="tight">
+  <li>CUDA API 行出现 <code>cudaMalloc</code> 调用耗时异常（碎片化导致分配慢）</li>
+  <li>GPU Memory 行显示显存使用持续上升（内存泄漏）</li>
+  <li>nsys stats 中 <code>cudaMalloc</code> 的总耗时占比异常</li>
+</ul>
+</div>
+
+<h3>排查步骤</h3>
+<pre><span class="com"># 1. nsys stats 看 cudaMalloc 统计</span>
+nsys stats --report=cudaapi sglang_trace.nsys-rep | grep -i malloc
+
+<span class="com"># 2. GPU 指标看显存趋势</span>
+<span class="com"># 采集时加 --gpu-metrics-device=all</span>
+<span class="com"># GUI 中看 "Memory Used" 曲线是否持续上升</span>
+
+<span class="com"># 3. 对比优化前后的 trace</span>
+nsys stats before_fix.nsys-rep | grep malloc
+nsys stats after_fix.nsys-rep | grep malloc
+</pre>
+
+<h3>常见内存问题</h3>
+<table>
+<thead><tr><th>问题</th><th>nsys 表现</th><th>修复</th></tr></thead>
+<tbody>
+<tr><td>显存泄漏</td><td>Memory Used 曲线持续上升</td><td>找未释放的 tensor，用 <code>torch.cuda.memory_summary()</code> 辅助</td></tr>
+<tr><td>Host Memory 碎片化</td><td>HiCache D2H/H2D 时间逐步增长</td><td>改进 Host Memory 分配策略，定期 compaction</td></tr>
+<tr><td>KV Pool 不足</td><td>D 侧 prealloc 长时间等待</td><td>扩容 D 实例 TP/DP 规模</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="decision"><span class="step">§7</span>决策树 · 一张图判断你的瓶颈类型</h2>
+
+<div class="card">
+<div class="svg-wrap">
+<svg viewBox="0 0 900 480" width="900">
+  <!-- Root -->
+  <rect x="300" y="10" width="300" height="50" rx="12" fill="rgba(110,231,183,.15)" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="450" y="40" text-anchor="middle" fill="#6ee7b7" font-weight="700" font-size="14">CUDA HW 行空白 > 30%?</text>
+
+  <!-- Left: GPU 空闲 -->
+  <path d="M380 60 L200 100" stroke="#8b93a7" stroke-width="1.5" marker-end="url(#arr4)"/>
+  <text x="280" y="75" fill="#f87171" font-size="12">是</text>
+  <rect x="80" y="100" width="240" height="50" rx="10" fill="rgba(248,113,113,.1)" stroke="#f87171" stroke-width="1.5"/>
+  <text x="200" y="125" text-anchor="middle" fill="#f87171" font-weight="600" font-size="13">GPU 空闲 → CPU-bound 或 I/O-bound</text>
+
+  <!-- Right: GPU 在忙 -->
+  <path d="M520 60 L700 100" stroke="#8b93a7" stroke-width="1.5" marker-end="url(#arr4)"/>
+  <text x="620" y="75" fill="#6ee7b7" font-size="12">否</text>
+  <rect x="580" y="100" width="240" height="50" rx="10" fill="rgba(110,231,183,.1)" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="700" y="125" text-anchor="middle" fill="#6ee7b7" font-weight="600" font-size="13">GPU 在忙 → 看是哪类忙</text>
+
+  <!-- Left subtree -->
+  <rect x="30" y="185" width="160" height="40" rx="8" fill="rgba(125,211,252,.08)" stroke="#7dd3fc" stroke-width="1"/>
+  <text x="110" y="210" text-anchor="middle" fill="#7dd3fc" font-size="12">DataLoader 慢</text>
+  <rect x="200" y="185" width="160" height="40" rx="8" fill="rgba(251,191,36,.08)" stroke="#fbbf24" stroke-width="1"/>
+  <text x="280" y="210" text-anchor="middle" fill="#fbbf24" font-size="12">隐式同步</text>
+  <rect x="370" y="185" width="100" height="40" rx="8" fill="rgba(167,139,250,.08)" stroke="#a78bfa" stroke-width="1"/>
+  <text x="420" y="210" text-anchor="middle" fill="#a78bfa" font-size="12">Launch 开销</text>
+
+  <text x="110" y="248" fill="#8b93a7" font-size="10">num_workers ↑</text>
+  <text x="280" y="248" fill="#8b93a7" font-size="10">去掉 .item()</text>
+  <text x="420" y="248" fill="#8b93a7" font-size="10">CUDA Graph</text>
+
+  <!-- Right subtree: check type -->
+  <rect x="530" y="185" width="340" height="50" rx="10" fill="rgba(251,191,36,.1)" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="700" y="210" text-anchor="middle" fill="#fbbf24" font-weight="600" font-size="13">Memcpy/NCCL 时间占比 > 20%?</text>
+
+  <!-- Right-left: communication -->
+  <path d="M620 235 L530 275" stroke="#8b93a7" stroke-width="1" marker-end="url(#arr4)"/>
+  <text x="570" y="250" fill="#fb7185" font-size="11">是</text>
+  <rect x="430" y="275" width="200" height="45" rx="8" fill="rgba(251,113,133,.08)" stroke="#fb7185" stroke-width="1"/>
+  <text x="530" y="295" text-anchor="middle" fill="#fb7185" font-size="12">通信 / 搬运瓶颈</text>
+  <text x="530" y="312" text-anchor="middle" fill="#8b93a7" font-size="10">Overlap comm/compute · 压缩 · RDMA</text>
+
+  <!-- Right-right: compute or memory bound -->
+  <path d="M780 235 L770 275" stroke="#8b93a7" stroke-width="1" marker-end="url(#arr4)"/>
+  <text x="790" y="250" fill="#fbbf24" font-size="11">否</text>
+  <rect x="650" y="275" width="240" height="50" rx="10" fill="rgba(167,139,250,.1)" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="770" y="300" text-anchor="middle" fill="#a78bfa" font-weight="600" font-size="13">Stream 竞争?</text>
+
+  <path d="M700 325 L650 365" stroke="#8b93a7" stroke-width="1" marker-end="url(#arr4)"/>
+  <text x="665" y="340" fill="#a78bfa" font-size="11">是</text>
+  <rect x="550" y="365" width="190" height="45" rx="8" fill="rgba(167,139,250,.08)" stroke="#a78bfa" stroke-width="1"/>
+  <text x="645" y="385" text-anchor="middle" fill="#a78bfa" font-size="12">Stream 竞争</text>
+  <text x="645" y="402" text-anchor="middle" fill="#8b93a7" font-size="10">同步保护 · 减少并发 Stream</text>
+
+  <path d="M840 325 L840 365" stroke="#8b93a7" stroke-width="1" marker-end="url(#arr4)"/>
+  <text x="855" y="340" fill="#6ee7b7" font-size="11">否</text>
+  <rect x="755" y="365" width="160" height="45" rx="8" fill="rgba(110,231,183,.08)" stroke="#6ee7b7" stroke-width="1"/>
+  <text x="835" y="385" text-anchor="middle" fill="#6ee7b7" font-size="12">Memory/Compute-bound</text>
+  <text x="835" y="402" text-anchor="middle" fill="#8b93a7" font-size="10">用 ncu 深挖单 kernel</text>
+
+  <!-- Priority -->
+  <rect x="200" y="440" width="500" height="30" rx="8" fill="rgba(167,139,250,.08)" stroke="#a78bfa" stroke-dasharray="4 2"/>
+  <text x="450" y="460" text-anchor="middle" fill="#c4b5fd" font-size="12">排查优先级 ① GPU 空闲 / 隐式同步 ② 通信/搬运 ③ Stream 竞争 ④ 单 kernel 优化</text>
+
+  <defs><marker id="arr4" markerWidth="8" markerHeight="8" refX="4" refY="4" orient="auto"><path d="M0,0 L8,4 L0,8 Z" fill="#8b93a7"/></marker></defs>
+</svg>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<div class="card">
+<div class="kv">
+  <span class="k">GPU 空闲</span>
+  <span>CUDA HW 行有大段空白 → CPU-bound 或 I/O-bound</span>
+  <span class="k">CPU 瓶颈</span>
+  <span>CPU 线程行密集，CUDA HW 行稀疏 → 优化数据加载 / 去 GIL</span>
+  <span class="k">隐式同步</span>
+  <span>CUDA API 行出现 <code>cudaStreamSynchronize</code> → 去掉 .item()/.cpu()</span>
+  <span class="k">数据搬运</span>
+  <span>Memcpy/NCCL 行时间占比 > 20% → Overlap、non_blocking、RDMA</span>
+  <span class="k">Stream 竞争</span>
+  <span>多 Stream kernel 重叠但利用率不升 → nsys 独有发现</span>
+  <span class="k">内存瓶颈</span>
+  <span>cudaMalloc 耗时异常 / Memory Used 持续上升 → 碎片化或泄漏</span>
+</div>
+</div>
+
+<div class="foot">Nsight Systems · 03 / 04 · <a href="02-nsys-profiling.html" style="color:var(--brand2)">← 上一篇：抓取实战</a> · <a href="04-nsys-optimization.html" style="color:var(--brand2)">下一篇：优化策略 →</a></div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

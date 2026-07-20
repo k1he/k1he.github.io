@@ -1,0 +1,749 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>T9 · GEMM K-Loop · 完整 kernel 逐行解剖</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px;max-width:760px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.op{color:#f472b6}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.takeaway{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px 24px;margin:12px 0}
+.takeaway li{margin:8px 0}
+.takeaway li strong{color:var(--brand)}
+.formula{font-family:"SF Mono",monospace;font-size:13px;color:var(--brand2);margin:8px 0}
+.svg-container{margin:20px 0;text-align:center;overflow-x:auto}
+.svg-container svg{max-width:100%}
+.example{background:var(--panel2);border:1px solid var(--line);border-radius:10px;padding:14px 16px;margin:10px 0}
+.example .label{font-size:12px;color:var(--warn);font-weight:600;margin-bottom:6px;text-transform:uppercase}
+.grid-2{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin:16px 0}
+@media(max-width:768px){.grid-2{grid-template-columns:1fr}}
+.perf-row{display:flex;align-items:center;margin:10px 0;gap:12px}
+.perf-row .size{font-size:13px;color:var(--ink);min-width:110px;font-family:"SF Mono",monospace}
+.perf-row .bar-wrap{flex:1;height:24px;background:var(--panel2);border-radius:6px;overflow:hidden;position:relative}
+.perf-row .bar-fill{height:100%;border-radius:6px;background:linear-gradient(90deg,#6ee7b7,#7dd3fc);transition:width .5s}
+.perf-row .pct{font-size:13px;color:var(--brand);font-weight:700;min-width:50px;text-align:right}
+.anim-wrap{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:20px;margin:16px 0}
+.anim-ctrl{display:flex;align-items:center;gap:12px;margin:12px 0 0}
+.anim-ctrl button{background:var(--brand);color:var(--bg);border:none;padding:6px 16px;border-radius:6px;cursor:pointer;font-size:13px;font-weight:600}
+.anim-ctrl button:hover{opacity:.85}
+.anim-ctrl span{color:var(--mute);font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>T9 · GEMM K-Loop · 完整 kernel 逐行解剖 <span class="tag">Triton 系列 · 10/15</span></h1>
+<p class="sub">把 T8 的骨架变成真正可运行的、高效的完整 kernel。逐行解读每一句代码的意义——这是你能达到 cuBLAS 80-90% 性能的基准实现。</p>
+
+<!-- ===== §1 ===== -->
+<h2><span class="step">§1</span>从骨架到完整代码</h2>
+
+<div class="card">
+<p style="margin:0 0 12px;font-size:15px"><strong style="color:var(--brand)">Recap：</strong>上一节（T8）给了 tiled GEMM 的伪代码骨架——你知道了"要循环 K 维，每步做一个小矩阵乘"。这一节，我们把所有细节补全，让它变成一个<strong style="color:var(--warn)">真正能跑、能跑对、能跑快</strong>的 kernel。</p>
+<p style="margin:0;font-size:14px;color:var(--mute)">需要补全的 4 个关键细节：</p>
+</div>
+
+<table>
+<tr><th style="width:30px">#</th><th>补全内容</th><th>骨架中怎么写的</th></tr>
+<tr><td><span style="color:var(--brand)">1</span></td><td><code>pid</code> → <code>(pid_m, pid_n)</code> 的映射</td><td>只写了"定位到我负责的 tile"</td></tr>
+<tr><td><span style="color:var(--brand)">2</span></td><td>指针的初始化和移动</td><td>用 <code>load(A[...])</code> 代替了真实指针算术</td></tr>
+<tr><td><span style="color:var(--brand)">3</span></td><td>K 维 mask 的正确写法</td><td>假设 K 能被 BLOCK_K 整除</td></tr>
+<tr><td><span style="color:var(--brand)">4</span></td><td>输出的类型转换和 mask</td><td>只写了 <code>store(C, acc)</code></td></tr>
+</table>
+
+<!-- ===== §2 ===== -->
+<h2><span class="step">§2</span>完整 Kernel（一次性展示）</h2>
+
+<pre><span class="kw">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">matmul_kernel</span>(
+    a_ptr, b_ptr, c_ptr,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    <span class="com"># ① 定位：我是哪个 program</span>
+    pid = tl.program_id(<span class="num">0</span>)
+    num_pid_n = tl.cdiv(N, BLOCK_N)
+    pid_m = pid // num_pid_n
+    pid_n = pid % num_pid_n
+
+    <span class="com"># ② 计算输出 tile 的行列偏移</span>
+    offs_m = pid_m * BLOCK_M + tl.arange(<span class="num">0</span>, BLOCK_M)  <span class="com"># [BLOCK_M]</span>
+    offs_n = pid_n * BLOCK_N + tl.arange(<span class="num">0</span>, BLOCK_N)  <span class="com"># [BLOCK_N]</span>
+
+    <span class="com"># ③ 初始化 K 维偏移</span>
+    offs_k = tl.arange(<span class="num">0</span>, BLOCK_K)  <span class="com"># [BLOCK_K]</span>
+
+    <span class="com"># ④ 计算 A 和 B 的起始指针</span>
+    a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
+    b_ptrs = b_ptr + offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn
+
+    <span class="com"># ⑤ 累加器初始化</span>
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    <span class="com"># ⑥ K 维循环</span>
+    <span class="kw">for</span> k <span class="kw">in</span> range(<span class="num">0</span>, tl.cdiv(K, BLOCK_K)):
+        <span class="com"># mask：处理 K 不整除 BLOCK_K 的边界</span>
+        k_mask = offs_k[None, :] &lt; K - k * BLOCK_K
+        a = tl.load(a_ptrs, mask=(offs_m[:, None] &lt; M) &amp; k_mask, other=<span class="num">0.0</span>)
+
+        k_mask_b = offs_k[:, None] &lt; K - k * BLOCK_K
+        b = tl.load(b_ptrs, mask=k_mask_b &amp; (offs_n[None, :] &lt; N), other=<span class="num">0.0</span>)
+
+        <span class="com"># 矩阵乘累加</span>
+        acc += tl.dot(a, b)
+
+        <span class="com"># 移动指针到下一个 K 块</span>
+        a_ptrs += BLOCK_K * stride_ak
+        b_ptrs += BLOCK_K * stride_bk
+
+    <span class="com"># ⑦ 写回结果</span>
+    c = acc.to(tl.float16)
+    offs_cm = pid_m * BLOCK_M + tl.arange(<span class="num">0</span>, BLOCK_M)
+    offs_cn = pid_n * BLOCK_N + tl.arange(<span class="num">0</span>, BLOCK_N)
+    c_ptrs = c_ptr + offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn
+    c_mask = (offs_cm[:, None] &lt; M) &amp; (offs_cn[None, :] &lt; N)
+    tl.store(c_ptrs, c, mask=c_mask)</pre>
+
+<div class="callout info">
+<strong>共 ~35 行有效代码。</strong>这就是一个能达到 cuBLAS 80%+ 性能的完整矩阵乘 kernel。接下来我们逐行拆解。
+</div>
+
+<!-- ===== §3 ===== -->
+<h2><span class="step">§3</span>逐行解剖</h2>
+
+<p style="color:var(--mute)">以下使用具体数字：<code>M=512, N=512, K=256, BLOCK_M=64, BLOCK_N=64, BLOCK_K=32</code></p>
+
+<!-- §3.1 -->
+<h3>① 定位：1D pid → 2D (pid_m, pid_n)</h3>
+<div class="card">
+<pre>pid = tl.program_id(<span class="num">0</span>)
+num_pid_n = tl.cdiv(N, BLOCK_N)    <span class="com"># = cdiv(512, 64) = 8</span>
+pid_m = pid // num_pid_n            <span class="com"># 行方向的 tile 索引</span>
+pid_n = pid % num_pid_n             <span class="com"># 列方向的 tile 索引</span></pre>
+
+<p><strong style="color:var(--brand2)">为什么这样做？</strong></p>
+<p>Triton 的 launch grid 是一维的。我们有 <code>8×8 = 64</code> 个输出 tile，launch 64 个 program。每个 program 需要知道自己负责哪个 tile——用除法和取余把一维 id 拆成二维坐标。</p>
+
+<div class="example">
+<div class="label">具体数值</div>
+<p style="margin:0;font-size:13px">
+<code>num_pid_n = cdiv(512, 64) = 8</code><br><br>
+假设 <code>pid = 5</code>：<br>
+→ <code>pid_m = 5 // 8 = 0</code>（第 0 行 tile）<br>
+→ <code>pid_n = 5 % 8 = 5</code>（第 5 列 tile）<br>
+即该 program 负责 C[0:64, 320:384] 这个 64×64 的输出块。
+</p>
+</div>
+
+<table>
+<tr><th>pid</th><th>pid_m = pid // 8</th><th>pid_n = pid % 8</th><th>对应输出 tile</th></tr>
+<tr><td><code>0</code></td><td>0</td><td>0</td><td>C[0:64, 0:64]</td></tr>
+<tr><td><code>5</code></td><td>0</td><td>5</td><td>C[0:64, 320:384]</td></tr>
+<tr><td><code>9</code></td><td>1</td><td>1</td><td>C[64:128, 64:128]</td></tr>
+<tr><td><code>63</code></td><td>7</td><td>7</td><td>C[448:512, 448:512]</td></tr>
+</table>
+</div>
+
+<!-- §3.2 -->
+<h3>② 计算输出 tile 的行列偏移</h3>
+<div class="card">
+<pre>offs_m = pid_m * BLOCK_M + tl.arange(<span class="num">0</span>, BLOCK_M)  <span class="com"># shape: [64]</span>
+offs_n = pid_n * BLOCK_N + tl.arange(<span class="num">0</span>, BLOCK_N)  <span class="com"># shape: [64]</span></pre>
+
+<p><strong style="color:var(--brand2)">解释：</strong>计算这个 tile 覆盖的全局行号和列号。<code>tl.arange(0, 64)</code> = [0,1,2,...,63]，加上 pid 对应的偏移后变成全局索引。</p>
+
+<div class="example">
+<div class="label">具体数值：pid_m = 3</div>
+<p style="margin:0;font-size:13px">
+<code>offs_m = 3 × 64 + [0, 1, 2, ..., 63] = [192, 193, 194, ..., 255]</code><br>
+这个 program 负责 C 的第 192~255 行。<br><br>
+同理 <code>pid_n = 5</code> → <code>offs_n = [320, 321, 322, ..., 383]</code>
+</p>
+</div>
+</div>
+
+<!-- §3.3 -->
+<h3>③ 初始化 K 维偏移</h3>
+<div class="card">
+<pre>offs_k = tl.arange(<span class="num">0</span>, BLOCK_K)  <span class="com"># = [0, 1, 2, ..., 31]</span></pre>
+
+<p><strong style="color:var(--brand2)">关键理解：</strong><code>offs_k</code> 本身永远是 <code>[0, 1, ..., BLOCK_K-1]</code>。它不会变——我们通过移动<strong style="color:var(--warn)">指针</strong>来前进到下一个 K 块，而不是修改 offs_k。</p>
+
+<div class="callout">
+<code>offs_k</code> 是"tile 内部的相对 K 偏移"；指针的 <code>+=</code> 负责"tile 到 tile 的全局前进"。两者配合，无需每次循环重新计算。
+</div>
+</div>
+
+<!-- §3.4 -->
+<h3>④ 初始化指针——核心技巧</h3>
+<div class="card">
+<pre><span class="com"># A tile: [BLOCK_M, BLOCK_K] = [64, 32] 的指针矩阵</span>
+a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
+<span class="com">#               ^^^^^^^^^^^^^^^^               ^^^^^^^^^^^^^^^^</span>
+<span class="com">#               [64, 1] 广播行偏移              [1, 32] 广播列偏移</span>
+<span class="com">#               → 结果 shape: [64, 32]</span>
+
+<span class="com"># B tile: [BLOCK_K, BLOCK_N] = [32, 64] 的指针矩阵</span>
+b_ptrs = b_ptr + offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn
+<span class="com">#               [32, 1]                        [1, 64]</span>
+<span class="com">#               → 结果 shape: [32, 64]</span></pre>
+
+<p><strong style="color:var(--brand2)">核心思想：</strong>Triton 的 <code>tl.load</code> 接收<strong>指针张量</strong>——一个和数据同形状的矩阵，每个元素存对应数据的内存地址。</p>
+
+<div class="callout info">
+<strong>stride 是什么？</strong><br>
+<code>stride_am</code> = A 矩阵相邻<strong>行</strong>之间的元素间距（row-major 时 = K = 256）<br>
+<code>stride_ak</code> = A 矩阵相邻<strong>列</strong>之间的元素间距（row-major 时 = 1）<br>
+<code>stride_bk</code> = B 矩阵相邻<strong>行</strong>之间的元素间距（row-major 时 = N = 512）<br>
+<code>stride_bn</code> = B 矩阵相邻<strong>列</strong>之间的元素间距（row-major 时 = 1）
+</div>
+
+<div class="example">
+<div class="label">具体数值 (row-major, stride_am=256, stride_ak=1)</div>
+<p style="margin:0;font-size:13px">
+<code>a_ptrs[i, j] = a_ptr + (pid_m*64 + i) × 256 + j × 1</code><br>
+即 A 矩阵第 <code>pid_m*64+i</code> 行、第 <code>j</code> 列元素的地址。<br><br>
+<strong style="color:var(--warn)">技巧：</strong>初始化一次后，每次 K 循环只需 <code>a_ptrs += 32 × 1 = 32</code> 即可滑到下一个 K 块——不需要重新计算整个指针矩阵！
+</p>
+</div>
+
+<div class="callout warn">
+<strong>为什么用 "+=" 而不是每次重算？</strong> <code>a_ptrs += BLOCK_K * stride_ak</code> 只是一次向量加法。重算需要乘法 + 广播。编译器更容易优化增量操作。
+</div>
+</div>
+
+<!-- §3.5 -->
+<h3>⑤ 累加器为什么用 float32</h3>
+<div class="card">
+<pre>acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+<span class="com"># shape: [64, 64]，总共 4096 个 fp32 值</span></pre>
+
+<p><strong style="color:var(--warn)">为什么用 float32 而不是 float16？</strong></p>
+<ul class="tight">
+<li>fp16 精度只有约 3 位有效小数</li>
+<li>K=256 → 要累加 <code>cdiv(256,32) = 8</code> 次 <code>tl.dot</code> 的结果</li>
+<li>每次 dot 输出本身也是多个乘加的和</li>
+<li>如果用 fp16 累加，误差会<strong style="color:var(--bad)">指数级放大</strong></li>
+</ul>
+
+<div class="callout warn">
+<strong>如果用 fp16 累加会怎样？</strong> 当 K=256 时，误差可能达到 1-5%。K 越大，误差越大。生产代码<strong>必须</strong>用 fp32 累加——这也是 Tensor Core 的原生设计：fp16×fp16 → fp32 accumulate。
+</div>
+</div>
+
+<!-- §3.6 -->
+<h3>⑥ K 维循环——核心 inner loop</h3>
+<div class="card">
+<pre><span class="kw">for</span> k <span class="kw">in</span> range(<span class="num">0</span>, tl.cdiv(K, BLOCK_K)):  <span class="com"># cdiv(256, 32) = 8 次迭代</span>
+    <span class="com"># K 维 mask</span>
+    k_mask = offs_k[None, :] &lt; K - k * BLOCK_K
+    a = tl.load(a_ptrs, mask=(offs_m[:, None] &lt; M) &amp; k_mask, other=<span class="num">0.0</span>)
+
+    k_mask_b = offs_k[:, None] &lt; K - k * BLOCK_K
+    b = tl.load(b_ptrs, mask=k_mask_b &amp; (offs_n[None, :] &lt; N), other=<span class="num">0.0</span>)
+
+    <span class="com"># 核心：矩阵乘累加</span>
+    acc += tl.dot(a, b)   <span class="com"># [64,32] @ [32,64] → [64,64]</span>
+
+    <span class="com"># 指针滑动</span>
+    a_ptrs += BLOCK_K * stride_ak  <span class="com"># A tile 向右滑 32 列</span>
+    b_ptrs += BLOCK_K * stride_bk  <span class="com"># B tile 向下滑 32 行</span></pre>
+
+<p><strong style="color:var(--brand2)">循环次数：</strong><code>cdiv(256, 32) = 8</code> 次。每次处理 K 维的 32 个元素。</p>
+
+<div class="grid-2">
+<div class="example">
+<div class="label">指针移动（A 矩阵）</div>
+<p style="margin:0;font-size:13px">
+<code>a_ptrs += BLOCK_K × stride_ak</code><br>
+= <code>a_ptrs += 32 × 1 = 32</code> (row-major)<br><br>
+效果：A tile 的列范围<br>
+step 0: [0:32]<br>
+step 1: [32:64]<br>
+step 2: [64:96]<br>
+...向右滑动
+</p>
+</div>
+<div class="example">
+<div class="label">指针移动（B 矩阵）</div>
+<p style="margin:0;font-size:13px">
+<code>b_ptrs += BLOCK_K × stride_bk</code><br>
+= <code>b_ptrs += 32 × 512 = 16384</code> (row-major)<br><br>
+效果：B tile 的行范围<br>
+step 0: [0:32]<br>
+step 1: [32:64]<br>
+step 2: [64:96]<br>
+...向下滑动
+</p>
+</div>
+</div>
+
+<div class="callout">
+<strong>关键洞察：</strong><code>tl.dot(a, b)</code> = [BLOCK_M, BLOCK_K] × [BLOCK_K, BLOCK_N] 的矩阵乘。Triton 编译器会把它翻译成 Tensor Core 的 WMMA/MMA 指令——这就是性能的来源。
+</div>
+</div>
+
+<!-- §3.7 -->
+<h3>⑦ 写回结果</h3>
+<div class="card">
+<pre>c = acc.to(tl.float16)           <span class="com"># fp32 → fp16，截断精度</span>
+
+offs_cm = pid_m * BLOCK_M + tl.arange(<span class="num">0</span>, BLOCK_M)
+offs_cn = pid_n * BLOCK_N + tl.arange(<span class="num">0</span>, BLOCK_N)
+c_ptrs = c_ptr + offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn
+
+c_mask = (offs_cm[:, None] &lt; M) &amp; (offs_cn[None, :] &lt; N)
+tl.store(c_ptrs, c, mask=c_mask)</pre>
+
+<p><strong style="color:var(--brand2)">三步走：</strong></p>
+<ol>
+<li><strong>类型转换：</strong><code>acc.to(tl.float16)</code> — 从 fp32 截断回 fp16，匹配输出矩阵格式</li>
+<li><strong>计算输出指针：</strong>和 ④ 一样的广播模式，用 C 的 stride</li>
+<li><strong>带 mask 写入：</strong>当 M/N 不整除 BLOCK_M/BLOCK_N 时，边界 tile 只写有效部分</li>
+</ol>
+
+<div class="example">
+<div class="label">为什么 offs_cm 重新算？</div>
+<p style="margin:0;font-size:13px">
+严格来说可以复用 offs_m。这里重新写一遍是为了代码可读性——让"读"和"写"的逻辑各自独立完整。编译器会自动消除冗余计算（CSE 优化）。
+</p>
+</div>
+</div>
+
+<!-- ===== §4 ===== -->
+<h2><span class="step">§4</span>指针移动的可视化</h2>
+
+<p style="color:var(--mute)">观察 A 和 B 的 tile 在 K 循环中如何滑动（点击 ▶ 播放动画）：</p>
+
+<div class="anim-wrap">
+<canvas id="ptr-canvas" width="760" height="260" style="width:100%;border-radius:8px;background:#0a0c10"></canvas>
+<div class="anim-ctrl">
+<button id="play-btn" onclick="togglePlay()">▶ 播放</button>
+<button onclick="resetAnim()">⟲ 重置</button>
+<span id="step-info">step 0 / 7 · K=[0, 31]</span>
+</div>
+</div>
+
+<script>
+(function(){
+  var canvas = document.getElementById('ptr-canvas');
+  var ctx = canvas.getContext('2d');
+  var step = 0, STEPS = 8, playing = false, timer = null;
+
+  function draw(){
+    var w = canvas.width, h = canvas.height;
+    ctx.clearRect(0,0,w,h);
+
+    // --- A matrix ---
+    ctx.fillStyle='#8b93a7'; ctx.font='12px "SF Mono",monospace';
+    ctx.fillText('A [512 × 256]', 30, 20);
+    // Matrix background
+    ctx.fillStyle='#11141b'; ctx.strokeStyle='#262b38'; ctx.lineWidth=1;
+    roundRect(ctx, 30, 30, 256, 100, 4); ctx.fill(); ctx.stroke();
+    // Grid lines (8 K blocks)
+    for(var i=1; i<8; i++){
+      ctx.beginPath(); ctx.moveTo(30+i*32, 30); ctx.lineTo(30+i*32, 130);
+      ctx.strokeStyle='#1e2330'; ctx.stroke();
+    }
+    // Highlight current A tile
+    ctx.fillStyle='rgba(110,231,183,0.25)';
+    ctx.strokeStyle='#6ee7b7'; ctx.lineWidth=2;
+    roundRect(ctx, 30+step*32, 50, 32, 60, 3); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#6ee7b7'; ctx.font='bold 11px "SF Mono",monospace';
+    ctx.fillText('k='+step, 30+step*32+6, 85);
+    // Arrow showing direction
+    ctx.strokeStyle='#6ee7b7'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(62+step*32, 140); ctx.lineTo(250, 140); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#6ee7b7'; ctx.font='11px sans-serif';
+    ctx.fillText('→ a_ptrs += 32', 100, 155);
+
+    // --- B matrix ---
+    ctx.fillStyle='#8b93a7'; ctx.font='12px "SF Mono",monospace';
+    ctx.fillText('B [256 × 512]', 340, 20);
+    ctx.fillStyle='#11141b'; ctx.strokeStyle='#262b38'; ctx.lineWidth=1;
+    roundRect(ctx, 340, 30, 120, 200, 4); ctx.fill(); ctx.stroke();
+    // Grid lines (8 K blocks)
+    for(var i=1; i<8; i++){
+      ctx.beginPath(); ctx.moveTo(340, 30+i*25); ctx.lineTo(460, 30+i*25);
+      ctx.strokeStyle='#1e2330'; ctx.stroke();
+    }
+    // Highlight current B tile
+    ctx.fillStyle='rgba(125,211,252,0.25)';
+    ctx.strokeStyle='#7dd3fc'; ctx.lineWidth=2;
+    roundRect(ctx, 355, 30+step*25, 90, 25, 3); ctx.fill(); ctx.stroke();
+    ctx.fillStyle='#7dd3fc'; ctx.font='bold 11px "SF Mono",monospace';
+    ctx.fillText('k='+step, 385, 30+step*25+17);
+    // Arrow showing direction
+    ctx.strokeStyle='#7dd3fc'; ctx.lineWidth=1.5; ctx.setLineDash([3,3]);
+    ctx.beginPath(); ctx.moveTo(475, 42+step*25); ctx.lineTo(475, 220); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#7dd3fc'; ctx.font='11px sans-serif';
+    ctx.fillText('↓ b_ptrs += 16384', 482, 130);
+
+    // --- acc (C tile) ---
+    ctx.fillStyle='#8b93a7'; ctx.font='12px "SF Mono",monospace';
+    ctx.fillText('acc [64×64]', 600, 20);
+    ctx.fillStyle='rgba(251,191,36,0.12)';
+    ctx.strokeStyle='#fbbf24'; ctx.lineWidth=2;
+    roundRect(ctx, 600, 30, 80, 80, 6); ctx.fill(); ctx.stroke();
+    // Progress fill
+    var progress = (step+1)/STEPS;
+    ctx.fillStyle='rgba(251,191,36,0.2)';
+    ctx.fillRect(600, 30+80*(1-progress), 80, 80*progress);
+    ctx.fillStyle='#fbbf24'; ctx.font='bold 13px "SF Mono",monospace';
+    ctx.fillText(Math.round(progress*100)+'%', 624, 75);
+    ctx.fillStyle='#8b93a7'; ctx.font='10px sans-serif';
+    ctx.fillText('累加 '+(step+1)+'/8', 615, 125);
+
+    // --- Connection arrows ---
+    ctx.strokeStyle='#fb7185'; ctx.lineWidth=1; ctx.setLineDash([4,3]);
+    ctx.beginPath(); ctx.moveTo(286, 80); ctx.quadraticCurveTo(310, 80, 340, 55); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(460, 55); ctx.quadraticCurveTo(530, 55, 598, 60); ctx.stroke();
+    ctx.setLineDash([]);
+    ctx.fillStyle='#fb7185'; ctx.font='11px "SF Mono",monospace';
+    ctx.fillText('tl.dot(a, b)', 505, 95);
+    ctx.fillText('→ acc +=', 530, 110);
+
+    // Update info text
+    var kStart = step*32, kEnd = (step+1)*32-1;
+    document.getElementById('step-info').textContent =
+      'step '+step+' / '+(STEPS-1)+' · K=['+kStart+', '+kEnd+']';
+  }
+
+  function roundRect(ctx, x, y, w, h, r){
+    ctx.beginPath();
+    ctx.moveTo(x+r, y); ctx.lineTo(x+w-r, y); ctx.quadraticCurveTo(x+w, y, x+w, y+r);
+    ctx.lineTo(x+w, y+h-r); ctx.quadraticCurveTo(x+w, y+h, x+w-r, y+h);
+    ctx.lineTo(x+r, y+h); ctx.quadraticCurveTo(x, y+h, x, y+h-r);
+    ctx.lineTo(x, y+r); ctx.quadraticCurveTo(x, y, x+r, y);
+    ctx.closePath();
+  }
+
+  window.togglePlay = function(){
+    if(playing){
+      clearInterval(timer); playing=false;
+      document.getElementById('play-btn').textContent='▶ 播放';
+    } else {
+      playing=true;
+      document.getElementById('play-btn').textContent='⏸ 暂停';
+      timer = setInterval(function(){
+        step = (step+1) % STEPS;
+        draw();
+      }, 900);
+    }
+  };
+  window.resetAnim = function(){
+    if(playing){ clearInterval(timer); playing=false; document.getElementById('play-btn').textContent='▶ 播放'; }
+    step=0; draw();
+  };
+  draw();
+})();
+</script>
+
+<div class="callout">
+<strong>核心直觉：</strong>A tile 沿 K 维向右滑动，B tile 沿 K 维向下滑动。每一步他们共享同一段 K 维——乘出来的结果直接累加到 acc 上。8 步走完，K 维遍历完毕，acc 就是最终的 C tile。
+</div>
+
+<!-- ===== §5 ===== -->
+<h2><span class="step">§5</span>边界处理深入</h2>
+
+<p>当 K 不能被 BLOCK_K 整除时，最后一次迭代会"越界"。mask 确保我们不读取垃圾数据：</p>
+
+<div class="card">
+<h3 style="margin-top:0">例子：K=100, BLOCK_K=32</h3>
+<pre><span class="com"># 总迭代次数 = cdiv(100, 32) = 4</span>
+
+<span class="str">Iteration 0</span>: k=0
+  剩余有效 K = 100 - 0×32 = <span class="num">100</span>
+  mask: offs_k &lt; 100 → [0..31] 全部 &lt; 100
+  → <span class="str">全部 True ✓</span>
+
+<span class="str">Iteration 1</span>: k=1
+  剩余有效 K = 100 - 1×32 = <span class="num">68</span>
+  mask: offs_k &lt; 68 → [0..31] 全部 &lt; 68
+  → <span class="str">全部 True ✓</span>
+
+<span class="str">Iteration 2</span>: k=2
+  剩余有效 K = 100 - 2×32 = <span class="num">36</span>
+  mask: offs_k &lt; 36 → [0..31] 全部 &lt; 36
+  → <span class="str">全部 True ✓</span>
+
+<span class="str">Iteration 3</span>: k=3   ← <span class="com">最后一个 iteration！</span>
+  剩余有效 K = 100 - 3×32 = <span class="warn">4</span>
+  mask: offs_k &lt; 4
+  → [<span class="num">0, 1, 2, 3</span>]: True ✓ （对应全局 K=[96,97,98,99]）
+  → [<span class="bad">4, 5, 6, ..., 31</span>]: False ✗ （超出有效范围）
+  → 被 mask 掉的位置加载 <span class="num">0.0</span></pre>
+</div>
+
+<div class="callout warn">
+<strong>把 <code>other=0.0</code> 传给 <code>mask=False</code> 的位置，这样乘出来也是 0——不影响累加结果。</strong><br>
+这是一个优雅的零填充技巧：无效元素参与了 dot 运算，但贡献为零。无需特殊处理最后一个 iteration 的 dot size。
+</div>
+
+<div class="card">
+<h3 style="margin-top:0">完整的 mask 组合</h3>
+<table>
+<tr><th>操作</th><th>mask 表达式</th><th>保护边界</th></tr>
+<tr><td>load A</td><td><code>(offs_m[:, None] &lt; M) & (offs_k[None, :] &lt; K - k*BK)</code></td><td>M 维 + K 维</td></tr>
+<tr><td>load B</td><td><code>(offs_k[:, None] &lt; K - k*BK) & (offs_n[None, :] &lt; N)</code></td><td>K 维 + N 维</td></tr>
+<tr><td>store C</td><td><code>(offs_cm[:, None] &lt; M) & (offs_cn[None, :] &lt; N)</code></td><td>M 维 + N 维</td></tr>
+</table>
+</div>
+
+<!-- ===== §6 ===== -->
+<h2><span class="step">§6</span>Benchmark vs cuBLAS</h2>
+
+<p>这个"朴素" tiled kernel 的性能已经相当不错（A100 80GB, fp16）：</p>
+
+<div class="card">
+<div class="perf-row">
+<span class="size">M=N=K=1024</span>
+<div class="bar-wrap"><div class="bar-fill" style="width:70%"></div></div>
+<span class="pct">~70%</span>
+</div>
+<div class="perf-row">
+<span class="size">M=N=K=2048</span>
+<div class="bar-wrap"><div class="bar-fill" style="width:80%"></div></div>
+<span class="pct">~80%</span>
+</div>
+<div class="perf-row">
+<span class="size">M=N=K=4096</span>
+<div class="bar-wrap"><div class="bar-fill" style="width:85%"></div></div>
+<span class="pct">~85%</span>
+</div>
+<div class="perf-row">
+<span class="size">M=N=K=8192</span>
+<div class="bar-wrap"><div class="bar-fill" style="width:88%"></div></div>
+<span class="pct">~88%</span>
+</div>
+<p style="color:var(--mute);font-size:12px;margin:12px 0 0">矩阵越大，Tensor Core 利用率越高，ratio 越接近 cuBLAS。</p>
+</div>
+
+<div class="callout info">
+<strong>已经很不错了！</strong>但还有 12-20% 的差距——差在哪？
+<ul class="tight" style="margin-top:6px">
+<li><strong style="color:var(--warn)">L2 cache 利用率：</strong>tile 遍历顺序是简单行优先，相邻 program 访问的数据在内存中可能很远</li>
+<li><strong style="color:var(--warn)">Software pipelining：</strong>没有重叠 load 和 compute（下一次 load 在等本次 compute 完成）</li>
+<li><strong style="color:var(--warn)">Tile size auto-tuning：</strong>最优 BLOCK 组合因硬件而异</li>
+</ul>
+<p style="margin:8px 0 0">→ 下一节的 <strong>L2 swizzle</strong> 会补回一部分！</p>
+</div>
+
+<!-- ===== §7 ===== -->
+<h2><span class="step">§7</span>完整可运行代码</h2>
+
+<pre><span class="kw">import</span> torch
+<span class="kw">import</span> triton
+<span class="kw">import</span> triton.language <span class="kw">as</span> tl
+
+
+<span class="com"># ═══════════════════════════════════════════════════════════════</span>
+<span class="com"># Kernel</span>
+<span class="com"># ═══════════════════════════════════════════════════════════════</span>
+
+<span class="kw">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">matmul_kernel</span>(
+    a_ptr, b_ptr, c_ptr,
+    M, N, K,
+    stride_am, stride_ak,
+    stride_bk, stride_bn,
+    stride_cm, stride_cn,
+    BLOCK_M: tl.constexpr,
+    BLOCK_N: tl.constexpr,
+    BLOCK_K: tl.constexpr,
+):
+    <span class="com"># ① 定位</span>
+    pid = tl.program_id(<span class="num">0</span>)
+    num_pid_n = tl.cdiv(N, BLOCK_N)
+    pid_m = pid // num_pid_n
+    pid_n = pid % num_pid_n
+
+    <span class="com"># ② 偏移</span>
+    offs_m = pid_m * BLOCK_M + tl.arange(<span class="num">0</span>, BLOCK_M)
+    offs_n = pid_n * BLOCK_N + tl.arange(<span class="num">0</span>, BLOCK_N)
+
+    <span class="com"># ③ K 偏移</span>
+    offs_k = tl.arange(<span class="num">0</span>, BLOCK_K)
+
+    <span class="com"># ④ 初始化指针</span>
+    a_ptrs = a_ptr + offs_m[:, None] * stride_am + offs_k[None, :] * stride_ak
+    b_ptrs = b_ptr + offs_k[:, None] * stride_bk + offs_n[None, :] * stride_bn
+
+    <span class="com"># ⑤ 累加器</span>
+    acc = tl.zeros((BLOCK_M, BLOCK_N), dtype=tl.float32)
+
+    <span class="com"># ⑥ K 循环</span>
+    <span class="kw">for</span> k <span class="kw">in</span> range(<span class="num">0</span>, tl.cdiv(K, BLOCK_K)):
+        k_remaining = K - k * BLOCK_K
+        a_mask = (offs_m[:, None] &lt; M) &amp; (offs_k[None, :] &lt; k_remaining)
+        b_mask = (offs_k[:, None] &lt; k_remaining) &amp; (offs_n[None, :] &lt; N)
+
+        a = tl.load(a_ptrs, mask=a_mask, other=<span class="num">0.0</span>)
+        b = tl.load(b_ptrs, mask=b_mask, other=<span class="num">0.0</span>)
+
+        acc += tl.dot(a, b)
+
+        a_ptrs += BLOCK_K * stride_ak
+        b_ptrs += BLOCK_K * stride_bk
+
+    <span class="com"># ⑦ 写回</span>
+    c = acc.to(tl.float16)
+    offs_cm = pid_m * BLOCK_M + tl.arange(<span class="num">0</span>, BLOCK_M)
+    offs_cn = pid_n * BLOCK_N + tl.arange(<span class="num">0</span>, BLOCK_N)
+    c_ptrs = c_ptr + offs_cm[:, None] * stride_cm + offs_cn[None, :] * stride_cn
+    c_mask = (offs_cm[:, None] &lt; M) &amp; (offs_cn[None, :] &lt; N)
+    tl.store(c_ptrs, c, mask=c_mask)
+
+
+<span class="com"># ═══════════════════════════════════════════════════════════════</span>
+<span class="com"># Launcher</span>
+<span class="com"># ═══════════════════════════════════════════════════════════════</span>
+
+<span class="kw">def</span> <span class="fn">matmul</span>(a: torch.Tensor, b: torch.Tensor) -> torch.Tensor:
+    <span class="str">"""Triton GEMM: C = A @ B (fp16 in, fp16 out)"""</span>
+    <span class="kw">assert</span> a.shape[<span class="num">1</span>] == b.shape[<span class="num">0</span>], <span class="str">"A columns must match B rows"</span>
+    <span class="kw">assert</span> a.is_cuda <span class="kw">and</span> b.is_cuda
+    M, K = a.shape
+    _, N = b.shape
+    c = torch.empty((M, N), device=a.device, dtype=torch.float16)
+
+    BLOCK_M, BLOCK_N, BLOCK_K = <span class="num">128</span>, <span class="num">128</span>, <span class="num">32</span>
+    grid = (triton.cdiv(M, BLOCK_M) * triton.cdiv(N, BLOCK_N), )
+
+    matmul_kernel[grid](
+        a, b, c,
+        M, N, K,
+        a.stride(<span class="num">0</span>), a.stride(<span class="num">1</span>),
+        b.stride(<span class="num">0</span>), b.stride(<span class="num">1</span>),
+        c.stride(<span class="num">0</span>), c.stride(<span class="num">1</span>),
+        BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, BLOCK_K=BLOCK_K,
+    )
+    <span class="kw">return</span> c
+
+
+<span class="com"># ═══════════════════════════════════════════════════════════════</span>
+<span class="com"># 正确性测试</span>
+<span class="com"># ═══════════════════════════════════════════════════════════════</span>
+
+<span class="kw">def</span> <span class="fn">test_correctness</span>():
+    torch.manual_seed(<span class="num">42</span>)
+    <span class="kw">for</span> M, N, K <span class="kw">in</span> [(<span class="num">512</span>,<span class="num">512</span>,<span class="num">256</span>), (<span class="num">1000</span>,<span class="num">800</span>,<span class="num">100</span>), (<span class="num">2048</span>,<span class="num">2048</span>,<span class="num">2048</span>)]:
+        a = torch.randn(M, K, device=<span class="str">'cuda'</span>, dtype=torch.float16)
+        b = torch.randn(K, N, device=<span class="str">'cuda'</span>, dtype=torch.float16)
+
+        c_triton = matmul(a, b)
+        c_ref = torch.matmul(a, b)
+
+        max_diff = (c_triton - c_ref).abs().max().item()
+        <span class="kw">assert</span> torch.allclose(c_triton, c_ref, atol=<span class="num">1e-2</span>, rtol=<span class="num">1e-2</span>), \
+            <span class="str">f"FAIL [{M}×{K}] @ [{K}×{N}]: max_diff={max_diff}"</span>
+        print(<span class="str">f"  ✓ [{M}×{K}] @ [{K}×{N}] max_diff={max_diff:.6f}"</span>)
+    print(<span class="str">"✅ 所有正确性测试通过！"</span>)
+
+
+<span class="com"># ═══════════════════════════════════════════════════════════════</span>
+<span class="com"># Benchmark</span>
+<span class="com"># ═══════════════════════════════════════════════════════════════</span>
+
+<span class="kw">def</span> <span class="fn">benchmark</span>():
+    print(<span class="str">f"\n{'Size':<12}{'Triton TF/s':<15}{'cuBLAS TF/s':<15}{'Ratio'}"</span>)
+    print(<span class="str">"─"</span> * <span class="num">55</span>)
+
+    <span class="kw">for</span> size <span class="kw">in</span> [<span class="num">1024</span>, <span class="num">2048</span>, <span class="num">4096</span>]:
+        a = torch.randn(size, size, device=<span class="str">'cuda'</span>, dtype=torch.float16)
+        b = torch.randn(size, size, device=<span class="str">'cuda'</span>, dtype=torch.float16)
+        flops = <span class="num">2</span> * size ** <span class="num">3</span>
+
+        <span class="com"># Warmup</span>
+        <span class="kw">for</span> _ <span class="kw">in</span> range(<span class="num">10</span>):
+            matmul(a, b)
+            torch.matmul(a, b)
+        torch.cuda.synchronize()
+
+        <span class="com"># Triton</span>
+        start = torch.cuda.Event(enable_timing=<span class="kw">True</span>)
+        end = torch.cuda.Event(enable_timing=<span class="kw">True</span>)
+        start.record()
+        <span class="kw">for</span> _ <span class="kw">in</span> range(<span class="num">100</span>):
+            matmul(a, b)
+        end.record()
+        torch.cuda.synchronize()
+        triton_ms = start.elapsed_time(end) / <span class="num">100</span>
+
+        <span class="com"># cuBLAS</span>
+        start.record()
+        <span class="kw">for</span> _ <span class="kw">in</span> range(<span class="num">100</span>):
+            torch.matmul(a, b)
+        end.record()
+        torch.cuda.synchronize()
+        cublas_ms = start.elapsed_time(end) / <span class="num">100</span>
+
+        t_tflops = flops / triton_ms / <span class="num">1e9</span>
+        c_tflops = flops / cublas_ms / <span class="num">1e9</span>
+        ratio = t_tflops / c_tflops * <span class="num">100</span>
+
+        print(<span class="str">f"{size:<12}{t_tflops:<15.1f}{c_tflops:<15.1f}{ratio:.0f}%"</span>)
+
+
+<span class="kw">if</span> __name__ == <span class="str">"__main__"</span>:
+    test_correctness()
+    benchmark()</pre>
+
+<div class="callout">
+<strong>运行方式：</strong>保存为 <code>matmul_k_loop.py</code>，然后 <code>python matmul_k_loop.py</code>。需要 CUDA GPU + <code>pip install triton</code>。
+</div>
+
+<!-- ===== §8 ===== -->
+<h2><span class="step">§8</span>带走</h2>
+
+<div class="takeaway">
+<ol>
+<li><strong>完整 GEMM kernel 的 7 个步骤：</strong>定位 → 偏移 → K偏移 → 初始化指针 → 累加器 → K循环 → 写回</li>
+<li><strong>指针用 "+=" 移动，不用每次重新算</strong>——<code>a_ptrs += BLOCK_K * stride_ak</code> 是核心的"前进"操作，比重算快且简洁</li>
+<li><strong>K 维 mask：</strong>最后一个 iteration 需要 mask 掉超出 K 的位置，<code>other=0.0</code> 保证无效元素贡献为零</li>
+<li><strong>fp16 输入 → fp32 累加 → fp16 输出</strong>——混合精度是业界标准，防止累加误差爆炸，也是 Tensor Core 的原生工作模式</li>
+</ol>
+</div>
+
+<div class="callout info" style="margin-top:24px">
+<strong>下一节预告：</strong>T10 · L2 Cache Swizzle — 通过改变 <code>pid → (pid_m, pid_n)</code> 的映射顺序，让相邻 program 访问空间上更接近的数据，提升 L2 缓存命中率，再拉高 10-15% 性能。
+</div>
+
+<p class="foot">T9 · GEMM K-Loop — Triton 系列 10/15</p>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

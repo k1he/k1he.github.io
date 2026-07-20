@@ -1,0 +1,454 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>MHA → MQA → GQA 演化 · KV Cache 省 4 倍的魔法</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.slider{width:100%}
+.slider-row{display:flex;align-items:center;gap:12px;margin:8px 0}
+.slider-row label{width:130px;color:var(--mute);font-size:12.5px;font-family:"SF Mono",monospace}
+.slider-row .val{width:90px;color:var(--brand);font-family:"SF Mono",monospace;font-size:13px;text-align:right}
+.stat{display:inline-block;background:#1a1f2b;border:1px solid var(--line);padding:8px 14px;border-radius:8px;margin:4px 6px 4px 0;font-family:"SF Mono",monospace;min-width:100px}
+.stat .k{color:var(--mute);font-size:11px;display:block}
+.stat .v{color:var(--brand);font-size:15px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>MHA → MQA → GQA · KV Cache 省 4 倍的魔法 <span class="tag">第零章 · 04/05</span></h1>
+<div class="sub">KV Cache 为什么吃显存？一组 K/V 凭什么能被 4 个 Q 共用？GQA 到底在牺牲什么、保留什么？带交互计算器。</div>
+
+<div class="toc">
+  <a href="#size">§1 KV Cache 公式推导</a>
+  <a href="#mha">§2 MHA</a>
+  <a href="#mqa">§3 MQA 极端压缩</a>
+  <a href="#gqa">§4 GQA 中庸之道</a>
+  <a href="#calc">§5 实时计算器</a>
+  <a href="#mini">§6 mini-sglang 怎么用</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="size"><span class="step">§1</span>KV Cache 的体积公式 · 为什么吓人</h2>
+
+<div class="card">
+<p>回顾第 03 节的结论：decode 时每一步，<b>当前 token 的 K、V 要存起来，后面所有 token 的 attention 都要读它们</b>。所以 KV Cache 随上下文长度线性增长。</p>
+
+<h3>精确公式</h3>
+<pre>KV Cache size (byte) = 2 (K和V) · L (层数) · N_kv (KV 头数) · d_head · seq_len · dtype_size</pre>
+
+<div class="callout info">
+注意是 <b>N_kv</b> 不是 num_heads——这是 GQA 能省内存的关键点。MHA 时 N_kv = num_heads；MQA 时 N_kv = 1；GQA 时 N_kv = num_heads / group。
+</div>
+
+<h3>代入 Qwen3-8B 试算</h3>
+<pre>L          = 36 层
+num_heads  = 32
+N_kv (GQA) = 8     <span class="com"># 4 个 Q 共享 1 组 K/V</span>
+d_head     = 128
+dtype      = bf16 (2 byte)
+
+每 token 每层 KV = 2 · 8 · 128 · 2 = 4 KB
+每 token 全部 KV = 4 KB · 36 = 144 KB
+1024 tokens KV   = 144 MB
+8192 tokens KV   = 1.15 GB       <span class="com"># 单个请求！</span></pre>
+
+<p>想象一下 batch=32、每个 seq_len=4096 的场景——<b>KV Cache 就得吃 18 GB</b>。80 GB 的 H100 满打满算，权重占 16 GB 后，剩下只有 64 GB，能并发的 batch 立刻被 KV 卡死。</p>
+
+<div class="callout bad">
+这就是 <b>KV Cache 体积 = 并发上限的 dominant 因素</b>。所以 GQA 能把 N_kv 从 32 砍到 8（省 4 倍），意味着<b>同样显存下 batch 能开大 4 倍</b>，吞吐直接翻倍多。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="mha"><span class="step">§2</span>MHA · Multi-Head Attention · 原教旨版</h2>
+
+<div class="card">
+<p>原论文 2017 年的设计：每个 Query 头<b>独享</b>自己的 Key 头、Value 头。三组数量完全相同。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 720 260" width="720">
+  <text x="30" y="30" fill="#6ee7b7" font-weight="700">MHA · Q/K/V 头数 全相等 (e.g. 8/8/8)</text>
+
+  <!-- Q 头 -->
+  <g>
+    <text x="30" y="60" fill="#fbbf24" font-size="12">Q 头</text>
+    <g transform="translate(30,70)">
+      <g>
+      <rect x="0"   y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="70"  y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="140" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="210" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="280" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="350" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="420" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="490" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      </g>
+    </g>
+  </g>
+
+  <!-- K 头 -->
+  <g>
+    <text x="30" y="140" fill="#7dd3fc" font-size="12">K 头</text>
+    <g transform="translate(30,150)">
+      <rect x="0"   y="0" width="60" height="40" fill="#7dd3fc" rx="4"/>
+      <rect x="70"  y="0" width="60" height="40" fill="#7dd3fc" rx="4"/>
+      <rect x="140" y="0" width="60" height="40" fill="#7dd3fc" rx="4"/>
+      <rect x="210" y="0" width="60" height="40" fill="#7dd3fc" rx="4"/>
+      <rect x="280" y="0" width="60" height="40" fill="#7dd3fc" rx="4"/>
+      <rect x="350" y="0" width="60" height="40" fill="#7dd3fc" rx="4"/>
+      <rect x="420" y="0" width="60" height="40" fill="#7dd3fc" rx="4"/>
+      <rect x="490" y="0" width="60" height="40" fill="#7dd3fc" rx="4"/>
+    </g>
+  </g>
+
+  <!-- 连接线 1:1 -->
+  <g stroke="#6ee7b7" stroke-width="1" opacity=".5">
+    <line x1="60" y1="110" x2="60" y2="150"/>
+    <line x1="130" y1="110" x2="130" y2="150"/>
+    <line x1="200" y1="110" x2="200" y2="150"/>
+    <line x1="270" y1="110" x2="270" y2="150"/>
+    <line x1="340" y1="110" x2="340" y2="150"/>
+    <line x1="410" y1="110" x2="410" y2="150"/>
+    <line x1="480" y1="110" x2="480" y2="150"/>
+    <line x1="550" y1="110" x2="550" y2="150"/>
+  </g>
+
+  <text x="600" y="175" fill="#f87171" font-weight="700">KV 头=8</text>
+  <text x="600" y="192" fill="#f87171" font-size="11">体积 × 1.0 (基准)</text>
+  <text x="600" y="215" fill="#8b93a7" font-size="11">语义：每个 Q 头独享 KV</text>
+  <text x="600" y="230" fill="#8b93a7" font-size="11">表达力最强，显存最贵</text>
+</svg>
+</div>
+
+<pre><span class="com"># PyTorch 伪代码</span>
+K = x @ W_K    <span class="com"># [N, 8, 128]</span>
+V = x @ W_V    <span class="com"># [N, 8, 128]</span>
+<span class="com"># 每个 Q 头 i 只读自己的 K[_,i,:] 和 V[_,i,:]</span></pre>
+
+<p><b>代表模型</b>：GPT-2, Llama-1, OPT, 绝大多数 2020 前的模型。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="mqa"><span class="step">§3</span>MQA · Multi-Query Attention · 激进省法</h2>
+
+<div class="card">
+<p>2019 年 Shazeer 提了一个极端方案：<b>所有 Q 头共享同一组 K/V</b>。K/V 只有 1 个头。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 720 260" width="720">
+  <text x="30" y="30" fill="#6ee7b7" font-weight="700">MQA · 所有 Q 头共用一份 K/V (8/1/1)</text>
+
+  <g>
+    <text x="30" y="60" fill="#fbbf24" font-size="12">Q 头</text>
+    <g transform="translate(30,70)">
+      <rect x="0"   y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="70"  y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="140" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="210" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="280" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="350" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="420" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="490" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+    </g>
+  </g>
+
+  <g>
+    <text x="30" y="140" fill="#7dd3fc" font-size="12">K 头</text>
+    <rect x="230" y="150" width="120" height="40" fill="#7dd3fc" rx="4"/>
+    <text x="290" y="175" text-anchor="middle" fill="#11141b" font-weight="700">唯一 K 头</text>
+  </g>
+
+  <g stroke="#6ee7b7" stroke-width="1" opacity=".4">
+    <line x1="60" y1="110" x2="290" y2="150"/>
+    <line x1="130" y1="110" x2="290" y2="150"/>
+    <line x1="200" y1="110" x2="290" y2="150"/>
+    <line x1="270" y1="110" x2="290" y2="150"/>
+    <line x1="340" y1="110" x2="290" y2="150"/>
+    <line x1="410" y1="110" x2="290" y2="150"/>
+    <line x1="480" y1="110" x2="290" y2="150"/>
+    <line x1="550" y1="110" x2="290" y2="150"/>
+  </g>
+
+  <text x="600" y="175" fill="#6ee7b7" font-weight="700">KV 头=1</text>
+  <text x="600" y="192" fill="#6ee7b7" font-size="11">体积 × 0.125 (1/8)</text>
+  <text x="600" y="215" fill="#8b93a7" font-size="11">极省显存，但表达力损失</text>
+  <text x="600" y="230" fill="#8b93a7" font-size="11">精度掉得比较明显</text>
+</svg>
+</div>
+
+<div class="callout bad">
+<b>问题</b>：表达力跌得有点狠。精度下降几个点，大模型上明显能感觉到。只有在非常看重 decode 速度的小模型上（比如 PaLM-540B 用了）才值得。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gqa"><span class="step">§4</span>GQA · Grouped Query Attention · 工业级共识</h2>
+
+<div class="card">
+<p>2023 年 Google 提了折中方案：<b>每 g 个 Q 头共用一组 K/V</b>。例如 32 Q 头分 8 组，每组 4 个 Q 共享 1 组 KV。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 720 260" width="720">
+  <text x="30" y="30" fill="#6ee7b7" font-weight="700">GQA · 每 4 个 Q 共享 1 组 K/V (8 Q / 2 KV，示意)</text>
+
+  <g>
+    <text x="30" y="60" fill="#fbbf24" font-size="12">Q 头</text>
+    <g transform="translate(30,70)">
+      <!-- 组 1 -->
+      <rect x="0"   y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="70"  y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="140" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <rect x="210" y="0" width="60" height="40" fill="#fbbf24" rx="4"/>
+      <!-- 组 2 -->
+      <rect x="280" y="0" width="60" height="40" fill="#fb7185" rx="4"/>
+      <rect x="350" y="0" width="60" height="40" fill="#fb7185" rx="4"/>
+      <rect x="420" y="0" width="60" height="40" fill="#fb7185" rx="4"/>
+      <rect x="490" y="0" width="60" height="40" fill="#fb7185" rx="4"/>
+    </g>
+  </g>
+
+  <g>
+    <text x="30" y="140" fill="#7dd3fc" font-size="12">K 头</text>
+    <rect x="90"  y="150" width="120" height="40" fill="#7dd3fc" rx="4"/>
+    <text x="150" y="175" text-anchor="middle" fill="#11141b" font-weight="700">组 1 KV</text>
+    <rect x="370" y="150" width="120" height="40" fill="#a78bfa" rx="4"/>
+    <text x="430" y="175" text-anchor="middle" fill="#11141b" font-weight="700">组 2 KV</text>
+  </g>
+
+  <g stroke="#6ee7b7" stroke-width="1" opacity=".4">
+    <line x1="60"  y1="110" x2="150" y2="150"/>
+    <line x1="130" y1="110" x2="150" y2="150"/>
+    <line x1="200" y1="110" x2="150" y2="150"/>
+    <line x1="270" y1="110" x2="150" y2="150"/>
+  </g>
+  <g stroke="#fb7185" stroke-width="1" opacity=".4">
+    <line x1="340" y1="110" x2="430" y2="150"/>
+    <line x1="410" y1="110" x2="430" y2="150"/>
+    <line x1="480" y1="110" x2="430" y2="150"/>
+    <line x1="550" y1="110" x2="430" y2="150"/>
+  </g>
+
+  <text x="600" y="175" fill="#6ee7b7" font-weight="700">KV 头=2</text>
+  <text x="600" y="192" fill="#6ee7b7" font-size="11">体积 × 0.25 (1/4)</text>
+  <text x="600" y="215" fill="#8b93a7" font-size="11">精度几乎无损</text>
+  <text x="600" y="230" fill="#8b93a7" font-size="11">工业界默认选项</text>
+</svg>
+</div>
+
+<h3>为什么几乎无损</h3>
+<ul class="tight">
+  <li>实验证明：注意力头里<b>确实有大量冗余</b>——相邻的头 K/V 高度相似</li>
+  <li>让它们共享一份 K/V，等于<b>轻度参数约束</b>——几乎不影响拟合</li>
+  <li>节省的显存 → 更大 batch → 更高吞吐 → 整体更划算</li>
+</ul>
+
+<div class="callout">
+<b>代表模型</b>：Llama-2/3、Qwen-2/3、Mistral、GLM-4、几乎所有 2023 之后的开源模型都用 GQA。比例从 2:1 到 8:1 都有。
+</div>
+
+<h3>代码层面只是一个 "扩维"</h3>
+<pre><span class="com"># K: [N, n_kv_heads, d_head]  → 重复成 [N, n_q_heads, d_head]</span>
+K = K.repeat_interleave(n_q_heads // n_kv_heads, dim=1)
+V = V.repeat_interleave(n_q_heads // n_kv_heads, dim=1)
+<span class="com"># 后面 attention 代码和 MHA 完全一样</span></pre>
+<p>——所以推理 kernel 写一套就能同时支持 MHA/GQA，区别只在<b>存 KV 时按 n_kv_heads 存，读 KV 时按 n_q_heads 展开</b>。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="calc"><span class="step">§5</span>实时 KV Cache 计算器 · 拖一拖看变化</h2>
+
+<div class="card">
+<p>拖动参数看 KV Cache 占用 + 单卡能支持的并发 batch：</p>
+
+<div class="slider-row">
+  <label>模型 hidden d</label>
+  <input id="d" class="slider" type="range" min="2048" max="8192" step="256" value="4096"/>
+  <span class="val" id="dVal">4096</span>
+</div>
+<div class="slider-row">
+  <label>层数 L</label>
+  <input id="L" class="slider" type="range" min="16" max="80" step="1" value="32"/>
+  <span class="val" id="LVal">32</span>
+</div>
+<div class="slider-row">
+  <label>num_heads</label>
+  <input id="H" class="slider" type="range" min="8" max="64" step="2" value="32"/>
+  <span class="val" id="HVal">32</span>
+</div>
+<div class="slider-row">
+  <label>KV 头数</label>
+  <input id="KV" class="slider" type="range" min="1" max="64" step="1" value="8"/>
+  <span class="val" id="KVVal">8</span>
+</div>
+<div class="slider-row">
+  <label>seq_len</label>
+  <input id="S" class="slider" type="range" min="256" max="32768" step="256" value="4096"/>
+  <span class="val" id="SVal">4096</span>
+</div>
+<div class="slider-row">
+  <label>并发 batch</label>
+  <input id="B" class="slider" type="range" min="1" max="256" step="1" value="16"/>
+  <span class="val" id="BVal">16</span>
+</div>
+
+<div style="margin-top:14px">
+  <span class="stat"><span class="k">每 token KV (单层)</span><span class="v" id="perTokLayer">—</span></span>
+  <span class="stat"><span class="k">每 token KV (全部层)</span><span class="v" id="perTok">—</span></span>
+  <span class="stat"><span class="k">单请求 KV</span><span class="v" id="oneReq">—</span></span>
+  <span class="stat"><span class="k">总占用</span><span class="v" id="total">—</span></span>
+  <span class="stat"><span class="k">VS MHA 的比例</span><span class="v" id="ratio">—</span></span>
+  <span class="stat"><span class="k">80GB 卡能开到</span><span class="v" id="cap">—</span></span>
+</div>
+
+<script>
+const ids = ['d','L','H','KV','S','B'];
+ids.forEach(id=>document.getElementById(id).addEventListener('input', calc));
+function fmt(bytes){
+  if(bytes<1024) return bytes.toFixed(0)+' B';
+  if(bytes<1024*1024) return (bytes/1024).toFixed(1)+' KB';
+  if(bytes<1024**3) return (bytes/1024/1024).toFixed(2)+' MB';
+  return (bytes/1024**3).toFixed(2)+' GB';
+}
+function calc(){
+  const d  = +document.getElementById('d').value;
+  const L  = +document.getElementById('L').value;
+  const H  = +document.getElementById('H').value;
+  const KV = Math.min(+document.getElementById('KV').value, H);
+  const S  = +document.getElementById('S').value;
+  const B  = +document.getElementById('B').value;
+  document.getElementById('dVal').textContent = d;
+  document.getElementById('LVal').textContent = L;
+  document.getElementById('HVal').textContent = H;
+  document.getElementById('KVVal').textContent = KV;
+  document.getElementById('SVal').textContent = S;
+  document.getElementById('BVal').textContent = B;
+  const d_head = d / H;
+  const perTokLayer = 2 * KV * d_head * 2;  // 2(K+V) * n_kv * d_head * 2(bf16)
+  const perTok = perTokLayer * L;
+  const oneReq = perTok * S;
+  const totalB = oneReq * B;
+  const mhaPerTok = 2 * H * d_head * 2 * L;
+  const ratio = perTok / mhaPerTok;
+  document.getElementById('perTokLayer').textContent = fmt(perTokLayer);
+  document.getElementById('perTok').textContent      = fmt(perTok);
+  document.getElementById('oneReq').textContent      = fmt(oneReq);
+  document.getElementById('total').textContent       = fmt(totalB);
+  document.getElementById('ratio').textContent       = (ratio*100).toFixed(1)+'%';
+  // 假设权重 16 GB，只留 64 GB 给 KV
+  const avail = 64 * 1024**3;
+  const maxBatch = Math.floor(avail / oneReq);
+  document.getElementById('cap').textContent = 'batch ≤ ' + maxBatch;
+}
+calc();
+</script>
+
+<div class="callout info">
+<b>经典对比</b>：把 KV 头从 32 拉到 8（同时保持其他参数），你会看到单请求 KV 从 ~5 GB 降到 ~1.25 GB——<b>80GB 卡能开的 batch 直接从 12 涨到 48</b>。这就是 GQA 让推理吞吐起飞的原因。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="mini"><span class="step">§6</span>mini-sglang 里对应哪段代码</h2>
+
+<div class="card">
+<p>两处要注意：</p>
+
+<h3>① 模型配置读的就是 num_kv_heads</h3>
+<pre><span class="com"># models/qwen3_moe.py</span>
+num_heads      = config.num_attention_heads   <span class="com"># 32</span>
+num_kv_heads   = config.num_key_value_heads   <span class="com"># 8  ← GQA 的关键</span>
+head_dim       = config.head_dim              <span class="com"># 128</span>
+
+<span class="com"># QKV projection 用不同输出维度</span>
+self.qkv = QKVParallelLinear(
+    hidden_size,
+    head_dim,
+    total_num_heads=num_heads,       <span class="com"># Q: 32 头</span>
+    total_num_kv_heads=num_kv_heads, <span class="com"># KV: 8 头 (不是 32!)</span>
+)</pre>
+
+<h3>② KV Cache 池按 num_kv_heads 分配，不按 num_heads</h3>
+<pre><span class="com"># kvcache/mha_pool.py · 第 08 章详讲</span>
+self.kv_buffer = torch.empty(
+    [2, num_pages, page_size, num_kv_heads, head_dim],
+    dtype=torch.bfloat16, device="cuda"
+)
+<span class="com"># ^^^^^^^^^^^^ ← 这里用 num_kv_heads，直接省 4 倍显存</span></pre>
+
+<h3>③ Attention kernel 自动把 KV "展开"</h3>
+<pre><span class="com"># FlashInfer 的 kernel 接口接受独立的 num_q_heads / num_kv_heads</span>
+flashinfer.BatchPrefillWithPagedKVCacheWrapper.forward(
+    q,                  <span class="com"># [total_tokens, 32, 128]  Q</span>
+    paged_kv_cache,     <span class="com"># [pages, 2, page, 8, 128] KV（注意第 4 维是 8）</span>
+    num_qo_heads=32,
+    num_kv_heads=8,     <span class="com"># ← kernel 内部按 4:1 repeat</span>
+)</pre>
+
+<div class="callout">
+<b>核心记忆点</b>：<code>num_kv_heads</code> 是<b>贯穿整个 mini-sglang 的参数</b>——从模型配置、到 KV Cache 池形状、到 attention kernel 入参，全都围着它转。理解了 GQA，后面看 08 章 KV Cache 池的 6 维 shape 就丝毫不觉得奇怪。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2><span class="step">§∞</span>带走这三条</h2>
+<div class="card">
+<div class="kv">
+  <div class="k">① KV 体积公式</div><div>2 · L · <b>N_kv</b> · d_head · seq · 2byte · batch · <b>N_kv 是杠杆</b></div>
+  <div class="k">② 三种 attention</div><div>MHA (N_kv=H) / MQA (N_kv=1) / GQA (N_kv=H/g) · 精度几乎无损但显存省 g 倍</div>
+  <div class="k">③ 工业选择</div><div>2023 之后开源模型几乎全 GQA · 比例常见 4:1 或 8:1</div>
+</div>
+
+<div class="callout">
+<b>下一章</b>——把 Q/K/V 和 KV Cache 放进 LLM 推理的<b>两阶段</b>：Prefill 和 Decode。一个 compute-bound 一个 memory-bound，这是 mini-sglang 所有调度技巧的根。→ <a href="05-prefill-vs-decode.html" style="color:var(--brand)">00e-prefill-vs-decode.html</a>
+</div>
+</div>
+
+<div class="foot">
+第零章 · 04 / 05 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

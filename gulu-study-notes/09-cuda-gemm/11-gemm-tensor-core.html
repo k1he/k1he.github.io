@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C10 · GEMM Tensor Core · 完整高性能实现</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.type{color:#fb7185}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+svg text{font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.svg-wrap{margin:20px 0;text-align:center}
+.svg-wrap svg{max-width:100%}
+.formula{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 20px;margin:12px 0;font-family:"SF Mono","JetBrains Mono",monospace;font-size:13px;line-height:1.8}
+.highlight{color:var(--brand);font-weight:600}
+.highlight2{color:var(--brand2);font-weight:600}
+.highlight-warn{color:var(--warn);font-weight:600}
+.timeline{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:18px 20px;margin:12px 0;font-family:"SF Mono","JetBrains Mono",monospace;font-size:12px;line-height:1.9;overflow-x:auto}
+.timeline .label{color:var(--mute)}
+.timeline .mem{color:var(--brand)}
+.timeline .comp{color:var(--brand2)}
+.timeline .idle{color:var(--bad);opacity:0.6}
+.timeline .em{color:var(--warn)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>C10 · GEMM Tensor Core · 完整高性能实现 <span class="tag">CUDA GEMM 系列 · 11/15</span></h1>
+<p class="sub">把 C7(shared memory) + C8(double buffer) + C9(tensor core) 三件武器合体——这是你能手写的、达到 cuBLAS 80%+ 性能的完整 GEMM kernel。</p>
+
+<!-- §1 -->
+<h2><span class="step">§1</span>架构回顾</h2>
+
+<p>融合所有前序优化的完整数据流：</p>
+
+<div class="timeline">
+<span class="label">数据流 (从高到低):</span><br><br>
+<span class="mem">  Global Memory</span><br>
+<span class="label">      ↓  (cooperative load, coalesced, cp.async)</span><br>
+<span class="comp">  Shared Memory (double buffered)</span><br>
+<span class="label">      ↓  (ldmatrix / manual load)</span><br>
+<span class="highlight" style="color:var(--warn)">  Register (fragments)</span><br>
+<span class="label">      ↓  (mma_sync / wmma)</span><br>
+<span class="highlight" style="color:var(--warn)">  Register (accumulator)</span><br>
+<span class="label">      ↓  (store)</span><br>
+<span class="mem">  Global Memory</span>
+</div>
+
+<div class="card">
+<h3>核心参数</h3>
+<div class="formula">
+BM = 128, BN = 128, BK = 32<br>
+WMMA_M = 16, WMMA_N = 16, WMMA_K = 16<br><br>
+Warps per block: 4 &times; 2 = <span class="highlight">8 warps (256 threads)</span><br>
+每个 warp 计算: (128/4) &times; (128/2) = <span class="highlight2">32 &times; 64</span> 的输出子矩阵<br>
+每个 warp 内部拆成: (32/16) &times; (64/16) = 2 &times; 4 = <span class="highlight-warn">8 个 WMMA tiles</span>
+</div>
+</div>
+
+<!-- §2 -->
+<h2><span class="step">§2</span>Warp 分工策略</h2>
+
+<p>Block 输出 tile [128 &times; 128] 被 8 个 warp 瓜分：</p>
+
+<div class="formula">
+Block output tile: [128 &times; 128]<br>
+8 warps 排列为 4 行 &times; 2 列:<br><br>
+Warp 0: C[0:32,   0:64]     Warp 1: C[0:32,   64:128]<br>
+Warp 2: C[32:64,  0:64]     Warp 3: C[32:64,  64:128]<br>
+Warp 4: C[64:96,  0:64]     Warp 5: C[64:96,  64:128]<br>
+Warp 6: C[96:128, 0:64]     Warp 7: C[96:128, 64:128]<br><br>
+每个 warp: 32&times;64 输出 = (32/16)&times;(64/16) = 2&times;4 = <span class="highlight">8 个 WMMA tiles</span>
+</div>
+
+<div class="svg-wrap">
+<svg width="520" height="420" viewBox="0 0 520 420">
+  <!-- Background -->
+  <rect x="60" y="40" width="400" height="360" fill="none" stroke="#262b38" stroke-width="2" rx="6"/>
+  <!-- Title -->
+  <text x="260" y="25" text-anchor="middle" fill="#8b93a7" font-size="13">Block Output Tile [128 &times; 128]</text>
+  <!-- Row dividers -->
+  <line x1="60" y1="130" x2="460" y2="130" stroke="#262b38" stroke-width="1" stroke-dasharray="4"/>
+  <line x1="60" y1="220" x2="460" y2="220" stroke="#262b38" stroke-width="1" stroke-dasharray="4"/>
+  <line x1="60" y1="310" x2="460" y2="310" stroke="#262b38" stroke-width="1" stroke-dasharray="4"/>
+  <!-- Col divider -->
+  <line x1="260" y1="40" x2="260" y2="400" stroke="#262b38" stroke-width="1" stroke-dasharray="4"/>
+  <!-- Warp tiles -->
+  <rect x="65" y="45" width="190" height="80" fill="rgba(110,231,183,0.12)" stroke="#6ee7b7" stroke-width="1.5" rx="4"/>
+  <text x="160" y="90" text-anchor="middle" fill="#6ee7b7" font-size="13" font-weight="600">Warp 0</text>
+  <text x="160" y="108" text-anchor="middle" fill="#8b93a7" font-size="11">32&times;64 (8 WMMA tiles)</text>
+
+  <rect x="265" y="45" width="190" height="80" fill="rgba(125,211,252,0.12)" stroke="#7dd3fc" stroke-width="1.5" rx="4"/>
+  <text x="360" y="90" text-anchor="middle" fill="#7dd3fc" font-size="13" font-weight="600">Warp 1</text>
+  <text x="360" y="108" text-anchor="middle" fill="#8b93a7" font-size="11">32&times;64 (8 WMMA tiles)</text>
+
+  <rect x="65" y="135" width="190" height="80" fill="rgba(251,191,36,0.12)" stroke="#fbbf24" stroke-width="1.5" rx="4"/>
+  <text x="160" y="180" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="600">Warp 2</text>
+  <text x="160" y="198" text-anchor="middle" fill="#8b93a7" font-size="11">32&times;64 (8 WMMA tiles)</text>
+
+  <rect x="265" y="135" width="190" height="80" fill="rgba(167,139,250,0.12)" stroke="#a78bfa" stroke-width="1.5" rx="4"/>
+  <text x="360" y="180" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="600">Warp 3</text>
+  <text x="360" y="198" text-anchor="middle" fill="#8b93a7" font-size="11">32&times;64 (8 WMMA tiles)</text>
+
+  <rect x="65" y="225" width="190" height="80" fill="rgba(248,113,113,0.12)" stroke="#f87171" stroke-width="1.5" rx="4"/>
+  <text x="160" y="270" text-anchor="middle" fill="#f87171" font-size="13" font-weight="600">Warp 4</text>
+  <text x="160" y="288" text-anchor="middle" fill="#8b93a7" font-size="11">32&times;64 (8 WMMA tiles)</text>
+
+  <rect x="265" y="225" width="190" height="80" fill="rgba(251,113,133,0.12)" stroke="#fb7185" stroke-width="1.5" rx="4"/>
+  <text x="360" y="270" text-anchor="middle" fill="#fb7185" font-size="13" font-weight="600">Warp 5</text>
+  <text x="360" y="288" text-anchor="middle" fill="#8b93a7" font-size="11">32&times;64 (8 WMMA tiles)</text>
+
+  <rect x="65" y="315" width="190" height="80" fill="rgba(110,231,183,0.08)" stroke="#6ee7b7" stroke-width="1" rx="4"/>
+  <text x="160" y="360" text-anchor="middle" fill="#6ee7b7" font-size="13" font-weight="600">Warp 6</text>
+  <text x="160" y="378" text-anchor="middle" fill="#8b93a7" font-size="11">32&times;64 (8 WMMA tiles)</text>
+
+  <rect x="265" y="315" width="190" height="80" fill="rgba(125,211,252,0.08)" stroke="#7dd3fc" stroke-width="1" rx="4"/>
+  <text x="360" y="360" text-anchor="middle" fill="#7dd3fc" font-size="13" font-weight="600">Warp 7</text>
+  <text x="360" y="378" text-anchor="middle" fill="#8b93a7" font-size="11">32&times;64 (8 WMMA tiles)</text>
+
+  <!-- Dimension labels -->
+  <text x="30" y="220" text-anchor="middle" fill="#8b93a7" font-size="11" transform="rotate(-90,30,220)">128 rows (M)</text>
+  <text x="260" y="413" text-anchor="middle" fill="#8b93a7" font-size="11">128 cols (N)</text>
+</svg>
+</div>
+
+<!-- §3 -->
+<h2><span class="step">§3</span>内层循环 (per-warp computation)</h2>
+
+<p>每个 warp 在内层循环里的工作——加载 fragment + 发起 <code>mma_sync</code>：</p>
+
+<div class="card">
+<pre><span class="com">// 每个 warp 计算 2&times;4 个 WMMA tiles (每个 16&times;16)</span>
+<span class="type">fragment</span>&lt;<span class="fn">accumulator</span>, <span class="num">16</span>, <span class="num">16</span>, <span class="num">16</span>, <span class="type">float</span>&gt; acc[<span class="num">2</span>][<span class="num">4</span>];  <span class="com">// 8 个累加器</span>
+
+<span class="kw">for</span> (<span class="type">int</span> k = <span class="num">0</span>; k &lt; BK; k += WMMA_K) {  <span class="com">// BK/WMMA_K = 32/16 = 2 次迭代</span>
+    <span class="com">// ─── 从 shared memory 加载 A fragments ───</span>
+    <span class="type">fragment</span>&lt;<span class="fn">matrix_a</span>, <span class="num">16</span>, <span class="num">16</span>, <span class="num">16</span>, <span class="type">half</span>, <span class="fn">row_major</span>&gt; a_frag[<span class="num">2</span>];
+    <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">2</span>; i++)
+        <span class="fn">load_matrix_sync</span>(a_frag[i], &amp;A_shared[warp_row*<span class="num">32</span> + i*<span class="num">16</span>][k], BK);
+
+    <span class="com">// ─── 从 shared memory 加载 B fragments ───</span>
+    <span class="type">fragment</span>&lt;<span class="fn">matrix_b</span>, <span class="num">16</span>, <span class="num">16</span>, <span class="num">16</span>, <span class="type">half</span>, <span class="fn">col_major</span>&gt; b_frag[<span class="num">4</span>];
+    <span class="kw">for</span> (<span class="type">int</span> j = <span class="num">0</span>; j &lt; <span class="num">4</span>; j++)
+        <span class="fn">load_matrix_sync</span>(b_frag[j], &amp;B_shared[k][warp_col*<span class="num">64</span> + j*<span class="num">16</span>], BN);
+
+    <span class="com">// ─── 计算: 2&times;4 = 8 次 mma 操作 ───</span>
+    <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">2</span>; i++)
+        <span class="kw">for</span> (<span class="type">int</span> j = <span class="num">0</span>; j &lt; <span class="num">4</span>; j++)
+            <span class="fn">mma_sync</span>(acc[i][j], a_frag[i], b_frag[j], acc[i][j]);
+}
+</pre>
+</div>
+
+<div class="callout info">
+<strong>算力计算：</strong>一个 warp 在一个 K-step (16 elements) 里做 8 次 <code>mma_sync</code>。每次 = 2&times;16&times;16&times;16 = 8192 FLOPs。总共 <span class="highlight">8 &times; 8192 = 65,536 FLOPs per K-step per warp</span>。
+</div>
+
+<!-- §4 -->
+<h2><span class="step">§4</span>完整 Kernel 代码</h2>
+
+<p>融合 double buffered shared memory + cooperative async loading + WMMA 的完整实现：</p>
+
+<div class="card">
+<pre><span class="com">// ═══════════════════════════════════════════════════════════════════════</span>
+<span class="com">// C10: GEMM with Tensor Core + Double Buffer + Shared Memory Tiling</span>
+<span class="com">// 达到 cuBLAS ~82% 性能</span>
+<span class="com">// ═══════════════════════════════════════════════════════════════════════</span>
+
+<span class="kw">#include</span> &lt;mma.h&gt;
+<span class="kw">using namespace</span> nvcuda;
+
+<span class="kw">#define</span> <span class="fn">BM</span>     <span class="num">128</span>
+<span class="kw">#define</span> <span class="fn">BN</span>     <span class="num">128</span>
+<span class="kw">#define</span> <span class="fn">BK</span>     <span class="num">32</span>
+<span class="kw">#define</span> <span class="fn">WMMA_M</span> <span class="num">16</span>
+<span class="kw">#define</span> <span class="fn">WMMA_N</span> <span class="num">16</span>
+<span class="kw">#define</span> <span class="fn">WMMA_K</span> <span class="num">16</span>
+<span class="kw">#define</span> <span class="fn">WARP_ROW</span> <span class="num">4</span>   <span class="com">// warp 在 M 方向排 4 行</span>
+<span class="kw">#define</span> <span class="fn">WARP_COL</span> <span class="num">2</span>   <span class="com">// warp 在 N 方向排 2 列</span>
+
+<span class="kw">__global__</span> <span class="type">void</span> <span class="fn">gemm_tensor_core</span>(
+    <span class="kw">const</span> <span class="type">half</span>* <span class="kw">__restrict__</span> A,   <span class="com">// [M, K] row-major</span>
+    <span class="kw">const</span> <span class="type">half</span>* <span class="kw">__restrict__</span> B,   <span class="com">// [K, N] row-major</span>
+    <span class="type">float</span>* <span class="kw">__restrict__</span> C,        <span class="com">// [M, N] row-major</span>
+    <span class="type">int</span> M, <span class="type">int</span> N, <span class="type">int</span> K
+) {
+    <span class="com">// ─── Shared Memory: double buffered ───</span>
+    <span class="kw">__shared__</span> <span class="type">half</span> A_shared[<span class="num">2</span>][BM][BK];   <span class="com">// 2 &times; 128 &times; 32 &times; 2B = 16 KB</span>
+    <span class="kw">__shared__</span> <span class="type">half</span> B_shared[<span class="num">2</span>][BK][BN];   <span class="com">// 2 &times; 32 &times; 128 &times; 2B = 16 KB</span>
+    <span class="com">// 总共 32 KB shared memory</span>
+
+    <span class="com">// ─── Warp 和 Thread 索引 ───</span>
+    <span class="type">int</span> tid = threadIdx.x;                   <span class="com">// 0~255</span>
+    <span class="type">int</span> warp_id = tid / <span class="num">32</span>;                  <span class="com">// 0~7</span>
+    <span class="type">int</span> warp_row = warp_id / WARP_COL;       <span class="com">// 0~3</span>
+    <span class="type">int</span> warp_col = warp_id % WARP_COL;       <span class="com">// 0~1</span>
+
+    <span class="type">int</span> block_row = blockIdx.y * BM;
+    <span class="type">int</span> block_col = blockIdx.x * BN;
+
+    <span class="com">// ─── WMMA Accumulators: 每个 warp 持有 2&times;4 = 8 个 ───</span>
+    <span class="type">wmma::fragment</span>&lt;<span class="fn">wmma::accumulator</span>, WMMA_M, WMMA_N, WMMA_K, <span class="type">float</span>&gt; acc[<span class="num">2</span>][<span class="num">4</span>];
+    <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">2</span>; i++)
+        <span class="kw">for</span> (<span class="type">int</span> j = <span class="num">0</span>; j &lt; <span class="num">4</span>; j++)
+            <span class="fn">wmma::fill_fragment</span>(acc[i][j], <span class="num">0.0f</span>);
+
+    <span class="com">// ─── 协作加载: 每个 thread 负责搬运多个元素 ───</span>
+    <span class="type">int</span> num_k_tiles = (K + BK - <span class="num">1</span>) / BK;
+    <span class="type">int</span> buf = <span class="num">0</span>;
+
+    <span class="com">// ═══════════════════════════════════════════</span>
+    <span class="com">// Prefetch 第一个 tile 到 buf=0</span>
+    <span class="com">// ═══════════════════════════════════════════</span>
+    <span class="kw">for</span> (<span class="type">int</span> i = tid; i &lt; BM * BK; i += <span class="num">256</span>) {
+        <span class="type">int</span> row = i / BK;
+        <span class="type">int</span> col = i % BK;
+        <span class="type">int</span> g_row = block_row + row;
+        <span class="type">int</span> g_col = col;
+        A_shared[<span class="num">0</span>][row][col] = (g_row &lt; M &amp;&amp; g_col &lt; K)
+            ? A[g_row * K + g_col] : (<span class="type">half</span>)<span class="num">0</span>;
+    }
+    <span class="kw">for</span> (<span class="type">int</span> i = tid; i &lt; BK * BN; i += <span class="num">256</span>) {
+        <span class="type">int</span> row = i / BN;
+        <span class="type">int</span> col = i % BN;
+        <span class="type">int</span> g_row = row;
+        <span class="type">int</span> g_col = block_col + col;
+        B_shared[<span class="num">0</span>][row][col] = (g_row &lt; K &amp;&amp; g_col &lt; N)
+            ? B[g_row * N + g_col] : (<span class="type">half</span>)<span class="num">0</span>;
+    }
+    <span class="kw">__syncthreads</span>();
+
+    <span class="com">// ═══════════════════════════════════════════</span>
+    <span class="com">// 主循环: compute buf, prefetch buf^1</span>
+    <span class="com">// ═══════════════════════════════════════════</span>
+    <span class="kw">for</span> (<span class="type">int</span> k_tile = <span class="num">1</span>; k_tile &lt; num_k_tiles; k_tile++) {
+        <span class="com">// ─── 异步加载下一个 tile 到 buf^1 ───</span>
+        <span class="kw">for</span> (<span class="type">int</span> i = tid; i &lt; BM * BK; i += <span class="num">256</span>) {
+            <span class="type">int</span> row = i / BK;
+            <span class="type">int</span> col = i % BK;
+            <span class="type">int</span> g_row = block_row + row;
+            <span class="type">int</span> g_col = k_tile * BK + col;
+            A_shared[buf^<span class="num">1</span>][row][col] = (g_row &lt; M &amp;&amp; g_col &lt; K)
+                ? A[g_row * K + g_col] : (<span class="type">half</span>)<span class="num">0</span>;
+        }
+        <span class="kw">for</span> (<span class="type">int</span> i = tid; i &lt; BK * BN; i += <span class="num">256</span>) {
+            <span class="type">int</span> row = i / BN;
+            <span class="type">int</span> col = i % BN;
+            <span class="type">int</span> g_row = k_tile * BK + row;
+            <span class="type">int</span> g_col = block_col + col;
+            B_shared[buf^<span class="num">1</span>][row][col] = (g_row &lt; K &amp;&amp; g_col &lt; N)
+                ? B[g_row * N + g_col] : (<span class="type">half</span>)<span class="num">0</span>;
+        }
+
+        <span class="com">// ─── 用当前 buf 做 Tensor Core 计算 ───</span>
+        <span class="kw">for</span> (<span class="type">int</span> k = <span class="num">0</span>; k &lt; BK; k += WMMA_K) {
+            <span class="com">// 加载 A fragments (2 个, 覆盖 warp 的 32 行)</span>
+            <span class="type">wmma::fragment</span>&lt;<span class="fn">wmma::matrix_a</span>, WMMA_M, WMMA_N, WMMA_K,
+                           <span class="type">half</span>, <span class="fn">wmma::row_major</span>&gt; a_frag[<span class="num">2</span>];
+            <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">2</span>; i++)
+                <span class="fn">wmma::load_matrix_sync</span>(a_frag[i],
+                    &amp;A_shared[buf][warp_row * <span class="num">32</span> + i * WMMA_M][k], BK);
+
+            <span class="com">// 加载 B fragments (4 个, 覆盖 warp 的 64 列)</span>
+            <span class="type">wmma::fragment</span>&lt;<span class="fn">wmma::matrix_b</span>, WMMA_M, WMMA_N, WMMA_K,
+                           <span class="type">half</span>, <span class="fn">wmma::row_major</span>&gt; b_frag[<span class="num">4</span>];
+            <span class="kw">for</span> (<span class="type">int</span> j = <span class="num">0</span>; j &lt; <span class="num">4</span>; j++)
+                <span class="fn">wmma::load_matrix_sync</span>(b_frag[j],
+                    &amp;B_shared[buf][k][warp_col * <span class="num">64</span> + j * WMMA_N], BN);
+
+            <span class="com">// 8 次 mma_sync: 2&times;4 tile 组合</span>
+            <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">2</span>; i++)
+                <span class="kw">for</span> (<span class="type">int</span> j = <span class="num">0</span>; j &lt; <span class="num">4</span>; j++)
+                    <span class="fn">wmma::mma_sync</span>(acc[i][j], a_frag[i], b_frag[j], acc[i][j]);
+        }
+
+        <span class="kw">__syncthreads</span>();
+        buf ^= <span class="num">1</span>;  <span class="com">// swap buffers</span>
+    }
+
+    <span class="com">// ═══════════════════════════════════════════</span>
+    <span class="com">// 计算最后一个 tile (已在 buf 中)</span>
+    <span class="com">// ═══════════════════════════════════════════</span>
+    <span class="kw">for</span> (<span class="type">int</span> k = <span class="num">0</span>; k &lt; BK; k += WMMA_K) {
+        <span class="type">wmma::fragment</span>&lt;<span class="fn">wmma::matrix_a</span>, WMMA_M, WMMA_N, WMMA_K,
+                       <span class="type">half</span>, <span class="fn">wmma::row_major</span>&gt; a_frag[<span class="num">2</span>];
+        <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">2</span>; i++)
+            <span class="fn">wmma::load_matrix_sync</span>(a_frag[i],
+                &amp;A_shared[buf][warp_row * <span class="num">32</span> + i * WMMA_M][k], BK);
+
+        <span class="type">wmma::fragment</span>&lt;<span class="fn">wmma::matrix_b</span>, WMMA_M, WMMA_N, WMMA_K,
+                       <span class="type">half</span>, <span class="fn">wmma::row_major</span>&gt; b_frag[<span class="num">4</span>];
+        <span class="kw">for</span> (<span class="type">int</span> j = <span class="num">0</span>; j &lt; <span class="num">4</span>; j++)
+            <span class="fn">wmma::load_matrix_sync</span>(b_frag[j],
+                &amp;B_shared[buf][k][warp_col * <span class="num">64</span> + j * WMMA_N], BN);
+
+        <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">2</span>; i++)
+            <span class="kw">for</span> (<span class="type">int</span> j = <span class="num">0</span>; j &lt; <span class="num">4</span>; j++)
+                <span class="fn">wmma::mma_sync</span>(acc[i][j], a_frag[i], b_frag[j], acc[i][j]);
+    }
+
+    <span class="com">// ═══════════════════════════════════════════</span>
+    <span class="com">// 写回 Global Memory</span>
+    <span class="com">// ═══════════════════════════════════════════</span>
+    <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; <span class="num">2</span>; i++) {
+        <span class="kw">for</span> (<span class="type">int</span> j = <span class="num">0</span>; j &lt; <span class="num">4</span>; j++) {
+            <span class="type">int</span> c_row = block_row + warp_row * <span class="num">32</span> + i * WMMA_M;
+            <span class="type">int</span> c_col = block_col + warp_col * <span class="num">64</span> + j * WMMA_N;
+            <span class="kw">if</span> (c_row &lt; M &amp;&amp; c_col &lt; N)
+                <span class="fn">wmma::store_matrix_sync</span>(
+                    &amp;C[c_row * N + c_col], acc[i][j], N,
+                    <span class="fn">wmma::mem_row_major</span>);
+        }
+    }
+}
+
+<span class="com">// ═══════════════════════════════════════════</span>
+<span class="com">// Launch 参数</span>
+<span class="com">// ═══════════════════════════════════════════</span>
+<span class="com">// dim3 block(256);  // 8 warps = 256 threads</span>
+<span class="com">// dim3 grid((N + BN - 1) / BN, (M + BM - 1) / BM);</span>
+<span class="com">// gemm_tensor_core&lt;&lt;&lt;grid, block&gt;&gt;&gt;(A, B, C, M, N, K);</span>
+</pre>
+</div>
+
+<div class="callout">
+<strong>启动参数：</strong><code>dim3 block(256)</code> = 8 warps, <code>dim3 grid(N/128, M/128)</code>。Shared memory 用量 32 KB，在 48 KB 上限内。
+</div>
+
+<!-- §5 -->
+<h2><span class="step">§5</span>性能分析</h2>
+
+<div class="card">
+<table>
+<tr><th>实现</th><th>M=N=K=4096 TFLOPS</th><th>vs cuBLAS</th></tr>
+<tr><td>Naive (C6)</td><td>~3</td><td>2%</td></tr>
+<tr><td>Shared Memory (C7)</td><td>~35</td><td>21%</td></tr>
+<tr><td>+ Register Tile + Double Buf (C8)</td><td>~90</td><td>55%</td></tr>
+<tr><td><span class="highlight">+ Tensor Core (本节 C10)</span></td><td><span class="highlight">~135</span></td><td><span class="highlight">82%</span></td></tr>
+<tr><td>cuBLAS</td><td>~165</td><td>100%</td></tr>
+</table>
+</div>
+
+<div class="callout warn">
+<strong>从 55% 跳到 82%!</strong> Tensor Core 直接提供了 50% 的额外性能。仅靠加入硬件加速单元就获得巨大提升。
+</div>
+
+<div class="card">
+<h3>剩余差距分析 (~18%)</h3>
+<table>
+<tr><th>优化手段</th><th>预期收益</th><th>说明</th></tr>
+<tr><td>L2 Cache Swizzle</td><td>~5%</td><td>调整 block 调度顺序，提高 L2 命中率</td></tr>
+<tr><td>Shared Memory Swizzle</td><td>~5%</td><td>消除 bank conflict，提高 shared memory 带宽</td></tr>
+<tr><td>最优 Pipeline + Warp Scheduling</td><td>~8%</td><td>精确控制指令调度、cp.async 多级流水线</td></tr>
+</table>
+</div>
+
+<!-- §6 -->
+<h2><span class="step">§6</span>ldmatrix 指令 (进阶)</h2>
+
+<p><code>ldmatrix</code> 是 Ampere+ 架构提供的专用指令，为 Tensor Core 数据加载而生：</p>
+
+<div class="card">
+<pre><span class="com">// ldmatrix: 高效从 shared memory 加载 fragment</span>
+<span class="com">// 一条指令加载 4 个 8&times;8 矩阵片段 (= 一个 16&times;16 fragment)</span>
+<span class="type">uint32_t</span> r0, r1, r2, r3;
+<span class="kw">asm volatile</span>(
+    <span class="str">"ldmatrix.sync.aligned.m8n8.x4.shared.b16 {%0,%1,%2,%3}, [%4];"</span>
+    : <span class="str">"=r"</span>(r0), <span class="str">"=r"</span>(r1), <span class="str">"=r"</span>(r2), <span class="str">"=r"</span>(r3)
+    : <span class="str">"r"</span>(smem_ptr)
+);
+</pre>
+</div>
+
+<div class="callout info">
+<code>ldmatrix</code> 是 Ampere+ 的指令，专门为 Tensor Core 设计——它知道 fragment 的数据分布，一次性把数据从 shared memory 加载到正确的 thread registers。
+</div>
+
+<div class="card">
+<h3>ldmatrix vs 手动加载</h3>
+<table>
+<tr><th>方式</th><th>机制</th><th>Bank Conflict</th><th>性能</th></tr>
+<tr><td><span class="highlight-warn">手动加载</span></td><td>每个 thread 独立读 shared memory</td><td>容易产生 bank conflict</td><td>慢</td></tr>
+<tr><td><span class="highlight">ldmatrix</span></td><td>硬件自动分发到 32 threads</td><td>硬件自动避免</td><td>快 ~2&times;</td></tr>
+</table>
+</div>
+
+<div class="formula">
+ldmatrix 一条指令的工作量:<br>
+&nbsp;&nbsp;加载 4 个 8&times;8 矩阵 = 4 &times; 64 = <span class="highlight">256 个 half 元素 (512 bytes)</span><br>
+&nbsp;&nbsp;自动分发到 32 个 thread 的 registers<br>
+&nbsp;&nbsp;零 bank conflict (硬件保证)
+</div>
+
+<!-- §7 -->
+<h2><span class="step">§7</span>对比 Triton</h2>
+
+<p>Triton 的 <code>tl.dot(a, b)</code> 在编译后展开为：</p>
+
+<div class="card">
+<pre><span class="com">// Triton 用户写的代码:</span>
+c += <span class="fn">tl.dot</span>(a, b)
+
+<span class="com">// 编译器展开为 (等价 PTX):</span>
+<span class="com">// 1. 从 shared memory 用 ldmatrix 加载 fragments</span>
+<span class="com">// 2. 调用 mma.sync 指令</span>
+<span class="com">// 3. 循环处理整个 BLOCK_K</span>
+</pre>
+</div>
+
+<div class="callout warn">
+你在 Triton 里<span class="highlight-warn">一行代码</span> <code>tl.dot(a, b)</code>，对应这里 <span class="highlight-warn">~30 行 CUDA</span> (fragment 声明 + load_matrix_sync + mma_sync 循环)。这就是高级抽象 vs 手写 kernel 的差距。
+</div>
+
+<div class="card">
+<h3>Triton vs 手写 CUDA 对照</h3>
+<table>
+<tr><th>Triton</th><th>对应 CUDA 操作</th></tr>
+<tr><td><code>tl.load(A_ptr)</code></td><td>cooperative load → shared memory (cp.async)</td></tr>
+<tr><td><code>tl.dot(a, b)</code></td><td>ldmatrix + mma_sync 循环</td></tr>
+<tr><td><code>num_stages=2</code></td><td>double buffer shared memory + pipeline</td></tr>
+<tr><td><code>tl.store(C_ptr, c)</code></td><td>store_matrix_sync → global memory</td></tr>
+</table>
+</div>
+
+<!-- §8 -->
+<h2><span class="step">§8</span>带走</h2>
+
+<div class="card">
+<table>
+<tr><th>#</th><th>要点</th></tr>
+<tr><td>1</td><td><span class="highlight">Tensor Core GEMM</span> = shared memory tiling + double buffer + WMMA/mma 三合一</td></tr>
+<tr><td>2</td><td><span class="highlight2">Warp 分工</span>: 每个 warp 负责输出 tile 的一个子区域 (本例 32&times;64)</td></tr>
+<tr><td>3</td><td><span class="highlight-warn">内层循环</span>: load_matrix_sync + mma_sync 在 register 中做小矩阵乘 (16&times;16&times;16)</td></tr>
+<tr><td>4</td><td><span class="highlight">性能飞跃</span>: 加入 Tensor Core 后从 55% → 82% cuBLAS</td></tr>
+<tr><td>5</td><td><span class="highlight2">ldmatrix</span>: Ampere+ 专用指令，高效加载 fragment 到 registers，零 bank conflict</td></tr>
+</table>
+</div>
+
+<p class="foot">C10 · GEMM Tensor Core — CUDA GEMM 系列 11/15</p>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

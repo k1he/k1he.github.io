@@ -1,0 +1,457 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>T4 · FlashAttention · 把 softmax 塞进 attention 循环</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.run{background:#1a1f2b;border:1px dashed var(--brand);border-radius:10px;padding:10px 14px;font-family:"SF Mono",monospace;font-size:12.5px;color:var(--brand);margin:8px 0}
+.btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:8px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit}
+.btn:hover{border-color:var(--brand);color:var(--brand)}
+.btn.active{background:var(--brand);color:var(--bg);border-color:var(--brand)}
+.controls{display:flex;gap:8px;justify-content:center;margin-top:12px;flex-wrap:wrap}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>T4 · FlashAttention · 把 softmax 塞进 attention 循环 <span class="tag">Triton 系列 · 5/6</span></h1>
+<div class="sub">这是本系列的"心法"章。把 T2 (matmul 的 K 维循环) + T3 (online softmax) 两个工具拼在一起，得到 FlashAttention。学完你就能读懂 FA1/FA2/FA3 论文。</div>
+
+<div class="toc">
+  <a href="#why">§1 朴素 attention 的痛</a>
+  <a href="#math">§2 三个核心方程</a>
+  <a href="#k">§3 完整 kernel</a>
+  <a href="#dis">§4 逐节解剖</a>
+  <a href="#anim">§5 双层 tile 动画</a>
+  <a href="#bench">§6 benchmark</a>
+  <a href="#takeaway">§7 带走</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§1</span>朴素 attention 写法 · 它为什么慢、为什么吃显存</h2>
+
+<div class="card">
+<p>给 Q、K、V 三个 [N, d] 矩阵（N 是 seq_len，d 是 head_dim），attention 的标准定义：</p>
+<pre>S = Q @ K.T          <span class="com"># [N, N]   ← 物化巨大的 attention matrix</span>
+P = softmax(S/√d)    <span class="com"># [N, N]</span>
+O = P @ V            <span class="com"># [N, d]</span></pre>
+
+<h3>问题：[N, N] 矩阵</h3>
+<table>
+<thead><tr><th>seq_len N</th><th>S 大小 (fp16)</th><th>HBM 流量（写 S 读 P）</th></tr></thead>
+<tbody>
+<tr><td>1024</td><td>2 MB</td><td>4 MB</td></tr>
+<tr><td>4096</td><td>32 MB</td><td>64 MB</td></tr>
+<tr><td>16384</td><td>512 MB</td><td>1 GB</td></tr>
+<tr><td>65536</td><td><b style="color:var(--bad)">8 GB</b></td><td><b style="color:var(--bad)">16 GB</b></td></tr>
+</tbody>
+</table>
+
+<div class="callout bad">
+<b>痛点 1</b>：<code>O(N²)</code> 的显存占用——N=64K 时 S 矩阵 8GB，单条 attention 就把 H100 占一半。<br>
+<b>痛点 2</b>：S 写一次 + 读一次 = 16GB HBM 流量，attention 变成完全 memory-bound。
+</div>
+
+<p>FlashAttention 的目标：<b>不物化 S，把它"流式"做完</b>。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="math"><span class="step">§2</span>三个核心方程 · online softmax 的 attention 版</h2>
+
+<div class="card">
+<p>回忆 T3 的 online softmax：扫到第 i 段时，维护 running max <code>m</code> 和 running denom <code>l</code>。FlashAttention 在它基础上多维护一个东西——<b>running output O</b>。</p>
+
+<h3>设定</h3>
+<p>把 K、V 沿 seq 维切成块：K<sub>1</sub>, K<sub>2</sub>, ..., K<sub>T</sub>（每块 [BK, d]）；V 同样。Q 切成 [BM, d] 的 tile。一个 program 处理 Q 的一个 tile，沿 K/V 的 T 块循环。</p>
+
+<h3>状态变量</h3>
+<pre>m: [BM]      <span class="com"># 当前每行的 running max</span>
+l: [BM]      <span class="com"># 当前每行的 running denom (Σ exp(s - m))</span>
+O: [BM, d]   <span class="com"># 当前每行的 running output</span></pre>
+
+<h3>来一个新的 K/V 块时（核心三步）</h3>
+<pre><span class="com"># 1. 算这块的 attention scores</span>
+S_ij = Q_i @ K_j.T / √d         <span class="com"># [BM, BK]</span>
+
+<span class="com"># 2. 更新 max（用新块的 max 和旧 m 比）</span>
+m_new = max(m, rowmax(S_ij))     <span class="com"># [BM]</span>
+
+<span class="com"># 3. 修正系数 alpha · 调整旧 l 和旧 O</span>
+alpha = exp(m - m_new)            <span class="com"># [BM]   ← 旧值要"打折"</span>
+P_ij = exp(S_ij - m_new)          <span class="com"># [BM, BK]</span>
+
+<span class="com"># 4. 更新 l 和 O</span>
+l_new = alpha * l + rowsum(P_ij)
+O_new = alpha[:, None] * O + P_ij @ V_j
+
+m, l, O = m_new, l_new, O_new
+</pre>
+
+<h3>循环结束后归一化</h3>
+<pre>O = O / l[:, None]</pre>
+
+<div class="callout info">
+<b>核心 insight</b>——<code>alpha = exp(m_old - m_new)</code> 是把<b>"以前那种 max 算的 softmax"换算成"现在 max 下的 softmax"</b>的修正系数。因为 softmax 减一个常数等价，所以可以延迟到最后再归一化。<b>S 矩阵从未真正存在过</b>。
+</div>
+
+<h3>显存与流量</h3>
+<table>
+<thead><tr><th>实现</th><th>S 矩阵物化</th><th>显存</th><th>HBM 流量</th></tr></thead>
+<tbody>
+<tr><td>朴素</td><td>是</td><td>O(N²)</td><td>O(N² + Nd)</td></tr>
+<tr><td>FlashAttention</td><td><b style="color:var(--brand)">否（在 SMEM 里流式）</b></td><td>O(Nd)</td><td>O(Nd) (再加一点 K/V 重读)</td></tr>
+</tbody>
+</table>
+
+<p>N=64K、d=128：朴素显存 8GB → FlashAttention 16MB（500x 节省）。HBM 流量也大幅下降——这就是 FA 又快又省显存的双赢。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="k"><span class="step">§3</span>完整 kernel · 简化版 forward（causal mask）</h2>
+
+<div class="card">
+<p>这是教学版 FA forward（单 head、causal mask、float16）。完整 FA2 还会处理 masking、varlen、bwd、bf16 等，但核心循环就是这个。</p>
+
+<div class="run">复制进 Colab，T4 上 N=4096、d=64 的输入约 5ms →</div>
+
+<pre><span class="kw">import</span> torch, math, triton
+<span class="kw">import</span> triton.language <span class="kw">as</span> tl
+
+<span class="com">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">flash_attn_fwd</span>(
+    Q_ptr, K_ptr, V_ptr, O_ptr,
+    sm_scale,
+    N, d,
+    stride_qm, stride_qd,
+    stride_km, stride_kd,
+    stride_vm, stride_vd,
+    stride_om, stride_od,
+    BLOCK_M: tl.constexpr,        <span class="com"># Q tile size</span>
+    BLOCK_N: tl.constexpr,        <span class="com"># K/V tile size</span>
+    D: tl.constexpr,              <span class="com"># head_dim, 编译期</span>
+):
+    pid_m = tl.program_id(<span class="num">0</span>)              <span class="com"># 哪个 Q tile</span>
+
+    <span class="com"># 1. 加载 Q tile（整个外层循环只读一次）</span>
+    offs_m = pid_m * BLOCK_M + tl.arange(<span class="num">0</span>, BLOCK_M)
+    offs_d = tl.arange(<span class="num">0</span>, D)
+    q = tl.load(
+        Q_ptr + offs_m[:, <span class="kw">None</span>] * stride_qm + offs_d[<span class="kw">None</span>, :] * stride_qd,
+        mask=offs_m[:, <span class="kw">None</span>] &lt; N, other=<span class="num">0.0</span>
+    )                                            <span class="com"># [BM, D]</span>
+
+    <span class="com"># 2. 初始化 running 状态</span>
+    m_i = tl.full([BLOCK_M], <span class="num">-float</span>(<span class="str">"inf"</span>), dtype=tl.float32)
+    l_i = tl.zeros([BLOCK_M], dtype=tl.float32)
+    acc = tl.zeros([BLOCK_M, D], dtype=tl.float32)
+
+    <span class="com"># 3. 沿 K/V 循环（causal: 只看 j ≤ i 的 K/V）</span>
+    end_n = (pid_m + <span class="num">1</span>) * BLOCK_M       <span class="com"># causal mask 的 K 范围上界</span>
+    <span class="kw">for</span> start_n <span class="kw">in</span> range(<span class="num">0</span>, end_n, BLOCK_N):
+        offs_n = start_n + tl.arange(<span class="num">0</span>, BLOCK_N)
+
+        <span class="com"># 加载 K, V tile</span>
+        k = tl.load(
+            K_ptr + offs_n[:, <span class="kw">None</span>] * stride_km + offs_d[<span class="kw">None</span>, :] * stride_kd,
+            mask=offs_n[:, <span class="kw">None</span>] &lt; N, other=<span class="num">0.0</span>
+        )
+        v = tl.load(
+            V_ptr + offs_n[:, <span class="kw">None</span>] * stride_vm + offs_d[<span class="kw">None</span>, :] * stride_vd,
+            mask=offs_n[:, <span class="kw">None</span>] &lt; N, other=<span class="num">0.0</span>
+        )
+
+        <span class="com"># 4. S = Q @ K.T / sqrt(d)</span>
+        s = tl.dot(q, tl.trans(k)) * sm_scale     <span class="com"># [BM, BN]</span>
+
+        <span class="com"># 5. 应用 causal mask</span>
+        causal = offs_m[:, <span class="kw">None</span>] &gt;= offs_n[<span class="kw">None</span>, :]
+        s = tl.where(causal, s, <span class="num">-float</span>(<span class="str">"inf"</span>))
+
+        <span class="com"># 6. online softmax 三步</span>
+        m_new = tl.maximum(m_i, tl.max(s, axis=<span class="num">1</span>))
+        alpha = tl.exp(m_i - m_new)
+        p = tl.exp(s - m_new[:, <span class="kw">None</span>])
+
+        <span class="com"># 7. 修正旧 acc 和 l，再加上新贡献</span>
+        l_i = alpha * l_i + tl.sum(p, axis=<span class="num">1</span>)
+        acc = acc * alpha[:, <span class="kw">None</span>] + tl.dot(p.to(v.dtype), v)
+        m_i = m_new
+
+    <span class="com"># 8. 最终归一化 + 写回</span>
+    acc = acc / l_i[:, <span class="kw">None</span>]
+    tl.store(
+        O_ptr + offs_m[:, <span class="kw">None</span>] * stride_om + offs_d[<span class="kw">None</span>, :] * stride_od,
+        acc.to(tl.float16),
+        mask=offs_m[:, <span class="kw">None</span>] &lt; N
+    )
+
+<span class="kw">def</span> <span class="fn">flash_attention</span>(q, k, v):
+    N, d = q.shape
+    o = torch.empty_like(q)
+    sm_scale = <span class="num">1.0</span> / math.sqrt(d)
+    BLOCK_M, BLOCK_N = <span class="num">64</span>, <span class="num">64</span>
+    grid = (triton.cdiv(N, BLOCK_M),)
+    flash_attn_fwd[grid](
+        q, k, v, o, sm_scale, N, d,
+        q.stride(<span class="num">0</span>), q.stride(<span class="num">1</span>),
+        k.stride(<span class="num">0</span>), k.stride(<span class="num">1</span>),
+        v.stride(<span class="num">0</span>), v.stride(<span class="num">1</span>),
+        o.stride(<span class="num">0</span>), o.stride(<span class="num">1</span>),
+        BLOCK_M=BLOCK_M, BLOCK_N=BLOCK_N, D=d,
+    )
+    <span class="kw">return</span> o
+
+<span class="com"># ---- 验证 ----</span>
+torch.manual_seed(<span class="num">0</span>)
+N, d = <span class="num">512</span>, <span class="num">64</span>
+q = torch.randn(N, d, device=<span class="str">"cuda"</span>, dtype=torch.float16)
+k = torch.randn_like(q); v = torch.randn_like(q)
+o = flash_attention(q, k, v)
+
+<span class="com"># reference (causal)</span>
+S = (q.float() @ k.float().T) / math.sqrt(d)
+mask = torch.tril(torch.ones(N, N, device=<span class="str">"cuda"</span>)).bool()
+S = S.masked_fill(~mask, <span class="num">-float</span>(<span class="str">"inf"</span>))
+o_ref = (torch.softmax(S, dim=<span class="num">-1</span>) @ v.float()).to(torch.float16)
+<span class="fn">print</span>(<span class="str">"max abs diff:"</span>, (o.float() - o_ref.float()).abs().max().item())
+<span class="com"># max abs diff &lt; 1e-2 (fp16 数值范围内)</span></pre>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="dis"><span class="step">§4</span>逐节解剖 · 6 个关键点</h2>
+
+<div class="card">
+
+<h3>① 一个 program 处理 Q 的一个 tile · K/V 全程被它扫一遍</h3>
+<pre>grid = (cdiv(N, BLOCK_M),)
+pid_m = tl.program_id(<span class="num">0</span>)            <span class="com"># 我负责 Q 的第 pid_m 个 tile</span></pre>
+<p>这是 FA 的关键调度选择：<b>外层并行 = Q tile，内层串行 = K/V tile</b>。原因是 K/V 每块都要被这个 Q tile 看到（reduce 性质），如果跨 program 拆 K/V 就要写中间结果。</p>
+
+<h3>② Q tile 整个外层循环只读一次</h3>
+<pre><span class="com"># 在 for 循环之外加载 q</span>
+q = tl.load(...)
+<span class="kw">for</span> start_n <span class="kw">in</span> range(<span class="num">0</span>, end_n, BLOCK_N):
+    ...</pre>
+<p>Q 加载到寄存器/SMEM 后，T 次 K/V 循环里都用这同一个 q——这就是<b>"Q stays in SRAM"</b>。HBM 流量上 Q 只读了 1 次（不是 T 次）。</p>
+
+<h3>③ tl.trans · 转置 K 不真转</h3>
+<pre>s = tl.dot(q, tl.trans(k)) * sm_scale</pre>
+<p><code>tl.trans(k)</code> 不会真去 HBM 转置 K——Triton 编译器会调整 dot 的 layout，免费把 K 转过来。这就是为什么我们直接 load K 的原始 layout，然后 trans 它。</p>
+
+<h3>④ causal mask 用 tl.where + -inf</h3>
+<pre>causal = offs_m[:, <span class="kw">None</span>] &gt;= offs_n[<span class="kw">None</span>, :]
+s = tl.where(causal, s, <span class="num">-float</span>(<span class="str">"inf"</span>))</pre>
+<p>把不该看的位置的 score 设成 <code>-inf</code>，softmax 后这些位置的权重精确为 0。<b>注意 mask 在 max 之前应用</b>，否则 row max 会被 -inf 干扰。</p>
+
+<div class="callout info">
+<b>FA2/FA3 的额外优化</b>：causal 时，对于 K tile 全部在 Q tile 右侧的 (start_n &gt; end_m) 直接 <code>break</code>——这类 tile 全部 mask 掉，跳过能省一半算力。本教学版没做这个优化。
+</div>
+
+<h3>⑤ 修正系数 alpha · 三处一起改</h3>
+<pre>alpha = tl.exp(m_i - m_new)
+l_i = alpha * l_i + tl.sum(p, axis=<span class="num">1</span>)
+acc = acc * alpha[:, <span class="kw">None</span>] + tl.dot(p.to(v.dtype), v)
+m_i = m_new</pre>
+<p>这就是 online softmax 的核心。<b>当 m 更新时，旧 l 和旧 acc 都要乘 alpha "打折"</b>——因为它们之前是按旧 m 算的 exp，现在要换算成按新 m 的 exp。</p>
+
+<div class="callout warn">
+<b>四行的顺序重要</b>：
+<br>① m_new 必须先算（用旧 m）
+<br>② alpha 用 m_i - m_new
+<br>③ l 和 acc 用 alpha 修正
+<br>④ 最后才覆盖 m_i = m_new
+<br>错一行结果就全错。
+</div>
+
+<h3>⑥ 最终一次性归一化</h3>
+<pre>acc = acc / l_i[:, <span class="kw">None</span>]</pre>
+<p>循环过程中 acc 一直没除，等所有 K/V tile 扫完，最终一次除完事。这避免了循环里反复做除法的精度损失，也减少了几条指令。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="anim"><span class="step">§5</span>双层 tile 动画 · 看一个 program 怎么扫</h2>
+
+<div class="card">
+<p>设 N=8、BLOCK_M=BLOCK_N=2、d=4。pid_m=2 这个 program 负责 Q[4:6]，要扫 K/V 的前 3 个 tile（causal 限制）。</p>
+
+<div class="controls">
+  <button class="btn" onclick="fStep(0)">Reset</button>
+  <button class="btn" onclick="fStep(1)">load Q tile</button>
+  <button class="btn" onclick="fStep(2)">K/V tile 0</button>
+  <button class="btn" onclick="fStep(3)">K/V tile 1</button>
+  <button class="btn" onclick="fStep(4)">K/V tile 2 (含 causal)</button>
+  <button class="btn" onclick="fStep(5)">归一化 + 写 O</button>
+</div>
+
+<div class="svg-wrap">
+<svg id="fSvg" viewBox="0 0 900 380" width="900">
+  <!-- Q [N,d] -->
+  <text x="100" y="30" fill="#fbbf24" font-weight="700" text-anchor="middle">Q [8,4]</text>
+  <rect x="40" y="50" width="120" height="200" fill="#1a1f2b" stroke="#fbbf24"/>
+  <g id="qHi"></g>
+  <g stroke="#374151" fill="none">
+    <path d="M40 100 L160 100 M40 150 L160 150 M40 200 L160 200"/>
+  </g>
+  <g font-family="SF Mono" font-size="10" fill="#8b93a7" text-anchor="middle">
+    <text x="100" y="80">Q[0:2]</text><text x="100" y="130">Q[2:4]</text>
+    <text x="100" y="180">Q[4:6]</text><text x="100" y="230">Q[6:8]</text>
+  </g>
+
+  <!-- K [N,d] -->
+  <text x="280" y="30" fill="#7dd3fc" font-weight="700" text-anchor="middle">K [8,4]</text>
+  <rect x="220" y="50" width="120" height="200" fill="#1a1f2b" stroke="#7dd3fc"/>
+  <g id="kHi"></g>
+  <g stroke="#374151" fill="none">
+    <path d="M220 100 L340 100 M220 150 L340 150 M220 200 L340 200"/>
+  </g>
+  <g font-family="SF Mono" font-size="10" fill="#8b93a7" text-anchor="middle">
+    <text x="280" y="80">K[0:2]</text><text x="280" y="130">K[2:4]</text>
+    <text x="280" y="180">K[4:6]</text><text x="280" y="230">K[6:8]</text>
+  </g>
+
+  <!-- V [N,d] -->
+  <text x="460" y="30" fill="#a78bfa" font-weight="700" text-anchor="middle">V [8,4]</text>
+  <rect x="400" y="50" width="120" height="200" fill="#1a1f2b" stroke="#a78bfa"/>
+  <g id="vHi"></g>
+  <g stroke="#374151" fill="none">
+    <path d="M400 100 L520 100 M400 150 L520 150 M400 200 L520 200"/>
+  </g>
+
+  <!-- 状态栏 -->
+  <rect x="580" y="50" width="280" height="200" rx="10" fill="#161a23" stroke="#6ee7b7"/>
+  <text x="600" y="80" fill="#6ee7b7" font-weight="700">running 状态</text>
+  <g font-family="SF Mono" font-size="11" fill="#cbd5e1">
+    <text x="600" y="110" id="mState">m_i = [-inf, -inf]</text>
+    <text x="600" y="135" id="lState">l_i = [0, 0]</text>
+    <text x="600" y="160" id="oState">acc = zeros [2, 4]</text>
+    <text x="600" y="195" fill="#fbbf24" id="opInfo">点按钮单步</text>
+  </g>
+
+  <!-- O 写出 -->
+  <text x="100" y="290" fill="#6ee7b7" font-weight="700">O [8,4]</text>
+  <rect x="40" y="305" width="120" height="60" fill="#1a1f2b" stroke="#6ee7b7"/>
+  <g id="oHi"></g>
+  <text x="100" y="380" fill="#6ee7b7" font-size="11" id="oInfo"></text>
+</svg>
+</div>
+
+<script>
+function fStep(s){
+  const qHi = document.getElementById('qHi');
+  const kHi = document.getElementById('kHi');
+  const vHi = document.getElementById('vHi');
+  const oHi = document.getElementById('oHi');
+  qHi.innerHTML=''; kHi.innerHTML=''; vHi.innerHTML=''; oHi.innerHTML='';
+  const m = document.getElementById('mState');
+  const l = document.getElementById('lState');
+  const o = document.getElementById('oState');
+  const op = document.getElementById('opInfo');
+  const oI = document.getElementById('oInfo');
+  oI.textContent = '';
+
+  if(s===0){
+    op.textContent = '点按钮单步';
+    m.textContent = 'm_i = [-inf, -inf]';
+    l.textContent = 'l_i = [0, 0]';
+    o.textContent = 'acc = zeros [2, 4]';
+    return;
+  }
+  // Q 高亮
+  qHi.insertAdjacentHTML('beforeend',
+    `<rect x="40" y="150" width="120" height="50" fill="#fbbf24" opacity=".4"/>`);
+  if(s===1){
+    op.textContent = 'q = load Q[4:6, :]  (一次读入，全程 reuse)';
+    return;
+  }
+  // K/V tile 高亮
+  const tile = s-2;
+  if(tile<3){
+    kHi.insertAdjacentHTML('beforeend',
+      `<rect x="220" y="${50 + tile*50}" width="120" height="50" fill="#7dd3fc" opacity=".55"/>`);
+    vHi.insertAdjacentHTML('beforeend',
+      `<rect x="400" y="${50 + tile*50}" width="120" height="50" fill="#a78bfa" opacity=".55"/>`);
+  }
+  if(s===2){
+    op.textContent = 'tile 0: S=Q@K[0:2].T → softmax → acc += P@V[0:2]';
+    m.textContent = 'm_i ← max from S_tile';
+    l.textContent = 'l_i ← sum exp';
+    o.textContent = 'acc ← P @ V[0:2]';
+  } else if(s===3){
+    op.textContent = 'tile 1: m_new>m_i → alpha=exp(m_i-m_new) → acc *= alpha + new';
+    m.textContent = 'm_i 更新（取更大）';
+    l.textContent = 'l_i = alpha*l_i + new sum';
+    o.textContent = 'acc = alpha*acc + P@V[2:4]';
+  } else if(s===4){
+    op.textContent = 'tile 2: causal mask · pid_m=2 时 K[4:6] 中 col 5 被 mask 成 -inf';
+    m.textContent = 'm_i = max(m_i, max(masked S))';
+    l.textContent = 'l_i = alpha*l_i + sum(masked p)';
+    o.textContent = 'acc = alpha*acc + masked P @ V';
+  } else if(s===5){
+    oHi.insertAdjacentHTML('beforeend',
+      `<rect x="40" y="335" width="120" height="14" fill="#6ee7b7" opacity=".55"/>`);
+    op.textContent = '循环结束 · acc /= l_i · 写到 O[4:6, :]';
+    oI.textContent = 'O[4:6, :] 写完，program 退出';
+  }
+}
+</script>
+
+<div class="callout">
+<b>注意时间线</b>：橙色 Q tile 一直亮（全程在寄存器里），蓝色 K tile 和紫色 V tile 沿 seq 维向下滑——<b>Q 不动，K/V 流过它</b>。这就是 FA 的核心调度模式。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="bench"><span class="step">§6</span>benchmark · 看 N 增大时差距</h2>
+
+<div class="card">
+<div class="run">复制运行 →</div>
+<pre><span class="kw">import</span> triton
+
+<span class="kw">def</span> <span class="fn">torch_attn</span>(q, k, v):
+    d = q.shape[-1]
+    S = (q.float() @ k.float().T) / math.sqrt(d)
+    mask = torch.tril(torch.ones_like(S)).bool()
+    S = S.masked_fill(~mask, <span class="num">-float</span>(<span class="str">"inf"</span>))
+    <span class="kw">return</span> (torch.softmax(S, dim=<span class="num">-1</span>) @ v.float()).to(q.dtype)
+
+<span class="com">@triton.testing.perf_report(</span>
+    triton.testing.Ben
+  <script src="../course-nav.js"></script>
+</body>
+</html>

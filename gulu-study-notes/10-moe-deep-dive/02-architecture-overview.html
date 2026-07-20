@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>SGLang MoE 架构总览 · SGLang 学习</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--purple);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--purple);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);font-size:13px}
+th{color:var(--mute);font-weight:500}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--purple)}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--purple);color:var(--purple)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>SGLang MoE 架构总览 <span class="tag">MoE · 02/07</span></h1>
+<p class="sub">从 Model 到 Kernel 的五层抽象与一个 Token 的完整旅程</p>
+
+<div class="toc">
+  <a href="#layers">§0 五层抽象</a>
+  <a href="#journey">§1 Token 的 MoE 之旅</a>
+  <a href="#weights">§2 权重布局</a>
+  <a href="#runners">§3 Runner Backend</a>
+  <a href="#dispatchers">§4 Dispatcher 选择</a>
+</div>
+
+<!-- §0 -->
+<h2 id="layers"><span class="step">§0</span>五层抽象</h2>
+
+<div class="card">
+<p>SGLang 将 MoE 计算拆分为清晰的五层，每层关注不同粒度的逻辑：</p>
+</div>
+
+<div class="svg-wrap">
+<svg width="720" height="360" viewBox="0 0 720 360" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Layer 1: Model -->
+  <rect x="20" y="20" width="680" height="52" rx="12" fill="#1a1f2b" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="40" y="42" fill="#a78bfa" font-size="11" font-weight="700">Layer 1</text>
+  <text x="100" y="42" fill="#e6e8ee" font-size="12" font-weight="600">Model — SparseMoeBlock</text>
+  <text x="40" y="58" fill="#8b93a7" font-size="10.5">Qwen3MoeSparseMoeBlock / DeepseekV2MoE / MixtralMoE</text>
+  <text x="500" y="50" fill="#8b93a7" font-size="10">python/sglang/srt/layers/moe/</text>
+
+  <!-- Arrow -->
+  <path d="M360 75 L360 90" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arw)"/>
+
+  <!-- Layer 2: TopK -->
+  <rect x="20" y="92" width="680" height="52" rx="12" fill="#1a1f2b" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="40" y="114" fill="#7dd3fc" font-size="11" font-weight="700">Layer 2</text>
+  <text x="100" y="114" fill="#e6e8ee" font-size="12" font-weight="600">TopK — topk.py</text>
+  <text x="40" y="130" fill="#8b93a7" font-size="10.5">gate_linear → softmax → top-k selection → routing weights</text>
+  <text x="500" y="122" fill="#8b93a7" font-size="10">StandardTopK / FusedRouterTopK</text>
+
+  <!-- Arrow -->
+  <path d="M360 147 L360 162" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arw)"/>
+
+  <!-- Layer 3: FusedMoE Layer -->
+  <rect x="20" y="164" width="680" height="52" rx="12" fill="#1a1f2b" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="40" y="186" fill="#6ee7b7" font-size="11" font-weight="700">Layer 3</text>
+  <text x="100" y="186" fill="#e6e8ee" font-size="12" font-weight="600">FusedMoE Layer — layer.py</text>
+  <text x="40" y="202" fill="#8b93a7" font-size="10.5">组合 Dispatcher + Runner，编排 dispatch→compute→combine 流程</text>
+  <text x="500" y="194" fill="#8b93a7" font-size="10">FusedMoE / FusedMoENative</text>
+
+  <!-- Arrow -->
+  <path d="M250 219 L250 234" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arw2)"/>
+  <path d="M470 219 L470 234" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arw3)"/>
+
+  <!-- Layer 4a: Dispatcher -->
+  <rect x="20" y="236" width="330" height="52" rx="12" fill="#1a1f2b" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="40" y="258" fill="#fbbf24" font-size="11" font-weight="700">Layer 4a</text>
+  <text x="110" y="258" fill="#e6e8ee" font-size="12" font-weight="600">TokenDispatcher</text>
+  <text x="40" y="274" fill="#8b93a7" font-size="10.5">Standard / DeepEP / Flashinfer / Mooncake</text>
+
+  <!-- Layer 4b: Runner -->
+  <rect x="370" y="236" width="330" height="52" rx="12" fill="#1a1f2b" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="390" y="258" fill="#fb7185" font-size="11" font-weight="700">Layer 4b</text>
+  <text x="460" y="258" fill="#e6e8ee" font-size="12" font-weight="600">MoeRunner</text>
+  <text x="390" y="274" fill="#8b93a7" font-size="10.5">Triton / CUTLASS / FlashInfer-TRTLLM / FlashInfer-CUTLASS</text>
+
+  <!-- Arrow to bottom -->
+  <path d="M250 291 L250 306" stroke="#fbbf24" stroke-width="1.5" marker-end="url(#arw2)"/>
+  <path d="M470 291 L470 306" stroke="#fb7185" stroke-width="1.5" marker-end="url(#arw3)"/>
+
+  <!-- Layer 5 -->
+  <rect x="20" y="308" width="680" height="42" rx="12" fill="#161a23" stroke="#262b38"/>
+  <text x="40" y="334" fill="#8b93a7" font-size="11" font-weight="600">Layer 5 — Hardware</text>
+  <text x="200" y="334" fill="#8b93a7" font-size="10.5">GPU SM (Triton JIT / CUTLASS GEMM) + NVLink/RDMA (All-to-All)</text>
+
+  <defs>
+    <marker id="arw" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0 0 L7 2.5 L0 5z" fill="#6ee7b7"/></marker>
+    <marker id="arw2" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0 0 L7 2.5 L0 5z" fill="#fbbf24"/></marker>
+    <marker id="arw3" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0 0 L7 2.5 L0 5z" fill="#fb7185"/></marker>
+  </defs>
+</svg>
+</div>
+
+<!-- §1 -->
+<h2 id="journey"><span class="step">§1</span>一个 Token 的 MoE 之旅</h2>
+
+<div class="card">
+<h3>Step-by-Step 数据流</h3>
+
+<div class="svg-wrap">
+<svg width="700" height="320" viewBox="0 0 700 320" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <!-- Row 1 -->
+  <rect x="10" y="20" width="130" height="44" rx="8" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="75" y="38" text-anchor="middle" fill="#a78bfa" font-size="10" font-weight="600">① hidden_states</text>
+  <text x="75" y="52" text-anchor="middle" fill="#8b93a7" font-size="9">[num_tokens, hidden]</text>
+
+  <path d="M145 42 L165 42" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <rect x="170" y="20" width="110" height="44" rx="8" fill="#1a1f2b" stroke="#7dd3fc"/>
+  <text x="225" y="38" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="600">② Gate Linear</text>
+  <text x="225" y="52" text-anchor="middle" fill="#8b93a7" font-size="9">x @ W_gate</text>
+
+  <path d="M285 42 L305 42" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <rect x="310" y="20" width="110" height="44" rx="8" fill="#1a1f2b" stroke="#7dd3fc"/>
+  <text x="365" y="38" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="600">③ Router Logits</text>
+  <text x="365" y="52" text-anchor="middle" fill="#8b93a7" font-size="9">[num_tokens, E]</text>
+
+  <path d="M425 42 L445 42" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <rect x="450" y="20" width="110" height="44" rx="8" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="505" y="38" text-anchor="middle" fill="#a78bfa" font-size="10" font-weight="600">④ TopK Select</text>
+  <text x="505" y="52" text-anchor="middle" fill="#8b93a7" font-size="9">ids + weights</text>
+
+  <path d="M565 42 L585 42" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <rect x="590" y="20" width="100" height="44" rx="8" fill="#1a1f2b" stroke="#fbbf24"/>
+  <text x="640" y="38" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">⑤ Dispatch</text>
+  <text x="640" y="52" text-anchor="middle" fill="#8b93a7" font-size="9">sort by expert</text>
+
+  <!-- Row 2 -->
+  <path d="M640 68 L640 90" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <rect x="540" y="95" width="160" height="44" rx="8" fill="#1a1f2b" stroke="#fb7185"/>
+  <text x="620" y="113" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="600">⑥ GEMM1: up + gate proj</text>
+  <text x="620" y="127" text-anchor="middle" fill="#8b93a7" font-size="9">w13 @ x → [2·inter]</text>
+
+  <path d="M535 117 L505 117" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a1r)"/>
+
+  <rect x="370" y="95" width="130" height="44" rx="8" fill="#1a1f2b" stroke="#6ee7b7"/>
+  <text x="435" y="113" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="600">⑦ Activation (SiLU)</text>
+  <text x="435" y="127" text-anchor="middle" fill="#8b93a7" font-size="9">silu(gate) * up</text>
+
+  <path d="M365 117 L335 117" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a1r)"/>
+
+  <rect x="190" y="95" width="140" height="44" rx="8" fill="#1a1f2b" stroke="#fb7185"/>
+  <text x="260" y="113" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="600">⑧ GEMM2: down_proj</text>
+  <text x="260" y="127" text-anchor="middle" fill="#8b93a7" font-size="9">w2 @ act → [hidden]</text>
+
+  <path d="M185 117 L155 117" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a1r)"/>
+
+  <rect x="20" y="95" width="130" height="44" rx="8" fill="#1a1f2b" stroke="#fbbf24"/>
+  <text x="85" y="113" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">⑨ Combine</text>
+  <text x="85" y="127" text-anchor="middle" fill="#8b93a7" font-size="9">Σ wᵢ · expertᵢ(x)</text>
+
+  <!-- Row 3: Output -->
+  <path d="M85 143 L85 165" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#a1)"/>
+
+  <rect x="20" y="170" width="130" height="44" rx="8" fill="#1a1f2b" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="85" y="188" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="700">⑩ Output</text>
+  <text x="85" y="202" text-anchor="middle" fill="#8b93a7" font-size="9">[num_tokens, hidden]</text>
+
+  <!-- Legend -->
+  <rect x="20" y="240" width="660" height="70" rx="10" fill="#161a23" stroke="#262b38"/>
+  <text x="40" y="260" fill="#8b93a7" font-size="10" font-weight="600">关键说明：</text>
+  <text x="40" y="278" fill="#8b93a7" font-size="10">• ⑤ Dispatch: 将 token 按 expert_id 排序分组，相同 expert 的 token 合并为一个 batch 送入 GEMM</text>
+  <text x="40" y="295" fill="#8b93a7" font-size="10">• ⑥⑧ 是 Fused Kernel 的核心: GEMM1(w13) → SiLU → GEMM2(w2) 可在一个 kernel 内完成</text>
+
+  <defs>
+    <marker id="a1" markerWidth="7" markerHeight="5" refX="6" refY="2.5" orient="auto"><path d="M0 0 L7 2.5 L0 5z" fill="#6ee7b7"/></marker>
+    <marker id="a1r" markerWidth="7" markerHeight="5" refX="1" refY="2.5" orient="auto-start-reverse"><path d="M7 0 L0 2.5 L7 5z" fill="#6ee7b7"/></marker>
+  </defs>
+</svg>
+</div>
+</div>
+
+<div class="callout info">
+<strong>Fused 的含义：</strong>在非 fused 实现中，步骤 ⑤-⑨ 各自是独立的 kernel launch + HBM 读写。
+Fused MoE 将 ⑥⑦⑧ 合并为一个 kernel，中间结果留在 SRAM（shared memory），显著降低 HBM 带宽消耗。
+</div>
+
+<!-- §2 -->
+<h2 id="weights"><span class="step">§2</span>权重布局</h2>
+
+<div class="card">
+<h3>w13 与 w2 的 Shape</h3>
+<pre><code><span class="com"># FusedMoE 权重定义 (layer.py)</span>
+<span class="kw">self</span>.w13 = torch.<span class="fn">empty</span>(
+    num_local_experts,         <span class="com"># EP 下每 GPU 持有的 expert 数</span>
+    <span class="num">2</span> * intermediate_size,     <span class="com"># gate_proj + up_proj 合并</span>
+    hidden_size,               <span class="com"># 输入维度</span>
+    dtype=params_dtype
+)
+
+<span class="kw">self</span>.w2 = torch.<span class="fn">empty</span>(
+    num_local_experts,         <span class="com"># 同上</span>
+    hidden_size,               <span class="com"># 输出维度</span>
+    intermediate_size,         <span class="com"># 中间维度（SiLU 后的结果）</span>
+    dtype=params_dtype
+)
+</code></pre>
+
+<h4>为什么 w13 合并 gate_proj 和 up_proj？</h4>
+<p>SwiGLU 激活函数需要两个线性变换的输出：<code>silu(gate_proj(x)) * up_proj(x)</code>。
+将两者合并为一次 GEMM（w13），输出 split 成两半，减少一次 kernel launch。</p>
+</div>
+
+<div class="card">
+<h3>TP/EP 下的分片策略</h3>
+<table>
+<tr><th>并行方式</th><th>w13 分片维度</th><th>w2 分片维度</th><th>说明</th></tr>
+<tr><td>Tensor Parallel (TP)</td><td>intermediate_size 维</td><td>intermediate_size 维</td><td>每 GPU 持有所有 expert 的部分参数</td></tr>
+<tr><td>Expert Parallel (EP)</td><td>num_experts 维</td><td>num_experts 维</td><td>每 GPU 持有部分 expert 的全部参数</td></tr>
+<tr><td>TP + EP</td><td>两者组合</td><td>两者组合</td><td>先按 EP 分 expert，再按 TP 切 intermediate</td></tr>
+</table>
+</div>
+
+<!-- §3 -->
+<h2 id="runners"><span class="step">§3</span>Runner Backend 选择</h2>
+
+<div class="card" style="overflow:auto">
+<table>
+<tr>
+  <th>Runner</th>
+  <th>后端</th>
+  <th>优势</th>
+  <th>适用场景</th>
+  <th>代码路径</th>
+</tr>
+<tr>
+  <td><code>TritonExpMoeRunner</code></td>
+  <td>Triton JIT</td>
+  <td>灵活、可调参、无编译依赖</td>
+  <td>开发调试、通用 GPU、小 batch</td>
+  <td><code>kernels/moe/ep_moe/triton_*.py</code></td>
+</tr>
+<tr>
+  <td><code>CutlassExpMoeRunner</code></td>
+  <td>CUTLASS Grouped GEMM</td>
+  <td>高吞吐、充分利用 Tensor Core</td>
+  <td>H100 大 batch prefill</td>
+  <td><code>kernels/moe/ep_moe/cutlass_*.py</code></td>
+</tr>
+<tr>
+  <td><code>FlashinferTrtllmExpMoeRunner</code></td>
+  <td>FlashInfer (TRT-LLM style)</td>
+  <td>极致融合、支持 FP8</td>
+  <td>decode 小 batch、低延迟</td>
+  <td><code>kernels/moe/ep_moe/flashinfer_*.py</code></td>
+</tr>
+<tr>
+  <td><code>FlashinferCutlassExpMoeRunner</code></td>
+  <td>FlashInfer + CUTLASS</td>
+  <td>结合两者优势</td>
+  <td>混合 prefill/decode</td>
+  <td><code>kernels/moe/ep_moe/flashinfer_*.py</code></td>
+</tr>
+</table>
+</div>
+
+<div class="callout warn">
+<strong>选择建议：</strong> 默认使用 Triton。在 H100/H200 + 大 batch 场景下切换 CUTLASS 可获得 10-30% 提升。
+FlashInfer 在 decode 阶段（batch_size 小、latency-sensitive）效果最佳。
+</div>
+
+<!-- §4 -->
+<h2 id="dispatchers"><span class="step">§4</span>Dispatcher 选择</h2>
+
+<div class="grid cols-2">
+<div class="card">
+  <h4>StandardDispatcher</h4>
+  <p>单机模式，无 All-to-All 通信。直接按 expert_id 排序 token 即可。</p>
+  <ul>
+    <li>最简单、最低开销</li>
+    <li>适用于 EP=1 的部署</li>
+    <li>dispatch = permute by expert</li>
+  </ul>
+</div>
+<div class="card">
+  <h4>DeepEPDispatcher</h4>
+  <p>DeepSeek 开源的 EP 通信库，支持两种模式：</p>
+  <ul>
+    <li><strong>Normal:</strong> 高吞吐，适合 prefill</li>
+    <li><strong>Low-latency:</strong> 减少等待，适合 decode</li>
+    <li>自动利用 NVLink（节点内）+ RDMA（跨节点）</li>
+  </ul>
+</div>
+<div class="card">
+  <h4>FlashinferDispatcher</h4>
+  <p>FlashInfer 原生 dispatch 实现：</p>
+  <ul>
+    <li>与 FlashInfer Runner 深度集成</li>
+    <li>支持 CUDA Graph 友好的 dispatch</li>
+    <li>适合 decode 阶段</li>
+  </ul>
+</div>
+<div class="card">
+  <h4>MooncakeDispatcher</h4>
+  <p>Mooncake EP 协议：</p>
+  <ul>
+    <li>支持 prefill-decode 分离架构</li>
+    <li>Transfer Engine 跨节点通信</li>
+    <li>适合超大规模部署</li>
+  </ul>
+</div>
+</div>
+
+<div class="callout">
+<strong>配置方式：</strong> 通过 <code>--ep-size</code> 和 <code>--enable-deepep-moe</code> / <code>--enable-flashinfer-moe</code> 命令行参数选择。
+未指定 EP 时默认使用 StandardDispatcher。
+</div>
+
+<!-- Navigation -->
+<div class="nav">
+  <a href="01-moe-fundamentals.html">← 01 · MoE 原理与动机</a>
+  <a href="03-topk-and-router.html">03 · TopK & Router 源码 →</a>
+</div>
+
+<p class="foot">mini-sglang-study · MoE Deep Dive · Page 2/7</p>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

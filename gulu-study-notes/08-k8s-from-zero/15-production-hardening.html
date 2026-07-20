@@ -1,0 +1,792 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>生产加固 · RBAC / NetworkPolicy / PDB / 安全上下文</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>生产加固 <span class="tag">第四层 · 15/15</span></h1>
+<div class="sub">RBAC / NetworkPolicy / PDB / 安全上下文——裸集群上生产 = 裸奔，本章是穿上盔甲的最后一步。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么必须做加固</a>
+  <a href="#rbac">§1 RBAC</a>
+  <a href="#netpol">§2 NetworkPolicy</a>
+  <a href="#pdb">§3 PDB</a>
+  <a href="#secctx">§4 安全上下文</a>
+  <a href="#graceful">§5 优雅下线完整方案</a>
+  <a href="#checklist">§6 生产 Checklist</a>
+  <a href="#takeaway">§7 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么上生产前必须做加固</h2>
+
+<div class="card">
+<p>默认的 K8S 集群是一个<b>"全信任"环境</b>：</p>
+<ul class="tight">
+  <li>任何 Pod 都能访问集群内任何其他 Pod 的任意端口（<b>网络全通</b>）</li>
+  <li>默认 ServiceAccount 拥有超出业务需要的权限（<b>权限过大</b>）</li>
+  <li>容器可以以 root 身份运行、挂载宿主机路径（<b>逃逸风险</b>）</li>
+  <li>一次误操作的 <code>kubectl delete ns</code> 可以让整个命名空间灰飞烟灭（<b>无保护</b>）</li>
+  <li>滚动更新时没有最低可用保障，所有副本可能同时下线（<b>服务中断</b>）</li>
+</ul>
+
+<div class="callout bad">
+<b>真实事故</b>：某团队在推理集群中，一个调试 Pod 的 ServiceAccount 拥有 cluster-admin 权限。实习生误执行了一个清理脚本，删除了整个 <code>inference</code> namespace 下所有资源——包括正在服务的 3 个推理 Deployment 和对应的 PVC。恢复耗时 4 小时。
+</div>
+
+<h3>加固的四个维度</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 800 200" width="800">
+  <!-- 四个维度 -->
+  <rect x="20" y="60" width="170" height="80" rx="10" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="105" y="90" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="700">RBAC</text>
+  <text x="105" y="110" text-anchor="middle" fill="#8b93a7" font-size="10">谁能做什么</text>
+  <text x="105" y="125" text-anchor="middle" fill="#8b93a7" font-size="10">最小权限原则</text>
+
+  <rect x="215" y="60" width="170" height="80" rx="10" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="300" y="90" text-anchor="middle" fill="#7dd3fc" font-size="13" font-weight="700">NetworkPolicy</text>
+  <text x="300" y="110" text-anchor="middle" fill="#8b93a7" font-size="10">谁能访问谁</text>
+  <text x="300" y="125" text-anchor="middle" fill="#8b93a7" font-size="10">网络微隔离</text>
+
+  <rect x="410" y="60" width="170" height="80" rx="10" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="495" y="90" text-anchor="middle" fill="#6ee7b7" font-size="13" font-weight="700">PDB</text>
+  <text x="495" y="110" text-anchor="middle" fill="#8b93a7" font-size="10">最低可用保障</text>
+  <text x="495" y="125" text-anchor="middle" fill="#8b93a7" font-size="10">防止批量下线</text>
+
+  <rect x="605" y="60" width="170" height="80" rx="10" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="690" y="90" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700">SecurityContext</text>
+  <text x="690" y="110" text-anchor="middle" fill="#8b93a7" font-size="10">容器运行时加固</text>
+  <text x="690" y="125" text-anchor="middle" fill="#8b93a7" font-size="10">防逃逸/提权</text>
+
+  <!-- 底部 -->
+  <text x="20" y="175" fill="#8b93a7" font-size="11.5">四个维度缺一不可：权限控制了"谁能操作"，网络隔离了"谁能通信"，PDB 保护了"可用性"，SecurityContext 加固了"运行时"。</text>
+</svg>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="rbac"><span class="step">§1</span>RBAC · 基于角色的访问控制</h2>
+
+<div class="card">
+<p>RBAC（Role-Based Access Control）是 K8S 默认的授权机制。核心思想：<b>不直接给用户/SA 权限，而是定义角色、再绑定角色</b>。</p>
+
+<h3>四个核心对象</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 360" width="900">
+  <!-- 标题 -->
+  <text x="20" y="25" fill="#8b93a7" font-size="12">RBAC 绑定模型：Subject × Role × RoleBinding</text>
+
+  <!-- Subject 列（左） -->
+  <text x="50" y="60" fill="#fbbf24" font-size="12" font-weight="600">Subject（谁）</text>
+  <rect x="30" y="75" width="160" height="40" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="110" y="100" text-anchor="middle" fill="#fbbf24" font-size="11">User / Group</text>
+  <rect x="30" y="125" width="160" height="40" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="110" y="150" text-anchor="middle" fill="#fbbf24" font-size="11">ServiceAccount</text>
+
+  <!-- RoleBinding 列（中） -->
+  <text x="310" y="60" fill="#6ee7b7" font-size="12" font-weight="600">Binding（粘合剂）</text>
+  <rect x="270" y="75" width="200" height="40" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="370" y="100" text-anchor="middle" fill="#6ee7b7" font-size="11">RoleBinding</text>
+  <text x="370" y="112" text-anchor="middle" fill="#8b93a7" font-size="9">namespace 级</text>
+  <rect x="270" y="125" width="200" height="40" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="370" y="150" text-anchor="middle" fill="#6ee7b7" font-size="11">ClusterRoleBinding</text>
+  <text x="370" y="162" text-anchor="middle" fill="#8b93a7" font-size="9">集群级</text>
+
+  <!-- Role 列（右） -->
+  <text x="610" y="60" fill="#a78bfa" font-size="12" font-weight="600">Role（权限集合）</text>
+  <rect x="580" y="75" width="200" height="40" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="680" y="100" text-anchor="middle" fill="#a78bfa" font-size="11">Role</text>
+  <text x="680" y="112" text-anchor="middle" fill="#8b93a7" font-size="9">namespace 级权限</text>
+  <rect x="580" y="125" width="200" height="40" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="680" y="150" text-anchor="middle" fill="#a78bfa" font-size="11">ClusterRole</text>
+  <text x="680" y="162" text-anchor="middle" fill="#8b93a7" font-size="9">集群级权限</text>
+
+  <!-- 连线 -->
+  <line x1="190" y1="95" x2="270" y2="95" stroke="#8b93a7" stroke-width="1.2" stroke-dasharray="4 2"/>
+  <line x1="190" y1="145" x2="270" y2="145" stroke="#8b93a7" stroke-width="1.2" stroke-dasharray="4 2"/>
+  <line x1="470" y1="95" x2="580" y2="95" stroke="#8b93a7" stroke-width="1.2" stroke-dasharray="4 2"/>
+  <line x1="470" y1="145" x2="580" y2="145" stroke="#8b93a7" stroke-width="1.2" stroke-dasharray="4 2"/>
+
+  <!-- 关系说明 -->
+  <text x="220" y="200" fill="#8b93a7" font-size="11">subjects[] ←</text>
+  <text x="490" y="200" fill="#8b93a7" font-size="11">→ roleRef</text>
+
+  <!-- rules 详解 -->
+  <rect x="30" y="230" width="840" height="110" rx="10" fill="#1f2937" stroke="#262b38"/>
+  <text x="50" y="255" fill="#a78bfa" font-size="12" font-weight="600">Role / ClusterRole 的 rules 三要素</text>
+
+  <text x="50" y="280" fill="#6ee7b7" font-size="11" font-weight="600">apiGroups</text>
+  <text x="150" y="280" fill="#8b93a7" font-size="11">资源所属 API 组："" = core, "apps", "batch", "networking.k8s.io" ...</text>
+
+  <text x="50" y="305" fill="#6ee7b7" font-size="11" font-weight="600">resources</text>
+  <text x="150" y="305" fill="#8b93a7" font-size="11">资源类型：pods, deployments, services, configmaps, secrets ...</text>
+
+  <text x="50" y="330" fill="#6ee7b7" font-size="11" font-weight="600">verbs</text>
+  <text x="150" y="330" fill="#8b93a7" font-size="11">允许的操作：get, list, watch, create, update, patch, delete</text>
+</svg>
+</div>
+
+<h3>Role vs ClusterRole</h3>
+<table>
+<thead><tr><th>对比项</th><th>Role</th><th>ClusterRole</th></tr></thead>
+<tbody>
+<tr><td>作用范围</td><td>单个 namespace 内的资源</td><td>集群级资源 + 跨 namespace 资源</td></tr>
+<tr><td>典型场景</td><td>推理服务 SA 只需读本 namespace 的 Pod</td><td>Prometheus 需要读所有 namespace 的 metrics</td></tr>
+<tr><td>绑定方式</td><td>RoleBinding（只能绑到同一 namespace）</td><td>ClusterRoleBinding（全集群生效）或 RoleBinding（降级到单 namespace）</td></tr>
+<tr><td>非 namespace 资源</td><td>不能授权 nodes、PV 等集群级资源</td><td>可以</td></tr>
+</tbody>
+</table>
+
+<h3>最小权限原则：推理服务需要什么权限？</h3>
+<div class="callout info">
+推理 Pod 本身通常只需要：① <code>get/list</code> 本 namespace 的 Pods（用于服务发现）② <code>get</code> ConfigMaps（读配置）。<b>不需要 create、delete、update 任何资源</b>。如果你的推理 Pod 拥有 cluster-admin 权限，说明权限配置有严重问题。
+</div>
+
+<h3>完整 YAML 示例：为推理服务创建专用 RBAC</h3>
+<pre><span style="color:#8b93a7"># 1. 创建专用 ServiceAccount</span>
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: inference-sa               <span style="color:#8b93a7"># 推理服务专用 SA</span>
+  namespace: inference
+---
+<span style="color:#8b93a7"># 2. 定义最小权限 Role</span>
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: inference-reader
+  namespace: inference
+rules:
+- apiGroups: [""]                  <span style="color:#8b93a7"># core API 组</span>
+  resources: ["pods"]
+  verbs: ["get", "list"]           <span style="color:#8b93a7"># 只读 Pod 列表（服务发现）</span>
+- apiGroups: [""]
+  resources: ["configmaps"]
+  verbs: ["get"]                   <span style="color:#8b93a7"># 读取推理参数配置</span>
+- apiGroups: [""]
+  resources: ["secrets"]
+  resourceNames: ["model-registry-cred"]  <span style="color:#8b93a7"># 只能读指定的 secret</span>
+  verbs: ["get"]
+---
+<span style="color:#8b93a7"># 3. 绑定 SA 到 Role</span>
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: inference-sa-binding
+  namespace: inference
+subjects:
+- kind: ServiceAccount
+  name: inference-sa               <span style="color:#8b93a7"># 绑定到推理 SA</span>
+  namespace: inference
+roleRef:
+  kind: Role
+  name: inference-reader           <span style="color:#8b93a7"># 引用上面定义的 Role</span>
+  apiGroup: rbac.authorization.k8s.io
+---
+<span style="color:#8b93a7"># 4. 在 Deployment 中引用该 SA</span>
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sglang-inference
+  namespace: inference
+spec:
+  template:
+    spec:
+      serviceAccountName: inference-sa  <span style="color:#8b93a7"># 使用专用 SA，不用 default</span>
+      automountServiceAccountToken: true
+      containers:
+      - name: sglang
+        image: lmsysorg/sglang:latest
+</pre>
+
+<div class="callout warn">
+<b>常见陷阱</b>：很多人直接用 <code>default</code> ServiceAccount，它默认拥有的权限取决于集群配置。在某些发行版中，default SA 居然有读集群所有 Secret 的权限——这意味着任何 Pod 都能获取其他服务的数据库密码。
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：如何审计当前集群的 RBAC 配置？</button>
+<div class="expand-content">
+<pre><span style="color:#8b93a7"># 查看某个 SA 实际拥有的权限</span>
+kubectl auth can-i --list --as=system:serviceaccount:inference:inference-sa
+
+<span style="color:#8b93a7"># 查看谁能删除 namespace（找出危险权限）</span>
+kubectl auth can-i delete namespaces --all-namespaces --list
+
+<span style="color:#8b93a7"># 查看所有 ClusterRoleBinding（谁拥有集群级权限）</span>
+kubectl get clusterrolebindings -o wide | grep -v "system:"
+
+<span style="color:#8b93a7"># 查看某个 namespace 下所有 RoleBinding</span>
+kubectl get rolebindings -n inference -o yaml
+</pre>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="netpol"><span class="step">§2</span>NetworkPolicy · 网络微隔离</h2>
+
+<div class="card">
+<h3>默认行为：全通 = 不安全</h3>
+<p>K8S 默认网络模型：<b>集群内所有 Pod 之间、Pod 与 Service 之间可以互相通信</b>。这意味着：</p>
+<ul class="tight">
+  <li>一个被入侵的调试 Pod 可以直接扫描推理服务的内部端口</li>
+  <li>推理 Pod 可以主动连接到集群内的 MySQL、Redis 等任何服务</li>
+  <li>横向移动没有任何阻碍——一个突破点 = 全集群暴露</li>
+</ul>
+
+<div class="callout bad">
+<b>NetworkPolicy = 白名单防火墙</b>。一旦某个 Pod 被 NetworkPolicy 选中（通过 podSelector），未被规则显式允许的流量全部拒绝。没有 NetworkPolicy 时流量全通，有了之后默认拒绝。
+</div>
+
+<h3>核心概念</h3>
+<table>
+<thead><tr><th>字段</th><th>含义</th><th>类比</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>podSelector</b></td><td>这条规则保护谁</td><td>安全组绑定到哪些实例</td></tr>
+<tr><td style="color:#7dd3fc"><b>ingress</b></td><td>允许谁访问我</td><td>入站规则</td></tr>
+<tr><td style="color:#fbbf24"><b>egress</b></td><td>我能访问谁</td><td>出站规则</td></tr>
+<tr><td style="color:#a78bfa"><b>policyTypes</b></td><td>控制哪个方向</td><td>["Ingress"] / ["Egress"] / 两者都有</td></tr>
+</tbody>
+</table>
+
+<h3>推理场景：严格限制推理 Pod 的网络访问</h3>
+<pre><span style="color:#8b93a7"># 推理 Pod 只允许：</span>
+<span style="color:#8b93a7"># 入站：来自 Ingress Controller（带 label ingress=nginx）的流量</span>
+<span style="color:#8b93a7"># 出站：访问模型存储（COS/S3 + DNS）</span>
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: inference-pod-policy
+  namespace: inference
+spec:
+  podSelector:
+    matchLabels:
+      app: sglang-inference         <span style="color:#8b93a7"># 保护所有推理 Pod</span>
+  policyTypes:
+  - Ingress
+  - Egress
+  ingress:
+  - from:
+    <span style="color:#8b93a7"># 只允许来自 Ingress Controller 的流量</span>
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: ingress-nginx
+      podSelector:
+        matchLabels:
+          app.kubernetes.io/name: ingress-nginx
+    ports:
+    - protocol: TCP
+      port: 30000                   <span style="color:#8b93a7"># 推理服务端口</span>
+  - from:
+    <span style="color:#8b93a7"># 允许 Prometheus 抓取 metrics</span>
+    - namespaceSelector:
+        matchLabels:
+          kubernetes.io/metadata.name: monitoring
+      podSelector:
+        matchLabels:
+          app: prometheus
+    ports:
+    - protocol: TCP
+      port: 30000                   <span style="color:#8b93a7"># /metrics 端点同端口</span>
+  egress:
+  - to:
+    <span style="color:#8b93a7"># 允许访问集群 DNS（必须！否则域名解析失败）</span>
+    - namespaceSelector: {}
+      podSelector:
+        matchLabels:
+          k8s-app: kube-dns
+    ports:
+    - protocol: UDP
+      port: 53
+    - protocol: TCP
+      port: 53
+  - to:
+    <span style="color:#8b93a7"># 允许访问对象存储（模型下载）— 用 CIDR 指定外部 IP 段</span>
+    - ipBlock:
+        cidr: 10.0.0.0/8            <span style="color:#8b93a7"># 内网 COS endpoint</span>
+    ports:
+    - protocol: TCP
+      port: 443
+</pre>
+
+<h3>默认拒绝所有流量的"兜底策略"</h3>
+<pre><span style="color:#8b93a7"># 先用默认拒绝把口子收紧，再逐条开放白名单</span>
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: inference
+spec:
+  podSelector: {}                   <span style="color:#8b93a7"># 空 = 选中本 namespace 所有 Pod</span>
+  policyTypes:
+  - Ingress
+  - Egress
+  <span style="color:#8b93a7"># 不写 ingress/egress 规则 = 全部拒绝</span>
+</pre>
+
+<div class="callout warn">
+<b>CNI 兼容性</b>：NetworkPolicy 需要 CNI 插件支持才能生效。<b>Calico</b> 和 <b>Cilium</b> 完整支持；<b>Flannel 不支持</b>（apply 不报错但规则不生效，这是最危险的——你以为有防护其实没有）。生产环境务必用 Calico 或 Cilium。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+推理集群中常见的错误：忘记放行 DNS 出站（UDP 53）。Pod 的 egress 被限制后，如果没有显式允许 kube-dns，所有域名解析都会失败——模型下载卡住、日志上报超时、metrics push 失败。排查时 <code>kubectl exec</code> 进去 <code>nslookup google.com</code> 就能确认。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="pdb"><span class="step">§3</span>PodDisruptionBudget · 维护时的可用性护栏</h2>
+
+<div class="card">
+<p>PDB（PodDisruptionBudget）告诉 K8S：<b>在自愿中断（voluntary disruption）期间，必须保证至少 N 个 Pod 可用</b>。</p>
+
+<h3>什么是"自愿中断"？</h3>
+<table>
+<thead><tr><th>自愿中断（PDB 能保护）</th><th>非自愿中断（PDB 管不了）</th></tr></thead>
+<tbody>
+<tr><td><code>kubectl drain</code> 节点维护</td><td>节点硬件故障</td></tr>
+<tr><td>集群升级（kube-upgrade）</td><td>内核崩溃</td></tr>
+<tr><td>Cluster Autoscaler 缩容</td><td>OOM kill</td></tr>
+<tr><td>手动删除 Pod</td><td>容器 crash</td></tr>
+</tbody>
+</table>
+
+<h3>两个互斥参数</h3>
+<table>
+<thead><tr><th>参数</th><th>含义</th><th>示例</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>minAvailable</b></td><td>最少保持几个可用</td><td><code>minAvailable: 2</code> → 3 副本中最多同时下线 1 个</td></tr>
+<tr><td style="color:#fbbf24"><b>maxUnavailable</b></td><td>最多允许几个不可用</td><td><code>maxUnavailable: 1</code> → 同上效果</td></tr>
+</tbody>
+</table>
+
+<div class="callout info">
+两者只能二选一。推荐使用 <code>minAvailable</code>——语义更直观："保证至少 N 个在线"。
+</div>
+
+<h3>推理场景：3 副本推理服务的 PDB</h3>
+<pre>apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sglang-pdb
+  namespace: inference
+spec:
+  minAvailable: 2                   <span style="color:#8b93a7"># 3 副本中至少保持 2 个在线</span>
+  selector:
+    matchLabels:
+      app: sglang-inference         <span style="color:#8b93a7"># 选中推理 Deployment 的 Pod</span>
+</pre>
+
+<h3>PDB 的阻塞行为</h3>
+<pre><span style="color:#8b93a7"># 场景：运维对 Node-1 执行 drain</span>
+$ kubectl drain node-1 --ignore-daemonsets --delete-emptydir-data
+
+<span style="color:#8b93a7"># 如果 node-1 上有 1 个推理 Pod，且当前只有 2 个 Pod 是 Ready：</span>
+<span style="color:#8b93a7"># drain 会被阻塞！输出：</span>
+error when evicting pods/"sglang-inference-abc12" -n "inference" (will retry after 5s):
+Cannot evict pod as it would violate the pod's disruption budget.
+
+<span style="color:#8b93a7"># drain 会持续重试，直到：</span>
+<span style="color:#8b93a7"># ① 另一个 Node 上新 Pod 变为 Ready（副本数回到 3）</span>
+<span style="color:#8b93a7"># ② 或者管理员手动 --force（跳过 PDB 保护——危险！）</span>
+</pre>
+
+<div class="callout warn">
+<b>PDB + 滚动更新的配合</b>：Deployment 的 <code>maxUnavailable</code> 控制"滚动更新时最多下线几个旧 Pod"，PDB 的 <code>minAvailable</code> 控制"外部中断时最少保留几个"。两者共同保障可用性，但它们是独立机制——PDB 不影响 Deployment 自身的滚动更新策略。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+GPU 推理 Pod 启动要 60-120 秒加载模型。如果 PDB 设为 <code>minAvailable: 2</code>，drain 时新 Pod 必须在别的 Node 上变为 Ready 之后，旧 Pod 才会被驱逐。这意味着 drain 一个节点可能需要等 2+ 分钟。运维做节点维护时要预留足够的等待时间，不要加 <code>--force</code>。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="secctx"><span class="step">§4</span>安全上下文 · 运行时加固</h2>
+
+<div class="card">
+<p><code>securityContext</code> 控制容器的运行时安全属性。分为 <b>Pod 级</b>（对所有容器生效）和 <b>Container 级</b>（覆盖 Pod 级设置）。</p>
+
+<h3>关键字段</h3>
+<table>
+<thead><tr><th>字段</th><th>含义</th><th>推荐值</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>runAsNonRoot</b></td><td>禁止以 root 身份运行容器</td><td><code>true</code></td></tr>
+<tr><td style="color:#6ee7b7"><b>runAsUser</b></td><td>指定运行用户 UID</td><td><code>1000</code>（非 0 即可）</td></tr>
+<tr><td style="color:#7dd3fc"><b>readOnlyRootFilesystem</b></td><td>根文件系统只读</td><td><code>true</code>（防止写入恶意文件）</td></tr>
+<tr><td style="color:#fbbf24"><b>allowPrivilegeEscalation</b></td><td>是否允许子进程提权</td><td><code>false</code></td></tr>
+<tr><td style="color:#a78bfa"><b>capabilities.drop</b></td><td>移除 Linux capabilities</td><td><code>["ALL"]</code>（先移除全部，再按需添加）</td></tr>
+<tr><td style="color:#a78bfa"><b>capabilities.add</b></td><td>添加所需 capabilities</td><td>按需添加最少的</td></tr>
+<tr><td style="color:#fb7185"><b>seccompProfile</b></td><td>限制可用的系统调用</td><td><code>RuntimeDefault</code></td></tr>
+</tbody>
+</table>
+
+<h3>GPU 推理的特殊需求</h3>
+<div class="callout warn">
+GPU 推理服务（CUDA）需要一些额外权限：
+<ul class="tight" style="margin-top:6px">
+<li><code>SYS_PTRACE</code>：CUDA 多进程通信（MPS）和调试需要 ptrace 能力</li>
+<li>设备文件访问：<code>/dev/nvidia*</code> 设备由 device-plugin 自动挂载，不需要额外配置</li>
+<li>共享内存：多 GPU 通信需要较大的 <code>/dev/shm</code>，通过 <code>emptyDir</code> 挂载 medium: Memory 实现</li>
+</ul>
+</div>
+
+<h3>完整 YAML：兼顾安全和 GPU 使用的配置</h3>
+<pre>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sglang-inference
+  namespace: inference
+spec:
+  template:
+    spec:
+      serviceAccountName: inference-sa
+      <span style="color:#8b93a7"># Pod 级安全上下文</span>
+      securityContext:
+        runAsNonRoot: true           <span style="color:#8b93a7"># 禁止 root 运行</span>
+        runAsUser: 1000              <span style="color:#8b93a7"># 以 UID 1000 运行</span>
+        runAsGroup: 1000
+        fsGroup: 1000               <span style="color:#8b93a7"># 挂载卷的文件组</span>
+        seccompProfile:
+          type: RuntimeDefault       <span style="color:#8b93a7"># 启用默认 seccomp 配置</span>
+      containers:
+      - name: sglang
+        image: lmsysorg/sglang:latest
+        <span style="color:#8b93a7"># Container 级安全上下文</span>
+        securityContext:
+          allowPrivilegeEscalation: false
+          readOnlyRootFilesystem: true  <span style="color:#8b93a7"># 根文件系统只读</span>
+          capabilities:
+            drop: ["ALL"]            <span style="color:#8b93a7"># 先移除全部 capabilities</span>
+            add: ["SYS_PTRACE"]      <span style="color:#8b93a7"># CUDA MPS 需要 ptrace</span>
+        resources:
+          limits:
+            nvidia.com/gpu: 1
+          requests:
+            nvidia.com/gpu: 1
+        volumeMounts:
+        - name: shm
+          mountPath: /dev/shm        <span style="color:#8b93a7"># GPU 通信用大共享内存</span>
+        - name: tmp
+          mountPath: /tmp            <span style="color:#8b93a7"># 临时文件写到这里</span>
+        - name: cache
+          mountPath: /home/user/.cache  <span style="color:#8b93a7"># 模型缓存目录</span>
+      volumes:
+      - name: shm
+        emptyDir:
+          medium: Memory
+          sizeLimit: 8Gi             <span style="color:#8b93a7"># 8GB 共享内存</span>
+      - name: tmp
+        emptyDir:
+          sizeLimit: 1Gi
+      - name: cache
+        persistentVolumeClaim:
+          claimName: model-cache-pvc
+</pre>
+
+<div class="callout info">
+<b>readOnlyRootFilesystem 的关键</b>：开启后容器不能写根文件系统的任何位置。所以需要为 <code>/tmp</code>、<code>/dev/shm</code>、缓存目录等显式挂载可写卷。这虽然麻烦，但能彻底防止恶意软件写入可执行文件。
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：为什么 drop ALL 再 add 比直接不配 capabilities 安全？</button>
+<div class="expand-content">
+<p>默认情况下，Docker/containerd 给容器约 14 种 capabilities（如 NET_BIND_SERVICE、CHOWN、SETUID 等）。其中 SETUID 允许容器内进程设置任意 UID——结合某些内核漏洞可以逃逸到宿主机。</p>
+<p><code>drop: ["ALL"]</code> 先清零，再用 <code>add</code> 只加回业务真正需要的（推理服务通常只需要 SYS_PTRACE）。攻击面从 14 种降到 1 种。</p>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="graceful"><span class="step">§5</span>优雅下线完整方案</h2>
+
+<div class="card">
+<p>把前面章节（Pod 生命周期）讲的优雅下线与本章的 PDB 结合，形成<b>完整的生产级下线方案</b>：</p>
+
+<h3>下线时序全貌</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 320" width="900">
+  <!-- 时间线 -->
+  <line x1="50" y1="40" x2="850" y2="40" stroke="#262b38" stroke-width="2"/>
+  <text x="50" y="25" fill="#8b93a7" font-size="10">t=0</text>
+  <text x="800" y="25" fill="#8b93a7" font-size="10">t=grace period</text>
+
+  <!-- 事件 1: PDB 检查 -->
+  <circle cx="100" cy="40" r="5" fill="#6ee7b7"/>
+  <text x="100" y="65" text-anchor="middle" fill="#6ee7b7" font-size="10" font-weight="600">PDB 检查</text>
+  <text x="100" y="80" text-anchor="middle" fill="#8b93a7" font-size="9">可以驱逐吗？</text>
+
+  <!-- 事件 2: Pod 标记 Terminating -->
+  <circle cx="220" cy="40" r="5" fill="#fbbf24"/>
+  <text x="220" y="65" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">Terminating</text>
+  <text x="220" y="80" text-anchor="middle" fill="#8b93a7" font-size="9">Pod 进入终止状态</text>
+
+  <!-- 并行路径 -->
+  <line x1="280" y1="40" x2="280" y2="110" stroke="#fbbf24" stroke-width="1"/>
+  <line x1="280" y1="40" x2="280" y2="200" stroke="#7dd3fc" stroke-width="1"/>
+
+  <!-- 路径 A: 容器侧 -->
+  <rect x="300" y="90" width="400" height="50" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="315" y="110" fill="#fbbf24" font-size="11" font-weight="600">路径 A：容器侧</text>
+  <text x="315" y="130" fill="#8b93a7" font-size="10">preStop(sleep 5s) → SIGTERM → 停止接新请求 → 等待进行中请求完成 → 退出</text>
+
+  <!-- 路径 B: 网络侧 -->
+  <rect x="300" y="180" width="400" height="50" rx="8" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="315" y="200" fill="#7dd3fc" font-size="11" font-weight="600">路径 B：网络侧</text>
+  <text x="315" y="220" fill="#8b93a7" font-size="10">Endpoints 摘除 → kube-proxy 更新 iptables → LB 健康检查失败摘节点</text>
+
+  <!-- 超时 -->
+  <rect x="730" y="90" width="100" height="50" rx="8" fill="#1f2937" stroke="#f87171"/>
+  <text x="780" y="110" text-anchor="middle" fill="#f87171" font-size="10" font-weight="600">SIGKILL</text>
+  <text x="780" y="128" text-anchor="middle" fill="#8b93a7" font-size="9">强制杀掉</text>
+
+  <!-- 时序细节 -->
+  <text x="50" y="270" fill="#6ee7b7" font-size="11">完整时序：PDB 放行(0-∞s) → preStop(5s) → SIGTERM → 排空请求(0-60s) → 正常退出</text>
+  <text x="50" y="290" fill="#8b93a7" font-size="11">同时进行：Endpoints 更新(1-3s) → iptables 收敛(1-2s) → LB 摘流(5-10s)</text>
+  <text x="50" y="310" fill="#fbbf24" font-size="11">关键：preStop 的 sleep 覆盖网络侧收敛时间，确保不会有新流量打到正在退出的 Pod</text>
+</svg>
+</div>
+
+<h3>推理服务的连接排空逻辑</h3>
+<p>推理服务收到 SIGTERM 后应执行：</p>
+<ul class="tight">
+  <li><b>① 停止接受新请求</b>：关闭 listener 或返回 503</li>
+  <li><b>② 等待进行中请求完成</b>：streaming 推理可能持续 30-60 秒</li>
+  <li><b>③ 释放 GPU 资源</b>：清理 CUDA context</li>
+  <li><b>④ 正常退出</b>：exit 0</li>
+</ul>
+
+<h3>完整 YAML 配置</h3>
+<pre>apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sglang-inference
+  namespace: inference
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 1                    <span style="color:#8b93a7"># 更新时最多多出 1 个 Pod</span>
+      maxUnavailable: 0              <span style="color:#8b93a7"># 更新时不允许减少可用数</span>
+  template:
+    spec:
+      terminationGracePeriodSeconds: 90  <span style="color:#8b93a7"># 5s preStop + 最长 60s 推理 + 25s 余量</span>
+      containers:
+      - name: sglang
+        image: lmsysorg/sglang:latest
+        ports:
+        - containerPort: 30000
+        lifecycle:
+          preStop:
+            exec:
+              command:
+              - /bin/sh
+              - -c
+              - |
+                <span style="color:#8b93a7"># 1. 等待网络侧摘流完成</span>
+                sleep 5
+                <span style="color:#8b93a7"># 2. 通知推理进程优雅退出（如果支持 graceful shutdown endpoint）</span>
+                curl -s http://localhost:30000/shutdown || true
+        readinessProbe:
+          httpGet:
+            path: /health_generate
+            port: 30000
+          periodSeconds: 5
+          failureThreshold: 2
+        startupProbe:
+          httpGet:
+            path: /health
+            port: 30000
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          failureThreshold: 30
+---
+<span style="color:#8b93a7"># PDB：确保滚动更新/drain 时至少 2 个副本在线</span>
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: sglang-pdb
+  namespace: inference
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: sglang-inference
+</pre>
+
+<div class="callout info">
+<b>maxUnavailable: 0 + maxSurge: 1</b> 的含义：滚动更新时先起一个新 Pod（surge），等它 Ready 后再杀一个旧 Pod。全程可用 Pod 数 >= replicas。代价是更新期间需要额外 1 个 GPU 的资源——但对于推理服务，可用性远比资源节约重要。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="checklist"><span class="step">§6</span>生产 Checklist</h2>
+
+<div class="card">
+
+<div class="anchor-box">
+<div class="label">实战锚点 · 推理集群上线前检查清单</div>
+以下每一项在上线前必须逐条确认。任何一项 "否" 都是潜在的生产事故。
+</div>
+
+<table>
+<thead><tr><th>类别</th><th>检查项</th><th>对应配置</th></tr></thead>
+<tbody>
+<tr><td rowspan="3" style="color:#a78bfa"><b>资源配置</b></td><td>每个容器都配了 requests 和 limits</td><td><code>resources.requests / limits</code></td></tr>
+<tr><td>GPU 资源明确声明</td><td><code>nvidia.com/gpu: N</code></td></tr>
+<tr><td>共享内存足够大（多 GPU 通信）</td><td><code>emptyDir medium: Memory sizeLimit: 8Gi+</code></td></tr>
+
+<tr><td rowspan="3" style="color:#6ee7b7"><b>探针</b></td><td>startupProbe 覆盖模型加载时间</td><td><code>failureThreshold × periodSeconds > 模型加载时间</code></td></tr>
+<tr><td>livenessProbe 检测进程死锁</td><td><code>/health</code> 端点</td></tr>
+<tr><td>readinessProbe 验证推理能力</td><td><code>/health_generate</code> 端点</td></tr>
+
+<tr><td rowspan="4" style="color:#fbbf24"><b>安全</b></td><td>使用专用 ServiceAccount（非 default）</td><td><code>serviceAccountName</code></td></tr>
+<tr><td>RBAC 最小权限（只读 pods/configmaps）</td><td><code>Role + RoleBinding</code></td></tr>
+<tr><td>runAsNonRoot + readOnlyRootFilesystem</td><td><code>securityContext</code></td></tr>
+<tr><td>capabilities drop ALL（按需 add）</td><td><code>capabilities.drop: ["ALL"]</code></td></tr>
+
+<tr><td rowspan="3" style="color:#7dd3fc"><b>网络</b></td><td>NetworkPolicy 限制入站来源</td><td>只允许 Ingress Controller + Prometheus</td></tr>
+<tr><td>NetworkPolicy 限制出站目标</td><td>只允许 DNS + 模型存储</td></tr>
+<tr><td>CNI 确认支持 NetworkPolicy</td><td>Calico / Cilium（不要用 Flannel）</td></tr>
+
+<tr><td rowspan="3" style="color:#fb7185"><b>可用性</b></td><td>PDB 保障最低可用数</td><td><code>minAvailable: N-1</code> 或更高</td></tr>
+<tr><td>优雅下线配置完整</td><td><code>preStop + terminationGracePeriodSeconds</code></td></tr>
+<tr><td>滚动更新零停机</td><td><code>maxUnavailable: 0, maxSurge: 1</code></td></tr>
+
+<tr><td rowspan="3" style="color:#8b93a7"><b>可观测性</b></td><td>Prometheus 能抓到 metrics</td><td><code>ServiceMonitor</code> 或 annotations</td></tr>
+<tr><td>日志输出到 stdout/stderr</td><td>配合日志采集 DaemonSet</td></tr>
+<tr><td>告警规则覆盖 OOM / GPU 错误 / 5xx</td><td>PrometheusRule 或 AlertManager</td></tr>
+
+<tr><td rowspan="2" style="color:#fbbf24"><b>灾备</b></td><td>关键配置和 Secret 有备份</td><td>etcd 定期快照 + Velero</td></tr>
+<tr><td>模型权重多副本存储</td><td>对象存储多 AZ 冗余</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§7</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① RBAC</div><div>最小权限原则：专用 SA + Role + RoleBinding，推理 Pod 只需 get/list pods + get configmaps</div>
+  <div class="k">② NetworkPolicy</div><div>白名单防火墙：先 deny all，再逐条开放。别忘记放行 DNS（UDP 53）</div>
+  <div class="k">③ PDB</div><div>维护时的可用性护栏：minAvailable 保障最低在线数，drain 时自动阻塞直到安全</div>
+  <div class="k">④ SecurityContext</div><div>runAsNonRoot + readOnlyRootFilesystem + drop ALL capabilities，GPU 只加 SYS_PTRACE</div>
+  <div class="k">⑤ 优雅下线</div><div>preStop(sleep 5s) + terminationGracePeriod(90s) + maxUnavailable:0 = 零停机更新</div>
+  <div class="k">⑥ Checklist</div><div>上线前逐条过——资源/探针/安全/网络/可用性/可观测性/灾备，一项不能少</div>
+</div>
+
+<h3 style="margin-top:32px;color:var(--brand)">系列回顾 · 15 章旅程总结</h3>
+
+<div class="grid cols-3" style="margin-top:14px">
+  <div class="card" style="padding:14px">
+    <h4 style="margin-top:0;color:var(--brand2)">第一层 · 基础概念</h4>
+    <ul class="tight" style="font-size:12px">
+      <li>01 集群架构：控制平面 + 数据平面</li>
+      <li>02 Pod 生命周期：探针 + 优雅下线</li>
+      <li>03 工作负载控制器：Deploy / STS / DS / Job</li>
+    </ul>
+  </div>
+  <div class="card" style="padding:14px">
+    <h4 style="margin-top:0;color:var(--brand2)">第二层 · 网络与存储</h4>
+    <ul class="tight" style="font-size:12px">
+      <li>04 Service 与服务发现</li>
+      <li>05 Ingress 与流量入口</li>
+      <li>06 存储：PV / PVC / StorageClass</li>
+      <li>07 ConfigMap / Secret 配置管理</li>
+    </ul>
+  </div>
+  <div class="card" style="padding:14px">
+    <h4 style="margin-top:0;color:var(--brand2)">第三层 · 调度与扩缩</h4>
+    <ul class="tight" style="font-size:12px">
+      <li>08 调度：亲和性 / Taint / 拓扑分散</li>
+      <li>09 GPU 调度与 Device Plugin</li>
+      <li>10 自动扩缩：HPA / VPA / Karpenter</li>
+      <li>11 资源管理：QoS / LimitRange / Quota</li>
+    </ul>
+  </div>
+  <div class="card" style="padding:14px">
+    <h4 style="margin-top:0;color:var(--brand2)">第四层 · 生产运维</h4>
+    <ul class="tight" style="font-size:12px">
+      <li>12 可观测性：Metrics / Logging / Tracing</li>
+      <li>13 CI/CD 与 GitOps</li>
+      <li>14 多机推理：LWS 与跨节点通信</li>
+      <li>15 生产加固：RBAC / NetworkPolicy / PDB（本章）</li>
+    </ul>
+  </div>
+</div>
+
+<h3 style="margin-top:24px;color:var(--brand)">下一步建议</h3>
+<div class="callout">
+恭喜你完成了整个系列！接下来的方向：
+<ul class="tight" style="margin-top:8px">
+  <li><b>动手实践</b>：用 kind / minikube 搭建本地集群，把每章的 YAML 跑一遍</li>
+  <li><b>深入 Operator</b>：理解 CRD + Custom Controller 的模式，读一个真实 Operator 的源码（如 KubeRay）</li>
+  <li><b>服务网格</b>：Istio / Cilium Service Mesh 提供更细粒度的流量管理和可观测性</li>
+  <li><b>多集群</b>：跨地域部署推理服务时的联邦调度（Karmada / Clusternet）</li>
+  <li><b>安全进阶</b>：OPA/Gatekeeper 策略引擎、Falco 运行时威胁检测、镜像签名验证</li>
+</ul>
+</div>
+
+<div class="callout info">
+<b>最重要的一点</b>：K8S 的核心思想始终不变——<b>声明式 + 控制循环 + 最终一致</b>。无论上面的概念有多少，它们都在做同一件事：你声明"我想要什么"，K8S 持续把现实对齐到你的声明。理解这个本质，任何新概念都只是这个模式的又一次应用。
+</div>
+</div>
+
+<div class="foot">
+第四层 · 15 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a> · 系列完结
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,615 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>12 · MoE 架构 · Mixture of Experts</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>MoE 架构 · Mixture of Experts <span class="tag">12</span></h1>
+<div class="sub">DeepSeek / Qwen3-MoE / Mixtral 都在用的"稀疏激活"架构。mini-sglang 怎么实现 + 跟 dense 的区别。</div>
+
+<div class="toc">
+  <a href="#what">MoE 是啥</a>
+  <a href="#vs-dense">vs Dense 对比</a>
+  <a href="#flow">forward 流程</a>
+  <a href="#router">Router 与 top-k</a>
+  <a href="#fused">Fused MoE kernel</a>
+  <a href="#tp-strategy">mini-sglang 的 TP 策略</a>
+  <a href="#ep">Expert Parallel（未实现）</a>
+</div>
+
+<!-- ============ 1 ============ -->
+<h2 id="what"><span class="step">PART 1</span>MoE 的核心思想</h2>
+
+<div class="card">
+<p>Dense 模型的 MLP：<u>所有 token 都经过同一个 MLP</u>。</p>
+<p>MoE 模型的 MLP：<strong>有 N 个"专家 MLP"（experts），每个 token 只经过 top-k 个</strong>。其他 expert 不参与这个 token 的计算。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 320" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">Dense MLP vs MoE</text>
+
+  <!-- Dense -->
+  <g>
+    <text x="250" y="60" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="700">Dense (Llama)</text>
+    <rect x="60" y="80" width="120" height="40" fill="#fbbf24" rx="4"/>
+    <text x="120" y="105" text-anchor="middle" fill="#0b0d12" font-size="11">token</text>
+    <line x1="180" y1="100" x2="240" y2="100" stroke="#cbd5e1" marker-end="url(#ar)"/>
+    <rect x="240" y="70" width="260" height="60" fill="#34d399" rx="6"/>
+    <text x="370" y="95" text-anchor="middle" fill="#0b0d12" font-size="13" font-weight="700">同一个 MLP</text>
+    <text x="370" y="115" text-anchor="middle" fill="#0b0d12" font-size="10">gate_up_proj + down_proj</text>
+    <line x1="500" y1="100" x2="560" y2="100" stroke="#cbd5e1" marker-end="url(#ar)"/>
+    <rect x="560" y="80" width="120" height="40" fill="#7dd3fc" rx="4"/>
+    <text x="620" y="105" text-anchor="middle" fill="#0b0d12" font-size="11">output</text>
+
+    <text x="370" y="160" text-anchor="middle" fill="#8b93a7" font-size="11">参数量：2·hidden·intermediate</text>
+    <text x="370" y="175" text-anchor="middle" fill="#8b93a7" font-size="11">每 token FLOPs：2·hidden·intermediate</text>
+  </g>
+
+  <!-- MoE -->
+  <g transform="translate(0, 170)">
+    <text x="250" y="30" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="700">MoE (Qwen3-MoE: 64 experts, top-2)</text>
+    <rect x="60" y="50" width="120" height="40" fill="#fbbf24" rx="4"/>
+    <text x="120" y="75" text-anchor="middle" fill="#0b0d12" font-size="11">token</text>
+    <line x1="180" y1="70" x2="220" y2="70" stroke="#cbd5e1" marker-end="url(#ar)"/>
+
+    <rect x="220" y="40" width="100" height="60" fill="#a78bfa" rx="6"/>
+    <text x="270" y="65" text-anchor="middle" fill="#0b0d12" font-size="12" font-weight="700">Router</text>
+    <text x="270" y="82" text-anchor="middle" fill="#0b0d12" font-size="10">gate linear</text>
+
+    <line x1="320" y1="70" x2="360" y2="55" stroke="#34d399" marker-end="url(#ar-g)"/>
+    <line x1="320" y1="70" x2="360" y2="85" stroke="#34d399" marker-end="url(#ar-g)"/>
+
+    <!-- 4 experts shown, 2 selected -->
+    <rect x="360" y="40" width="80" height="30" fill="#34d399" rx="4"/>
+    <text x="400" y="60" text-anchor="middle" fill="#0b0d12" font-size="10">expert 3 ★</text>
+
+    <rect x="360" y="75" width="80" height="30" fill="#374151" rx="4"/>
+    <text x="400" y="95" text-anchor="middle" fill="#6b7280" font-size="10">expert 7</text>
+
+    <rect x="360" y="110" width="80" height="30" fill="#34d399" rx="4"/>
+    <text x="400" y="130" text-anchor="middle" fill="#0b0d12" font-size="10">expert 14 ★</text>
+
+    <text x="400" y="155" text-anchor="middle" fill="#6b7280" font-size="10">... (64 个总共)</text>
+
+    <line x1="440" y1="55" x2="490" y2="70" stroke="#34d399" marker-end="url(#ar-g)"/>
+    <line x1="440" y1="125" x2="490" y2="70" stroke="#34d399" marker-end="url(#ar-g)"/>
+
+    <rect x="490" y="50" width="100" height="40" fill="#fbbf24" rx="4"/>
+    <text x="540" y="75" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">加权求和</text>
+
+    <line x1="590" y1="70" x2="620" y2="70" stroke="#cbd5e1" marker-end="url(#ar)"/>
+    <rect x="620" y="50" width="100" height="40" fill="#7dd3fc" rx="4"/>
+    <text x="670" y="75" text-anchor="middle" fill="#0b0d12" font-size="11">output</text>
+
+    <text x="400" y="135" fill="#8b93a7" font-size="11"></text>
+  </g>
+
+  <text x="400" y="315" fill="#8b93a7" font-size="11">参数量：64 × (2·hidden·interm_moe) · 但每 token FLOPs = <u>只算 2 个 expert</u>，约 dense 1/32</text>
+
+  <defs>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#cbd5e1"/></marker>
+    <marker id="ar-g" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#34d399"/></marker>
+  </defs>
+</svg>
+</div>
+
+<h3>核心公式</h3>
+<pre><code>gate_scores = Linear_gate(token)                <span class="com"># [num_experts]</span>
+top_k_vals, top_k_ids = topk(softmax(gate_scores), k=<span class="num">2</span>)  <span class="com"># 选 top-2</span>
+
+output = sum(
+    top_k_vals[i] * experts[top_k_ids[i]](token)  <span class="com"># 只计算 top-k 个 expert</span>
+    <span class="kw">for</span> i <span class="kw">in</span> range(k)
+)</code></pre>
+
+<div class="callout">
+<strong>"稀疏激活" 的直观理解</strong>：DeepSeek-V3 有 256 个 expert，每 token 只激活 8 个——<u>97% 的参数在每次 forward 里是躺平的</u>。这就是 MoE 能把"总参数量"做到万亿级但每次推理只算几百亿的秘诀。
+</div>
+</div>
+
+<!-- ============ 2 ============ -->
+<h2 id="vs-dense"><span class="step">PART 2</span>关键指标对比</h2>
+
+<div class="card">
+<table>
+<tr><th>维度</th><th>Dense (Llama-3-70B)</th><th>MoE (Qwen3-235B-A22B)</th></tr>
+<tr><td>总参数</td><td>70B</td><td>235B</td></tr>
+<tr><td>每 token 激活参数</td><td>70B（全部）</td><td>22B（top-8 exp · ~10%）</td></tr>
+<tr><td>显存占用</td><td>140 GB</td><td>470 GB（更大！）</td></tr>
+<tr><td>计算量/ token</td><td>~70 GFLOPs</td><td>~22 GFLOPs</td></tr>
+<tr><td>质量</td><td>基线</td><td>通常更好（参数多）</td></tr>
+<tr><td>吞吐（同等显存下）</td><td>基线</td><td>通常更高（算得少）</td></tr>
+<tr><td>推理复杂度</td><td>简单</td><td>需要 router + 可能的 all-to-all</td></tr>
+</table>
+
+<div class="callout info">
+<strong>MoE 的 trade-off：用显存换质量 + 算力效率。</strong> 适合有大显存（集群）的场景，不适合单卡部署。Qwen3-MoE 的"A22B"就是说"激活 22B"——推理时算力需求只相当于 22B dense 模型。
+</div>
+</div>
+
+<!-- ============ 3 ============ -->
+<h2 id="flow"><span class="step">PART 3</span>MoEMLP 的 forward 流程（mini-sglang 源码）</h2>
+
+<div class="card">
+
+<pre><code><span class="com"># models/utils.py:53  MoEMLP</span>
+<span class="kw">class</span> <span class="fn">MoEMLP</span>(BaseOP):
+    <span class="kw">def</span> <span class="fn">__init__</span>(self, config):
+        self.experts = <span class="fn">MoELayer</span>(
+            num_experts=config.num_experts,
+            top_k=config.num_experts_per_tok,
+            hidden_size=config.hidden_size,
+            intermediate_size=config.moe_intermediate_size,
+            renormalize=config.norm_topk_prob,
+        )
+        self.gate = <span class="fn">LinearReplicated</span>(               <span class="com"># ★ router 用 replicated 不切</span>
+            config.hidden_size,
+            config.num_experts,
+            has_bias=<span class="kw">False</span>,
+        )
+
+    <span class="kw">def</span> <span class="fn">forward</span>(self, hidden_states):
+        num_tokens, hidden_dim = hidden_states.shape
+        hidden_states = hidden_states.<span class="fn">view</span>(-1, hidden_dim)
+        <span class="hl">router_logits = self.gate.<span class="fn">forward</span>(hidden_states)       <span class="com">#  ① 路由打分</span></span>
+        <span class="hl">final = self.experts.<span class="fn">forward</span>(hidden_states, router_logits)   <span class="com">② 实际计算</span></span>
+        <span class="kw">return</span> final.<span class="fn">view</span>(num_tokens, hidden_dim)</code></pre>
+
+<h3>4 个核心步骤（点开每步看细节）</h3>
+
+<div class="grid cols-2">
+<div class="card">
+<h3>① Router gate</h3>
+<pre><code>router_logits = gate(hidden_states)
+<span class="com"># gate: [hidden, num_experts]</span>
+<span class="com"># shape: [T, num_experts]</span></code></pre>
+<p>这是一个普通 Linear 层，<strong>不做 TP 切</strong>（用 <code>LinearReplicated</code>）——每卡都持有完整 gate 权重。原因：num_experts 通常只有几十，切它开销比省的计算还多。</p>
+</div>
+
+<div class="card">
+<h3>② topk 选 expert</h3>
+<pre><code>topk_weights, topk_ids = <span class="fn">fused_topk</span>(
+    hidden_states, router_logits,
+    topk=self.top_k,
+    renormalize=self.renormalize,
+)
+<span class="com"># topk_ids: [T, top_k] int32  每 token 选了哪 k 个 expert</span>
+<span class="com"># topk_weights: [T, top_k] fp32  对应权重</span></code></pre>
+<p>用 <code>sgl_kernel.topk_softmax</code> 融合算 softmax + topk。返回每 token 的 top-k expert id 及权重。</p>
+</div>
+
+<div class="card">
+<h3>③ fused MoE compute</h3>
+<pre><code>output = <span class="fn">fused_experts</span>(
+    hidden_states,
+    w1=gate_up_proj,   <span class="com"># [E, 2*I, hidden]</span>
+    w2=down_proj,       <span class="com"># [E, hidden, I]</span>
+    topk_weights, topk_ids,
+    activation=<span class="str">"silu"</span>,
+)</code></pre>
+<p>核心 kernel。内部做：每个 token 路由到它的 top-k expert，在对应 w1/w2 切片上做 matmul + silu_and_mul + 加权求和。</p>
+</div>
+
+<div class="card">
+<h3>④ all-reduce（TP > 1 时）</h3>
+<pre><code><span class="kw">if</span> self.tp_size &gt; 1:
+    final = self._comm.<span class="fn">all_reduce</span>(final)
+<span class="kw">return</span> final</code></pre>
+<p>expert 内部是 row parallel（intermediate 维被 TP 切了），所以结束要 all-reduce 合并部分和。跟 dense MLP 末尾的 all-reduce 一样。</p>
+</div>
+</div>
+
+<h3>MoELayer 的权重 shape</h3>
+<pre><code><span class="com"># layers/moe.py:34</span>
+intermediate_size_per_partition = <span class="fn">div_even</span>(intermediate_size, tp_size)
+
+self.gate_up_proj = torch.<span class="fn">empty</span>(
+    num_experts,
+    <span class="hl">2 * intermediate_size_per_partition,</span>   <span class="com"># ★ TP 切的是 intermediate 维</span>
+    hidden_size,
+)
+self.down_proj = torch.<span class="fn">empty</span>(
+    num_experts,
+    hidden_size,
+    <span class="hl">intermediate_size_per_partition,</span>       <span class="com"># ★ 同样切 intermediate</span>
+)</code></pre>
+
+<div class="callout warn">
+<strong>每个 expert 的内部结构 = 标准 GatedMLP（跟 dense MLP 一样）</strong>
+<ul class="tight">
+  <li><code>gate_up_proj</code> 是 column parallel（按输出维切 2*intermediate）</li>
+  <li><code>down_proj</code> 是 row parallel（按输入维切 intermediate）</li>
+  <li>TP 在每个 expert <u>内部</u>切 intermediate，不跨 expert</li>
+  <li>所有 expert 的权重堆叠在第 0 维：<code>[num_experts, ...]</code></li>
+</ul>
+</div>
+</div>
+
+<!-- ============ 4 ============ -->
+<h2 id="router"><span class="step">PART 4</span>Router 的细节</h2>
+
+<div class="card">
+<h3>fused_topk kernel 做了什么？</h3>
+<pre><code><span class="com"># moe/fused.py:9</span>
+<span class="kw">def</span> <span class="fn">fused_topk</span>(hidden_states, gating_output, topk, renormalize):
+    <span class="kw">from</span> sgl_kernel <span class="kw">import</span> topk_softmax
+
+    topk_weights = torch.<span class="fn">empty</span>(M, topk, dtype=torch.float32, ...)
+    topk_ids = torch.<span class="fn">empty</span>(M, topk, dtype=torch.int32, ...)
+    <span class="hl">topk_softmax(topk_weights, topk_ids, gating_output.<span class="fn">float</span>(), renormalize)</span>
+
+    <span class="kw">if</span> renormalize:
+        topk_weights = topk_weights / (topk_weights.<span class="fn">sum</span>(dim=-<span class="num">1</span>, keepdim=<span class="kw">True</span>) + <span class="num">1e-8</span>)
+    <span class="kw">return</span> topk_weights, topk_ids</code></pre>
+
+<p>它融合了三个操作：</p>
+<ol class="tight">
+  <li><strong>softmax</strong>(gating_output)：把 logits 变成概率</li>
+  <li><strong>topk</strong>：每 token 选最大的 k 个</li>
+  <li><strong>renormalize</strong>（可选）：top-k 被选中的概率再归一化（让它们加起来=1）</li>
+</ol>
+
+<h3>举例</h3>
+<pre><code>gating_output[token 0] = [<span class="num">1.0</span>, <span class="num">3.0</span>, <span class="num">0.5</span>, <span class="num">2.0</span>, ...]     <span class="com"># 64 个 expert</span>
+                          ↓ softmax
+probs               = [<span class="num">0.10</span>, <span class="num">0.50</span>, <span class="num">0.05</span>, <span class="num">0.25</span>, ...]
+                          ↓ topk(k=2)
+topk_ids[token 0]   = [<span class="num">1</span>, <span class="num">3</span>]       <span class="com"># 选 expert 1 和 3</span>
+topk_weights[token 0] = [<span class="num">0.50</span>, <span class="num">0.25</span>]
+                          ↓ renormalize
+topk_weights[token 0] = [<span class="num">0.67</span>, <span class="num">0.33</span>]    <span class="com"># 加起来 = 1</span></code></pre>
+</div>
+
+<!-- ============ 5 ============ -->
+<h2 id="fused"><span class="step">PART 5</span>Fused MoE Kernel · 把几百个 matmul 融合成一个</h2>
+
+<div class="card">
+<h3>问题：naive 实现会有多惨？</h3>
+<pre><code><span class="com"># naive 伪代码</span>
+<span class="kw">for</span> t <span class="kw">in</span> range(num_tokens):           <span class="com"># 1000 token</span>
+    <span class="kw">for</span> k <span class="kw">in</span> range(top_k):              <span class="com"># 2</span>
+        expert_id = topk_ids[t, k]
+        out = <span class="fn">MLP</span>(hidden[t], w1[expert_id], w2[expert_id])
+        <span class="com"># → 2000 次 MLP 调用，每次 matmul 超小</span></code></pre>
+<p>每次 matmul 只处理 1 个 token，GPU 严重 under-utilization，launch 开销爆炸。</p>
+
+<h3>解决：按 expert 分组批量 matmul</h3>
+<pre><code><span class="com"># fused 版本的核心思路</span>
+<span class="kw">for</span> e <span class="kw">in</span> range(num_experts):                <span class="com"># 64</span>
+    tokens_for_e = [t <span class="kw">for</span> t <span class="kw">in</span> tokens <span class="kw">if</span> e <span class="kw">in</span> topk_ids[t]]
+    out_for_e = <span class="fn">batched_matmul</span>(hidden[tokens_for_e], w1[e], w2[e])
+    <span class="com"># → 64 次 batched MLP，每次处理一个 expert 的所有 token</span></code></pre>
+<p>但 Python 循环 64 次仍然慢。真正的 fused kernel 用<strong>一个 CUDA kernel 处理所有 expert</strong>。</p>
+
+<h3>moe_align_block_size：打散到固定大小的 block</h3>
+
+<pre><code><span class="com"># moe/fused.py:31  moe_align_block_size</span>
+<span class="kw">def</span> <span class="fn">moe_align_block_size</span>(topk_ids, block_size, num_experts):
+    <span class="com">"""
+    把 topk_ids 按 expert 分组，pad 到 block_size 的倍数。
+    比如 topk_ids = [[2,3,4],[1,2,4],[1,3,4],[1,2,3]], block=4
+    → sorted_ids = [3,6,9,12 | 0,4,10,12 | 1,7,11,12 | 2,5,8,12]
+      expert_ids = [1, 2, 3, 4]  (每个 block 对应的 expert)
+    """</span></code></pre>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">moe_align_block_size 的核心：把 token 按 expert 分桶 + padding</text>
+
+  <!-- Input -->
+  <text x="100" y="60" fill="#cbd5e1" font-size="12" font-weight="600">输入 (4 个 token, 每个选 3 experts)</text>
+  <g font-family="SF Mono" font-size="11">
+    <text x="40" y="90" fill="#fbbf24">t0 → [2, 3, 4]</text>
+    <text x="40" y="110" fill="#7dd3fc">t1 → [1, 2, 4]</text>
+    <text x="40" y="130" fill="#a78bfa">t2 → [1, 3, 4]</text>
+    <text x="40" y="150" fill="#34d399">t3 → [1, 2, 3]</text>
+  </g>
+
+  <!-- Arrow -->
+  <line x1="220" y1="120" x2="280" y2="120" stroke="#cbd5e1" stroke-width="2" marker-end="url(#m-ar)"/>
+
+  <!-- Output: by expert -->
+  <text x="700" y="60" fill="#cbd5e1" font-size="12" font-weight="600">按 expert 排序 + padding (block_size=4)</text>
+
+  <g font-family="SF Mono" font-size="10">
+    <text x="300" y="90" fill="#fb7185" font-weight="600">expert 1</text>
+    <rect x="370" y="78" width="40" height="20" fill="#7dd3fc"/>
+    <text x="390" y="93" text-anchor="middle" fill="#0b0d12">t1</text>
+    <rect x="410" y="78" width="40" height="20" fill="#a78bfa"/>
+    <text x="430" y="93" text-anchor="middle" fill="#0b0d12">t2</text>
+    <rect x="450" y="78" width="40" height="20" fill="#34d399"/>
+    <text x="470" y="93" text-anchor="middle" fill="#0b0d12">t3</text>
+    <rect x="490" y="78" width="40" height="20" fill="#374151"/>
+    <text x="510" y="93" text-anchor="middle" fill="#9ca3af">pad</text>
+
+    <text x="300" y="120" fill="#fb7185" font-weight="600">expert 2</text>
+    <rect x="370" y="108" width="40" height="20" fill="#fbbf24"/>
+    <text x="390" y="123" text-anchor="middle" fill="#0b0d12">t0</text>
+    <rect x="410" y="108" width="40" height="20" fill="#7dd3fc"/>
+    <text x="430" y="123" text-anchor="middle" fill="#0b0d12">t1</text>
+    <rect x="450" y="108" width="40" height="20" fill="#34d399"/>
+    <text x="470" y="123" text-anchor="middle" fill="#0b0d12">t3</text>
+    <rect x="490" y="108" width="40" height="20" fill="#374151"/>
+    <text x="510" y="123" text-anchor="middle" fill="#9ca3af">pad</text>
+
+    <text x="300" y="150" fill="#fb7185" font-weight="600">expert 3</text>
+    <rect x="370" y="138" width="40" height="20" fill="#fbbf24"/>
+    <text x="390" y="153" text-anchor="middle" fill="#0b0d12">t0</text>
+    <rect x="410" y="138" width="40" height="20" fill="#a78bfa"/>
+    <text x="430" y="153" text-anchor="middle" fill="#0b0d12">t2</text>
+    <rect x="450" y="138" width="40" height="20" fill="#34d399"/>
+    <text x="470" y="153" text-anchor="middle" fill="#0b0d12">t3</text>
+    <rect x="490" y="138" width="40" height="20" fill="#374151"/>
+    <text x="510" y="153" text-anchor="middle" fill="#9ca3af">pad</text>
+
+    <text x="300" y="180" fill="#fb7185" font-weight="600">expert 4</text>
+    <rect x="370" y="168" width="40" height="20" fill="#fbbf24"/>
+    <text x="390" y="183" text-anchor="middle" fill="#0b0d12">t0</text>
+    <rect x="410" y="168" width="40" height="20" fill="#7dd3fc"/>
+    <text x="430" y="183" text-anchor="middle" fill="#0b0d12">t1</text>
+    <rect x="450" y="168" width="40" height="20" fill="#a78bfa"/>
+    <text x="470" y="183" text-anchor="middle" fill="#0b0d12">t2</text>
+    <rect x="490" y="168" width="40" height="20" fill="#374151"/>
+    <text x="510" y="183" text-anchor="middle" fill="#9ca3af">pad</text>
+  </g>
+
+  <text x="440" y="220" fill="#cbd5e1" font-size="11">每 block 大小固定 = 4 → matmul 的 shape 固定 → 可用 block-level GEMM</text>
+
+  <!-- Right: kernel -->
+  <text x="900" y="90" fill="var(--brand)" font-size="12" font-weight="700">↓ 给 Triton fused_moe kernel</text>
+  <rect x="750" y="110" width="300" height="100" fill="#0f2a1f" stroke="var(--brand)" rx="6"/>
+  <text x="900" y="140" text-anchor="middle" fill="#cbd5e1" font-size="11">每 block 处理 4 个 token</text>
+  <text x="900" y="160" text-anchor="middle" fill="#cbd5e1" font-size="11">用对应 expert 的 w1/w2 做 GEMM</text>
+  <text x="900" y="180" text-anchor="middle" fill="#8b93a7" font-size="10">pad 的位置算了但结果丢弃</text>
+
+  <line x1="550" y1="120" x2="750" y2="160" stroke="var(--brand)" stroke-width="2" marker-end="url(#m-ar2)"/>
+
+  <defs>
+    <marker id="m-ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#cbd5e1"/></marker>
+    <marker id="m-ar2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#6ee7b7"/></marker>
+  </defs>
+</svg>
+</div>
+
+<div class="callout info">
+<strong>fused_moe 的本质：把不规则的"每 token 路由"整理成规则的"block-level GEMM"</strong>，让 GPU tensor core 能打满。<br>
+代价是引入 padding（有些 expert 被选的 token 少，要 pad 到 block_size 整数倍）。但 pad 浪费远小于 kernel launch 开销。
+</div>
+
+<p>mini-sglang 用的是 Triton 实现的 fused_moe，代码在 <code>kernel/triton/fused_moe.py</code>。参考了 vLLM / sglang / Qwen 的实现。</p>
+</div>
+
+<!-- ============ 6 ============ -->
+<h2 id="tp-strategy"><span class="step">PART 6</span>mini-sglang 的 TP 策略：expert 复制</h2>
+
+<div class="card">
+<p>MoE + TP 有多种组合方式：</p>
+
+<table>
+<tr><th>策略</th><th>说明</th><th>通信开销</th><th>显存</th><th>实现复杂度</th></tr>
+<tr><td><strong>Expert 复制 + 内部 TP</strong></td><td>所有 expert 在每卡都有，内部 intermediate 按 TP 切</td><td>低（只 all-reduce）</td><td>高（每卡都占完整 expert）</td><td>简单</td></tr>
+<tr><td>Expert Parallel (EP)</td><td>每卡只持有 num_experts/TP 个 expert</td><td>高（all-to-all）</td><td>低</td><td>复杂</td></tr>
+<tr><td>EP + DP</td><td>DeepSeek-V3 等超大模型用</td><td>最高</td><td>最低</td><td>最复杂</td></tr>
+</table>
+
+<h3>mini-sglang 选择：Expert 复制 + 内部 TP</h3>
+<pre><code><span class="com"># layers/moe.py</span>
+self.gate_up_proj = torch.<span class="fn">empty</span>(
+    <span class="hl">num_experts,</span>                                 <span class="com"># ★ 完整数量, 不按 TP 切</span>
+    2 * intermediate_size_per_partition,           <span class="com"># intermediate 按 TP 切</span>
+    hidden_size,
+)</code></pre>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">mini-sglang 的 MoE TP 布局（TP=4, 4 expert 示意）</text>
+
+  <g font-family="SF Mono" font-size="10">
+    <!-- Rank 0 -->
+    <text x="120" y="60" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">Rank 0</text>
+    <rect x="40" y="75" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="120" y="92" text-anchor="middle" fill="#0b0d12">E0 · gate_up[2I/4, H]</text>
+    <rect x="40" y="105" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="120" y="122" text-anchor="middle" fill="#0b0d12">E1 · gate_up[2I/4, H]</text>
+    <rect x="40" y="135" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="120" y="152" text-anchor="middle" fill="#0b0d12">E2 · gate_up[2I/4, H]</text>
+    <rect x="40" y="165" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="120" y="182" text-anchor="middle" fill="#0b0d12">E3 · gate_up[2I/4, H]</text>
+
+    <!-- Rank 1 -->
+    <text x="360" y="60" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="700">Rank 1</text>
+    <rect x="280" y="75" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="360" y="92" text-anchor="middle" fill="#0b0d12">E0 · gate_up (另 1/4)</text>
+    <rect x="280" y="105" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="360" y="122" text-anchor="middle" fill="#0b0d12">E1 · gate_up (另 1/4)</text>
+    <rect x="280" y="135" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="360" y="152" text-anchor="middle" fill="#0b0d12">E2 · gate_up (另 1/4)</text>
+    <rect x="280" y="165" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="360" y="182" text-anchor="middle" fill="#0b0d12">E3 · gate_up (另 1/4)</text>
+
+    <!-- Rank 2 -->
+    <text x="600" y="60" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="700">Rank 2</text>
+    <rect x="520" y="75" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="600" y="92" text-anchor="middle" fill="#0b0d12">E0 (另 1/4) ...</text>
+    <rect x="520" y="105" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="600" y="122" text-anchor="middle" fill="#0b0d12">E1 ...</text>
+    <rect x="520" y="135" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="600" y="152" text-anchor="middle" fill="#0b0d12">E2 ...</text>
+    <rect x="520" y="165" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="600" y="182" text-anchor="middle" fill="#0b0d12">E3 ...</text>
+
+    <!-- Rank 3 -->
+    <text x="840" y="60" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">Rank 3</text>
+    <rect x="760" y="75" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="840" y="92" text-anchor="middle" fill="#0b0d12">E0 (最后 1/4)</text>
+    <rect x="760" y="105" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="840" y="122" text-anchor="middle" fill="#0b0d12">E1</text>
+    <rect x="760" y="135" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="840" y="152" text-anchor="middle" fill="#0b0d12">E2</text>
+    <rect x="760" y="165" width="160" height="25" fill="#34d399" opacity=".3"/>
+    <text x="840" y="182" text-anchor="middle" fill="#0b0d12">E3</text>
+
+    <text x="1050" y="130" text-anchor="middle" fill="var(--brand)" font-size="12" font-weight="600">→ 每 expert</text>
+    <text x="1050" y="148" text-anchor="middle" fill="var(--brand)" font-size="12" font-weight="600">在每张卡</text>
+    <text x="1050" y="166" text-anchor="middle" fill="var(--brand)" font-size="12" font-weight="600">都存在</text>
+  </g>
+
+  <text x="480" y="230" text-anchor="middle" fill="#cbd5e1" font-size="12">路由不需要跨卡 · 每 token 本地就能找到它要的 expert</text>
+</svg>
+</div>
+
+<h3>这种策略的优缺点</h3>
+<div class="grid cols-2">
+  <div class="card">
+    <h3>✅ 优点</h3>
+    <ul class="tight">
+      <li>实现<strong>极其简单</strong>——跟 dense MLP 几乎一样，只在外面套一层 router</li>
+      <li>通信只有 1 次 all-reduce（跟 dense 一样）</li>
+      <li>没有复杂的 all-to-all 路由逻辑</li>
+      <li>无 token balancing 问题（每卡都能本地算所有 expert）</li>
+    </ul>
+  </div>
+  <div class="card">
+    <h3>❌ 缺点</h3>
+    <ul class="tight">
+      <li><strong>显存代价高</strong>：每卡都要存全部 expert，没有节省</li>
+      <li>对超大 MoE（256+ expert）不 scalable</li>
+      <li>TP 上限 ≈ intermediate_size（不能切到 intermediate 比 TP 小）</li>
+      <li>Qwen3-MoE 30B-A3B 这种小 MoE 还 OK，DeepSeek-V3 这种 600B 就不行</li>
+    </ul>
+  </div>
+</div>
+
+<div class="callout info">
+<strong>mini-sglang 的定位决定了这个选择。</strong>它是教学实现，目标是把"MoE 推理"这件事讲清楚。Expert 复制策略是最直观的起点——读者看懂之后再去学 EP 会容易很多。
+</div>
+</div>
+
+<!-- ============ 7 ============ -->
+<h2 id="ep"><span class="step">PART 7</span>Expert Parallel（mini-sglang 未实现）</h2>
+
+<div class="card">
+<p>为了完整性，简单讲下 SGLang 主线 / DeepSeek 推理框架是怎么做 EP 的：</p>
+
+<h3>EP 的核心：每卡只存 N/TP 个 expert</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 280" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">Expert Parallel: 64 experts, EP=4, 每卡 16 个</text>
+
+  <g font-family="SF Mono" font-size="10">
+    <!-- 4 卡各持 16 个 expert -->
+    <text x="120" y="60" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="700">Rank 0</text>
+    <rect x="40" y="75" width="160" height="110" fill="#fbbf24" opacity=".3" rx="4"/>
+    <text x="120" y="100" text-anchor="middle" fill="#0b0d12">E 0 ~ 15</text>
+    <text x="120" y="120" text-anchor="middle" fill="#0b0d12">16 个 expert</text>
+    <text x="120" y="140" text-anchor="middle" fill="#0b0d12">完整权重</text>
+
+    <text x="360" y="60" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="700">Rank 1</text>
+    <rect x="280" y="75" width="160" height="110" fill="#7dd3fc" opacity=".3" rx="4"/>
+    <text x="360" y="100" text-anchor="middle" fill="#0b0d12">E 16 ~ 31</text>
+
+    <text x="600" y="60" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="700">Rank 2</text>
+    <rect x="520" y="75" width="160" height="110" fill="#a78bfa" opacity=".3" rx="4"/>
+    <text x="600" y="100" text-anchor="middle" fill="#0b0d12">E 32 ~ 47</text>
+
+    <text x="840" y="60" text-anchor="middle" fill="#34d399" font-size="12" font-weight="700">Rank 3</text>
+    <rect x="760" y="75" width="160" height="110" fill="#34d399" opacity=".3" rx="4"/>
+    <text x="840" y="100" text-anchor="middle" fill="#0b0d12">E 48 ~ 63</text>
+  </g>
+
+  <!-- Traffic arrows -->
+  <g>
+    <line x1="200" y1="210" x2="280" y2="210" stroke="#fb7185" stroke-width="2" stroke-dasharray="3 3"/>
+    <line x1="440" y1="210" x2="520" y2="210" stroke="#fb7185" stroke-width="2" stroke-dasharray="3 3"/>
+    <line x1="680" y1="210" x2="760" y2="210" stroke="#fb7185" stroke-width="2" stroke-dasharray="3 3"/>
+    <text x="480" y="235" text-anchor="middle" fill="#fb7185" font-size="12" font-weight="600">token 要路由到别卡的 expert → all-to-all</text>
+    <text x="480" y="255" text-anchor="middle" fill="#8b93a7" font-size="10">算完再 all-to-all 送回原 rank</text>
+  </g>
+</svg>
+</div>
+
+<h3>EP 的两次 all-to-all</h3>
+<ol class="tight">
+  <li><strong>Dispatch</strong>：每 token 按 topk_ids 切分 → 通过 all-to-all 发到对应 rank</li>
+  <li><strong>Expert compute</strong>：在目标 rank 上用本地 expert 权重算 MLP</li>
+  <li><strong>Combine</strong>：算完的 output 通过第二次 all-to-all 送回原 token 所在 rank</li>
+</ol>
+
+<h3>EP 的挑战</h3>
+<div class="callout warn">
+<ul class="tight">
+  <li><strong>Token balancing</strong>：如果所有 token 都选同一个 expert，对应 rank 算力爆满，其他空闲。实际靠训练时的 auxiliary loss 确保 expert 使用均衡。</li>
+  <li><strong>通信量</strong>：两次 all-to-all，每次通信量 ≈ num_tokens × hidden × dtype。对 DeepSeek-V3 这种大模型，all-to-all 时间可能占 forward 的 30%+。</li>
+  <li><strong>动态 shape</strong>：不同 iter 里 token 分布给 expert 不均匀，CUDA Graph 没法直接录制（需要 padding 到最大可能情况）。</li>
+</ul>
+</div>
+
+<p>SGLang 主线支持 EP（<code>--enable-ep</code>），配合 DeepEP 等优化库。如果你关心 DeepSeek / Kimi 这种超大 MoE，可以看 SGLang 主线的 <code>python/sglang/srt/layers/moe/</code>。</p>
+</div>
+
+<!-- ============ 8 ============ -->
+<h2>总结</h2>
+<div class="card">
+<ul class="tight">
+  <li><strong>MoE = sparse MLP</strong>：N 个 expert 但每 token 只激活 top-k</li>
+  <li><strong>Router</strong>：用 gate linear + softmax + topk 选 expert，权重加权输出</li>
+  <li><strong>Fused MoE kernel</strong>：把 "每 token 路由到不同 expert" 整理成 block-level GEMM，用 moe_align_block_size + Triton kernel 实现</li>
+  <li><strong>mini-sglang 的 TP 策略</strong>：expert 复制 + 每 expert 内部 TP，简单但显存贵</li>
+  <li><strong>Expert Parallel</strong>（未实现）：每卡只存部分 expert，用 all-to-all 路由 token——DeepSeek-V3 的必需品</li>
+</ul>
+
+<p><strong>最小练习</strong>：跑 Qwen3-30B-A3B（30B 总参数，3B 激活）：</p>
+<pre><code>python -m minisgl --model "Qwen/Qwen3-30B-A3B" --tp 4
+<span class="com"># 对比同等激活参数的 dense 模型（Qwen3-3B），看质量差异</span></code></pre>
+</div>
+
+<div class="foot">
+<a href="index.html" style="color:var(--brand2)">← 回到学习手册首页</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

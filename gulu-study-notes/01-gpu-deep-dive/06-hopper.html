@@ -1,0 +1,204 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Hopper 架构详解 · 第一章 06/08</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218;}
+*{box-sizing:border-box}html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}.sub{color:var(--mute);margin-bottom:30px;font-size:15px}h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}.grid{display:grid;gap:16px}.cols-2{grid-template-columns:1fr 1fr}.cols-3{grid-template-columns:repeat(3,1fr)}@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}.svg-wrap svg{max-width:100%;height:auto}.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}.toc a:hover{border-color:var(--brand);color:var(--brand)}table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13px}th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}th{color:var(--mute);font-weight:500;background:#151a25}.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}.nav{display:flex;justify-content:space-between;margin:40px 0 0;padding-top:20px;border-top:1px solid var(--line);font-size:13px}.nav a{color:var(--brand2);text-decoration:none}.nav a:hover{color:var(--brand)}.num-big{font-size:22px;color:var(--brand);font-family:"SF Mono",monospace;font-weight:600}.chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);color:var(--brand2);padding:2px 8px;border-radius:6px;font-size:11.5px;font-family:"SF Mono",monospace;margin:2px}
+</style>
+</head>
+<body><div class="wrap">
+<h1>Hopper 架构详解 · H100 为什么是 LLM 时代的分水岭 <span class="tag">第一章 · 06/08</span></h1>
+<div class="sub">Hopper 不是“更大的 Ampere”。它把大模型训练/推理的几个核心痛点——数据搬运、低精度、attention、跨 SM 协作、多卡互联——都做成了硬件级能力。本篇围绕 H100/GH100：TMA、wgmma、Thread Block Cluster、DSMEM、FP8 Transformer Engine、NVLink 4。</div>
+
+<div class="toc">
+  <a href="#snapshot">§1 H100 快照</a>
+  <a href="#sm">§2 Hopper SM</a>
+  <a href="#tma">§3 TMA</a>
+  <a href="#cluster">§4 Thread Block Cluster</a>
+  <a href="#fp8">§5 FP8 Transformer Engine</a>
+  <a href="#attention">§6 Attention 优化</a>
+  <a href="#system">§7 系统级能力</a>
+  <a href="#takeaway">§8 带走的八句话</a>
+</div>
+
+<h2 id="snapshot"><span class="step">§1</span>H100/GH100 快照：这颗 die 里有什么</h2>
+<div class="card">
+<table>
+<thead><tr><th>项目</th><th>H100 SXM5 典型规格</th><th>为什么重要</th></tr></thead>
+<tbody>
+<tr><td>工艺/规模</td><td>TSMC 4N，约 800 亿晶体管，814mm²</td><td>接近 reticle limit 的巨型加速器 die</td></tr>
+<tr><td>SM</td><td>132 个 SM（完整 GH100 更多，产品屏蔽后启用 132）</td><td>并行执行 CTA/warp 的主计算单元</td></tr>
+<tr><td>Tensor Core</td><td>第四代 Tensor Core，支持 FP8</td><td>训练/推理吞吐大幅提升</td></tr>
+<tr><td>HBM</td><td>80GB HBM3，约 3.35TB/s</td><td>权重与 KV Cache 主存</td></tr>
+<tr><td>L2</td><td>约 50MB</td><td>跨 SM 热数据复用</td></tr>
+<tr><td>NVLink</td><td>第四代，约 900GB/s 双向</td><td>TP/PP/DP 多卡通信</td></tr>
+<tr><td>TDP</td><td>约 700W</td><td>数据中心供电/散热基准</td></tr>
+</tbody>
+</table>
+<div class="callout"><b>一句话定位</b>：A100 让 BF16/TF32 成为主流，H100 让 FP8、异步矩阵乘、硬件级二维拷贝、cluster 级协作进入主流。</div>
+</div>
+
+<h2 id="sm"><span class="step">§2</span>Hopper SM：围绕 Tensor Core pipeline 重构</h2>
+<div class="card">
+<p>Hopper SM 仍然有 4 个 sub-partition、warp scheduler、register file、LD/ST、SFU、Tensor Core、L1/Shared Memory。但新增/强化的核心是：</p>
+<ul class="tight">
+<li><b>wgmma</b>：warpgroup 级异步矩阵乘，4 warp 协作。</li>
+<li><b>TMA</b>：Tensor Memory Accelerator，硬件级多维 copy。</li>
+<li><b>更大的 shared memory</b>：每 SM 最高 228KB，适合更大 tile。</li>
+<li><b>async barrier</b>：让 copy/compute 的依赖关系可被硬件调度。</li>
+</ul>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 430" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="480" y="28" fill="#6ee7b7" text-anchor="middle" font-size="16">Hopper SM · 以异步矩阵流水线为核心</text>
+<rect x="45" y="55" width="870" height="320" rx="12" fill="#0f1218" stroke="#262b38"/>
+<g transform="translate(70,85)">
+  <rect width="180" height="110" rx="8" fill="#1f3328" stroke="#6ee7b7"/><text x="90" y="28" fill="#6ee7b7" text-anchor="middle">Warp Schedulers</text><text x="90" y="55" fill="#cbd5e1" text-anchor="middle">4 sub-partitions</text><text x="90" y="80" fill="#8b93a7" text-anchor="middle">issue wgmma/cuda/ldst</text>
+</g>
+<g transform="translate(290,85)">
+  <rect width="190" height="110" rx="8" fill="#1e2d36" stroke="#7dd3fc"/><text x="95" y="28" fill="#7dd3fc" text-anchor="middle">Register File</text><text x="95" y="55" fill="#cbd5e1" text-anchor="middle">fragments / accumulators</text><text x="95" y="80" fill="#8b93a7" text-anchor="middle">occupancy 限制核心</text>
+</g>
+<g transform="translate(520,85)">
+  <rect width="170" height="110" rx="8" fill="#2b2135" stroke="#a78bfa"/><text x="85" y="28" fill="#a78bfa" text-anchor="middle">Tensor Cores</text><text x="85" y="55" fill="#cbd5e1" text-anchor="middle">FP8/BF16/FP16</text><text x="85" y="80" fill="#fbbf24" text-anchor="middle">wgmma async</text>
+</g>
+<g transform="translate(720,85)">
+  <rect width="160" height="110" rx="8" fill="#39252b" stroke="#fb7185"/><text x="80" y="28" fill="#fb7185" text-anchor="middle">LD/ST + TMA</text><text x="80" y="55" fill="#cbd5e1" text-anchor="middle">global → smem</text><text x="80" y="80" fill="#fbbf24" text-anchor="middle">多维异步搬运</text>
+</g>
+<rect x="150" y="240" width="660" height="82" rx="8" fill="#17202b" stroke="#7dd3fc"/>
+<text x="480" y="270" fill="#7dd3fc" text-anchor="middle">L1 / Shared Memory · up to 228KB/SM</text>
+<text x="480" y="298" fill="#cbd5e1" text-anchor="middle">TMA 写入，warpgroup 从这里 ldmatrix / wgmma 读取</text>
+<g stroke="#fbbf24" stroke-width="2" marker-end="url(#m)"><defs><marker id="m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#fbbf24"/></marker></defs><path d="M800 195 L670 240"/><path d="M610 195 L560 240"/><path d="M400 240 L390 200"/></g>
+</svg>
+</div>
+</div>
+
+<h2 id="tma"><span class="step">§3</span>TMA：Tensor Memory Accelerator，把“搬砖”交给硬件</h2>
+<div class="card">
+<p>Ampere 时代常用 <code>cp.async</code>：每个 warp/thread 发起 global → shared 的异步 copy。Hopper 引入 <b>TMA</b>，可以用少量线程触发大块多维 tensor copy：</p>
+<pre>传统 cp.async：很多 lane 分别搬 16B/128B 小片
+TMA：一个 descriptor 描述张量形状/stride/box，硬件 copy engine 搬整块 tile</pre>
+
+<h3>TMA descriptor 包含什么</h3>
+<table>
+<thead><tr><th>字段</th><th>作用</th><th>为什么比手写地址好</th></tr></thead>
+<tbody>
+<tr><td>base pointer</td><td>global memory 起始地址</td><td>统一描述源 tensor</td></tr>
+<tr><td>rank / shape</td><td>1D-5D 张量形状</td><td>支持矩阵/多维 tile</td></tr>
+<tr><td>stride</td><td>每个维度步长</td><td>硬件处理 non-contiguous layout</td></tr>
+<tr><td>box size</td><td>要搬的 tile 大小</td><td>一次 copy 一个逻辑 tile</td></tr>
+<tr><td>swizzle</td><td>写入 shared memory 的布局变换</td><td>减少 bank conflict，满足 wgmma layout</td></tr>
+</tbody>
+</table>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 930 330" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="465" y="26" fill="#6ee7b7" text-anchor="middle" font-size="15">TMA：用 descriptor 驱动多维 tile copy</text>
+<rect x="70" y="80" width="230" height="150" rx="8" fill="#39252b" stroke="#fb7185"/>
+<text x="185" y="110" fill="#fb7185" text-anchor="middle">Global Tensor in HBM</text><text x="185" y="138" fill="#cbd5e1" text-anchor="middle">shape / stride</text><rect x="130" y="165" width="110" height="45" fill="#2b2135" stroke="#a78bfa"/><text x="185" y="193" fill="#a78bfa" text-anchor="middle">tile box</text>
+<rect x="365" y="75" width="190" height="160" rx="8" fill="#352b18" stroke="#fbbf24"/>
+<text x="460" y="105" fill="#fbbf24" text-anchor="middle">TMA Engine</text><text x="460" y="133" fill="#cbd5e1" text-anchor="middle">descriptor</text><text x="460" y="160" fill="#cbd5e1" text-anchor="middle">barrier</text><text x="460" y="187" fill="#cbd5e1" text-anchor="middle">async copy</text>
+<rect x="635" y="80" width="230" height="150" rx="8" fill="#1e2d36" stroke="#7dd3fc"/>
+<text x="750" y="110" fill="#7dd3fc" text-anchor="middle">Shared Memory Tile</text><text x="750" y="138" fill="#cbd5e1" text-anchor="middle">swizzled layout</text><text x="750" y="166" fill="#cbd5e1" text-anchor="middle">ready for wgmma</text>
+<path d="M300 155 L360 155" stroke="#fbbf24" stroke-width="2" marker-end="url(#m)"/><path d="M555 155 L630 155" stroke="#fbbf24" stroke-width="2" marker-end="url(#m)"/><defs><marker id="m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#fbbf24"/></marker></defs>
+<text x="465" y="285" fill="#8b93a7" text-anchor="middle">效果：减少地址计算和 lane 参与，把 warp 留给计算；copy 与 wgmma 可并行推进</text>
+</svg>
+</div>
+
+<div class="callout warn"><b>TMA 是 Hopper kernel 的分水岭</b>：FlashAttention-3、CUTLASS 3.x/CuTe 风格 kernel 都围绕 TMA + wgmma 设计 pipeline。手写很多 <code>cp.async</code> 的 Ampere kernel 迁移到 Hopper，通常要重写才能吃满 H100。</div>
+</div>
+
+<h2 id="cluster"><span class="step">§4</span>Thread Block Cluster 与 DSMEM：SM 之间开始“近距离协作”</h2>
+<div class="card">
+<p>传统 CUDA 的同步/共享内存作用域主要在一个 block 内。Hopper 引入 <b>Thread Block Cluster</b>：多个 thread block 被保证调度到一组相邻 SM，可以使用 cluster-level barrier 和 Distributed Shared Memory（DSMEM）。</p>
+
+<div class="grid cols-2">
+<div class="card" style="margin:0;background:#151a25">
+<h3>传统 block</h3>
+<ul class="tight"><li>block 内线程可 <code>__syncthreads()</code></li><li>block 内可共享 SMEM</li><li>block 与 block 间不能强同步</li><li>跨 block 协作通常要回 global memory</li></ul>
+</div>
+<div class="card" style="margin:0;background:#151a25">
+<h3>Hopper cluster</h3>
+<ul class="tight"><li>多个 block 组成 cluster</li><li>cluster 内可 barrier</li><li>可访问彼此的 shared memory（DSMEM）</li><li>适合 producer-consumer / 大 tile 协作</li></ul>
+</div>
+</div>
+
+<pre>// CUDA cooperative groups 概念示意
+namespace cg = cooperative_groups;
+__global__ void kernel(...) {
+  cg::cluster_group cluster = cg::this_cluster();
+  // block rank in cluster
+  int rank = cluster.block_rank();
+  cluster.sync();
+  // 可进行 cluster-level 协作
+}</pre>
+
+<div class="callout info"><b>对 LLM 的意义</b>：大型 attention/GEMM tile 可能超过单 SM 的 SMEM/warp 资源。Cluster 让多个 SM 近距离分工：有的 block 负责搬运，有的负责计算，有的负责 reduce。但编程复杂度高，通常由库封装。</div>
+</div>
+
+<h2 id="fp8"><span class="step">§5</span>FP8 Transformer Engine：低精度不是简单 cast</h2>
+<div class="card">
+<p>Hopper 的第四代 Tensor Core 支持 FP8（E4M3/E5M2），并配套 Transformer Engine 自动管理精度：</p>
+<ul class="tight">
+<li><b>E4M3</b>：mantissa 多一点，适合 activation/weight。</li>
+<li><b>E5M2</b>：exponent 多一点，范围大，适合 gradient 或动态范围更大的张量。</li>
+<li><b>scale 管理</b>：每个 tensor 或 block 记录 scale，把真实值映射到 FP8 可表达范围。</li>
+<li><b>自动回退</b>：敏感层/算子可用 BF16/FP16，避免数值炸掉。</li>
+</ul>
+<pre>x_fp8 = quantize(x / scale, format=E4M3)
+y = matmul_fp8(x_fp8, w_fp8, scale_x, scale_w)
+accumulator 通常使用更高精度，输出再进入下一层 scale</pre>
+
+<div class="callout bad"><b>FP8 的收益与代价</b>：收益是吞吐更高、显存/带宽更低；代价是需要校准/scale/异常值处理。LLM 推理中 FP8 权重、FP8 KV Cache 都能降 HBM 压力，但必须确认模型精度和服务稳定性。</div>
+</div>
+
+<h2 id="attention"><span class="step">§6</span>Hopper 为什么特别适合 Attention</h2>
+<div class="card">
+<p>Attention kernel 同时需要：</p>
+<ul class="tight"><li>大规模矩阵乘：QK^T 和 P·V → Tensor Core/wgmma。</li><li>多维 tile 搬运：K/V block 从 HBM 到 SMEM → TMA。</li><li>online softmax：max/sum 保持在 register，避免 materialize 整个 attention matrix。</li><li>深 pipeline：搬下一块 K/V 时计算当前块 → async barrier。</li></ul>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 300" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="480" y="26" fill="#6ee7b7" text-anchor="middle" font-size="15">Hopper Attention Pipeline</text>
+<rect x="70" y="70" width="160" height="70" rx="8" fill="#39252b" stroke="#fb7185"/><text x="150" y="100" fill="#fb7185" text-anchor="middle">HBM K/V tiles</text><text x="150" y="122" fill="#cbd5e1" text-anchor="middle">paged cache</text>
+<rect x="300" y="70" width="160" height="70" rx="8" fill="#352b18" stroke="#fbbf24"/><text x="380" y="100" fill="#fbbf24" text-anchor="middle">TMA copy</text><text x="380" y="122" fill="#cbd5e1" text-anchor="middle">async</text>
+<rect x="530" y="70" width="160" height="70" rx="8" fill="#1e2d36" stroke="#7dd3fc"/><text x="610" y="100" fill="#7dd3fc" text-anchor="middle">SMEM tile</text><text x="610" y="122" fill="#cbd5e1" text-anchor="middle">swizzle</text>
+<rect x="760" y="70" width="150" height="70" rx="8" fill="#2b2135" stroke="#a78bfa"/><text x="835" y="100" fill="#a78bfa" text-anchor="middle">wgmma</text><text x="835" y="122" fill="#cbd5e1" text-anchor="middle">QK / PV</text>
+<rect x="575" y="190" width="260" height="58" rx="8" fill="#1f3328" stroke="#6ee7b7"/><text x="705" y="216" fill="#6ee7b7" text-anchor="middle">register online softmax</text><text x="705" y="237" fill="#cbd5e1" text-anchor="middle">max / sum / rescale</text>
+<g stroke="#fbbf24" stroke-width="2" marker-end="url(#m)"><defs><marker id="m" markerWidth="8" markerHeight="8" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L7,3 z" fill="#fbbf24"/></marker></defs><path d="M230 105 L295 105"/><path d="M460 105 L525 105"/><path d="M690 105 L755 105"/><path d="M835 140 L750 190"/></g>
+</svg>
+</div>
+</div>
+
+<h2 id="system"><span class="step">§7</span>系统级能力：MIG、NVLink、机密计算</h2>
+<div class="card">
+<table>
+<thead><tr><th>能力</th><th>Hopper 变化</th><th>推理服务中的意义</th></tr></thead>
+<tbody>
+<tr><td>MIG</td><td>更成熟的多实例 GPU 隔离</td><td>小模型/多租户资源切分</td></tr>
+<tr><td>NVLink 4</td><td>H100 SXM 双向约 900GB/s</td><td>TP all-reduce、pipeline 并行通信</td></tr>
+<tr><td>NVSwitch</td><td>8 卡 HGX 内全互联</td><td>任意两卡高带宽互通</td></tr>
+<tr><td>Confidential Computing</td><td>TEE/加密相关能力增强</td><td>企业敏感模型/数据部署</td></tr>
+<tr><td>DPX 指令</td><td>动态规划加速</td><td>主要服务基因/路径算法，对 LLM 不是主线</td></tr>
+</tbody>
+</table>
+</div>
+
+<h2 id="takeaway"><span class="step">§8</span>带走的八句话</h2>
+<div class="card"><div class="callout"><ol>
+<li><b>Hopper 的核心不是单纯堆 SM</b>，而是把大模型关键路径做成硬件能力。</li>
+<li><b>TMA 把多维 tile 搬运交给硬件</b>，减少 warp 参与和地址计算。</li>
+<li><b>wgmma 把矩阵乘推进到 warpgroup 粒度</b>，支持更深异步 pipeline。</li>
+<li><b>更大 SMEM + async barrier</b> 让 copy/compute overlap 成为主流写法。</li>
+<li><b>FP8 Transformer Engine</b> 让低精度不只是 cast，而是 scale 管理系统。</li>
+<li><b>Thread Block Cluster/DSMEM</b> 让跨 SM 近距离协作成为可能。</li>
+<li><b>H100 特别适合 attention</b>：TMA 搬 K/V，wgmma 算 QK/PV，register 做 online softmax。</li>
+<li><b>从 A100 到 H100，kernel 写法发生代际变化</b>：Ampere cp.async 思维 → Hopper TMA+wgmma 思维。</li>
+</ol></div></div>
+
+<div class="nav"><a href="05-tensor-core-deep.html">← 上一章：Tensor Core 深度</a><a href="07-blackwell.html">下一章：Blackwell 架构详解 →</a></div>
+<div class="foot">第一章 · GPU 硬件深度 · 06/08</div>
+</div>  <script src="../course-nav.js"></script>
+</body></html>

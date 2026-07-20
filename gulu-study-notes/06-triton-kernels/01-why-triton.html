@@ -1,0 +1,366 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>T0 · 为什么写 Triton 而不是 CUDA</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+@media (max-width:900px){.cols-2{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.run{background:#1a1f2b;border:1px dashed var(--brand);border-radius:10px;padding:10px 14px;font-family:"SF Mono",monospace;font-size:12.5px;color:var(--brand);margin:8px 0}
+.cmp{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin:10px 0}
+.cmp pre{margin:0}
+.cmp .lbl{font-family:"SF Mono",monospace;font-size:12px;color:var(--mute);margin-bottom:6px}
+.cmp .l{color:var(--bad)}.cmp .r{color:var(--brand)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>T0 · 为什么写 Triton，而不是 CUDA <span class="tag">Triton 系列 · 1/15</span></h1>
+<div class="sub">花一章把 "block 编程" 这个抽象层次讲透——理解它，后面的语法、GEMM 深入和 FlashAttention 都水到渠成。</div>
+
+<div class="toc">
+  <a href="#story">§1 痛点从哪来</a>
+  <a href="#abs">§2 Triton 的抽象层次</a>
+  <a href="#cmp">§3 CUDA vs Triton</a>
+  <a href="#env">§4 环境与第一次跑</a>
+  <a href="#mind">§5 三个心智模型</a>
+  <a href="#takeaway">§6 带走这五句话</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="story"><span class="step">§1</span>痛点从哪来 · 你为什么坐在这里</h2>
+
+<div class="card">
+<p>你大概已经能流畅写 PyTorch 了。但当你想做下面这些事时，PyTorch 立刻变成天花板：</p>
+
+<ul class="tight">
+  <li>把 <code>x = a + b; y = x * c</code> 两个 op 融成一个 kernel（少一次 HBM 来回）</li>
+  <li>给 attention 加一种新的 mask 模式（PyTorch 不支持，C++ extension 又太重）</li>
+  <li>实现一个量化 GEMM（int4 weight + bf16 activation），speed 拉满</li>
+  <li>给某个 op 做 autotune（不同 shape 用不同的 tile 大小）</li>
+</ul>
+
+<p>"那就写 CUDA"——是。但 CUDA 让你做的事情<b>太多了</b>：</p>
+
+<table>
+<thead><tr><th>CUDA 让你管的事</th><th>真正影响速度的</th></tr></thead>
+<tbody>
+<tr><td>单线程视角写 kernel</td><td>—</td></tr>
+<tr><td>手动算 thread index → 数据 index</td><td>—</td></tr>
+<tr><td>手动选 block / warp / shared mem 大小</td><td>✓</td></tr>
+<tr><td>手动写 shared memory load / sync / bank conflict 规避</td><td>✓</td></tr>
+<tr><td>手动写 vectorized load (LDG.E.128)</td><td>✓</td></tr>
+<tr><td>手动写 mma.sync / wgmma 用 Tensor Core</td><td>✓</td></tr>
+<tr><td>编译失败 / 段错误 / "kernel returned wrong result" 调一周</td><td>—</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>问题不是"CUDA 难"，而是"CUDA 让你做的 90% 工作和性能没关系"</b>。一个能写到 70% 算力上限的 CUDA matmul，门槛通常是 1-3 个月。
+</div>
+
+<p>Triton 的赌注：<b>把"算 index、写 shared memory、选指令"这些重复劳动让编译器做，让你只写"算法本身"</b>。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="abs"><span class="step">§2</span>Triton 的抽象层次 · 一句话定义</h2>
+
+<div class="card">
+<div class="callout info" style="font-size:15px">
+<b>CUDA 是"single thread"编程</b> · 你写每个 thread 干什么。<br>
+<b>Triton 是"single block"编程</b> · 你写每个 block 干什么，block 内部的 thread 由编译器自动安排。
+</div>
+
+<h3>层次对比图</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 380" width="900">
+  <!-- 左边 CUDA -->
+  <text x="180" y="30" fill="#f87171" font-size="16" font-weight="700" text-anchor="middle">CUDA · 单线程视角</text>
+  <rect x="40" y="50" width="280" height="300" rx="10" fill="#1a1f2b" stroke="#f87171"/>
+
+  <text x="60" y="80" fill="#cbd5e1" font-size="13">你要写：</text>
+  <g font-family="SF Mono" font-size="11.5" fill="#e6e8ee">
+    <text x="60" y="105">int idx = blockIdx.x * blockDim.x</text>
+    <text x="60" y="122">          + threadIdx.x;</text>
+    <text x="60" y="142">if (idx &lt; N)</text>
+    <text x="60" y="159">  c[idx] = a[idx] + b[idx];</text>
+  </g>
+  <text x="60" y="195" fill="#fbbf24" font-size="12">⚠ 你管的是 1 个 thread</text>
+  <text x="60" y="215" fill="#fbbf24" font-size="12">⚠ 32 个 thread 自动并发执行</text>
+  <text x="60" y="235" fill="#fbbf24" font-size="12">⚠ shared mem / sync 全靠你</text>
+  <text x="60" y="255" fill="#fbbf24" font-size="12">⚠ vectorize / mma 全靠你</text>
+  <text x="60" y="285" fill="#cbd5e1" font-size="12">编译器输出：</text>
+  <text x="60" y="305" fill="#86efac" font-size="11" font-family="SF Mono">PTX → SASS（直译你写的）</text>
+  <text x="60" y="325" fill="#fb7185" font-size="11">几乎不优化，写得慢就是慢</text>
+
+  <!-- 右边 Triton -->
+  <text x="700" y="30" fill="#6ee7b7" font-size="16" font-weight="700" text-anchor="middle">Triton · 单 block 视角</text>
+  <rect x="560" y="50" width="300" height="300" rx="10" fill="#1a1f2b" stroke="#6ee7b7"/>
+
+  <text x="580" y="80" fill="#cbd5e1" font-size="13">你要写：</text>
+  <g font-family="SF Mono" font-size="11.5" fill="#e6e8ee">
+    <text x="580" y="105">pid = tl.program_id(0)</text>
+    <text x="580" y="122">offs = pid*BLOCK + tl.arange(0,BLOCK)</text>
+    <text x="580" y="142">mask = offs &lt; N</text>
+    <text x="580" y="159">a = tl.load(A+offs, mask=mask)</text>
+    <text x="580" y="176">b = tl.load(B+offs, mask=mask)</text>
+    <text x="580" y="193">tl.store(C+offs, a+b, mask=mask)</text>
+  </g>
+  <text x="580" y="225" fill="#6ee7b7" font-size="12">✓ 你管的是 1 个 block (一段数据)</text>
+  <text x="580" y="245" fill="#6ee7b7" font-size="12">✓ block 内 thread 编译器分配</text>
+  <text x="580" y="265" fill="#6ee7b7" font-size="12">✓ shared mem / sync 自动</text>
+  <text x="580" y="285" fill="#6ee7b7" font-size="12">✓ vectorize / mma 自动选</text>
+  <text x="580" y="318" fill="#86efac" font-size="11" font-family="SF Mono">MLIR → PTX → SASS</text>
+  <text x="580" y="338" fill="#86efac" font-size="11">优化 pass 上百个</text>
+
+  <!-- 中间箭头 -->
+  <text x="430" y="180" text-anchor="middle" fill="#a78bfa" font-size="14">抽象上移</text>
+  <text x="430" y="200" text-anchor="middle" fill="#8b93a7" font-size="11">代码量 −60%</text>
+  <text x="430" y="220" text-anchor="middle" fill="#8b93a7" font-size="11">性能 80~100%</text>
+</svg>
+</div>
+
+<h3>"一段数据"是 Triton 的最小单位</h3>
+<p>Triton 里 <code>tl.load(ptr + offsets)</code> 一次读一<b>批</b>数据（不是一个）。一个 block 可能处理 1024 个元素，编译器会自动把这 1024 个元素切给 SM 内的 4×32=128 个线程，再决定要不要走向量化指令、要不要进 shared memory。</p>
+
+<div class="callout">
+<b>这就是 Triton 名字的由来</b>——它在 thread / warp / block 之间，选了"block"作为编程单位。比 thread 高，比 PyTorch 低。<br>
+论文标题就叫 <i>"Triton: An Intermediate Language and Compiler for Tiled Neural Network Computations"</i>。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="cmp"><span class="step">§3</span>同一个 vector add · CUDA vs Triton 并排</h2>
+
+<div class="card">
+<p>给你最直观的感受：完全相同的功能（c = a + b，长度 N），两种写法。</p>
+
+<div class="cmp">
+<div>
+<div class="lbl l">CUDA / C++ · ~30 行</div>
+<pre><span class="com">// vec_add.cu</span>
+<span class="kw">__global__</span> <span class="kw">void</span> <span class="fn">add_kernel</span>(
+    <span class="kw">const float</span>* a, <span class="kw">const float</span>* b,
+    <span class="kw">float</span>* c, <span class="kw">int</span> N) {
+  <span class="kw">int</span> idx = blockIdx.x * blockDim.x + threadIdx.x;
+  <span class="kw">if</span> (idx &lt; N) c[idx] = a[idx] + b[idx];
+}
+
+<span class="kw">int</span> <span class="fn">main</span>() {
+  <span class="kw">int</span> N = <span class="num">1</span>&lt;&lt;<span class="num">20</span>;
+  <span class="kw">size_t</span> sz = N * <span class="kw">sizeof</span>(<span class="kw">float</span>);
+
+  <span class="kw">float</span> *a, *b, *c;
+  cudaMalloc(&amp;a, sz); cudaMalloc(&amp;b, sz); cudaMalloc(&amp;c, sz);
+
+  <span class="kw">int</span> blk = <span class="num">256</span>;
+  <span class="kw">int</span> grd = (N + blk - <span class="num">1</span>) / blk;
+  add_kernel&lt;&lt;&lt;grd, blk&gt;&gt;&gt;(a, b, c, N);
+
+  cudaDeviceSynchronize();
+  cudaFree(a); cudaFree(b); cudaFree(c);
+}
+<span class="com">// 编译: nvcc -O3 vec_add.cu -o vec_add</span></pre>
+</div>
+
+<div>
+<div class="lbl r">Triton / Python · ~12 行</div>
+<pre><span class="kw">import</span> torch
+<span class="kw">import</span> triton
+<span class="kw">import</span> triton.language <span class="kw">as</span> tl
+
+<span class="com">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">add_kernel</span>(A, B, C, N, BLOCK: tl.constexpr):
+    pid = tl.program_id(<span class="num">0</span>)
+    offs = pid * BLOCK + tl.arange(<span class="num">0</span>, BLOCK)
+    mask = offs &lt; N
+    a = tl.load(A + offs, mask=mask)
+    b = tl.load(B + offs, mask=mask)
+    tl.store(C + offs, a + b, mask=mask)
+
+a = torch.randn(<span class="num">1</span>&lt;&lt;<span class="num">20</span>, device=<span class="str">"cuda"</span>)
+b = torch.randn_like(a); c = torch.empty_like(a)
+grid = (triton.cdiv(a.numel(), <span class="num">1024</span>),)
+add_kernel[grid](a, b, c, a.numel(), BLOCK=<span class="num">1024</span>)
+<span class="com"># 直接跑，不用编译命令</span></pre>
+</div>
+</div>
+
+<h3>差异不只是行数</h3>
+<div class="kv">
+  <div class="k">编译</div><div>CUDA 要 nvcc · Triton 是 JIT，第一次跑时编译，之后缓存</div>
+  <div class="k">内存管理</div><div>CUDA 要 cudaMalloc/Free · Triton 直接吃 PyTorch tensor</div>
+  <div class="k">向量化</div><div>CUDA 要手写 float4 类型 · Triton 编译器看到连续访问自动 vectorize</div>
+  <div class="k">调试</div><div>CUDA 段错误难定位 · Triton 可以用 <code>TRITON_INTERPRET=1</code> 在 CPU 上跑</div>
+  <div class="k">类型</div><div>CUDA 静态类型 · Triton 有 <code>tl.constexpr</code>（编译时常量）+ Python 动态类型</div>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="env"><span class="step">§4</span>环境准备 · 让你 5 分钟跑出第一个 kernel</h2>
+
+<div class="card">
+<h3>本机准备</h3>
+<p>需要：① NVIDIA GPU（计算能力 ≥ 7.0，意味 V100 之后都行）② CUDA 12.x 驱动 ③ Python 3.10+</p>
+
+<pre><span class="com"># 创建虚拟环境</span>
+python -m venv ~/venvs/triton-study
+<span class="kw">source</span> ~/venvs/triton-study/bin/activate
+
+<span class="com"># 装 PyTorch（自带 Triton）</span>
+pip install torch --index-url https://download.pytorch.org/whl/cu121
+
+<span class="com"># 验证</span>
+python -c <span class="str">"import triton; print(triton.__version__)"</span>
+<span class="com"># 应输出 3.x.x</span></pre>
+
+<h3>没本机 GPU？用 Colab</h3>
+<p>访问 <code>colab.research.google.com</code>，菜单 Runtime → Change runtime type → 选 <b>T4 GPU</b>（免费）。然后第一个 cell：</p>
+<pre><span class="com">!nvidia-smi</span>
+<span class="com">!pip install -q triton  # Colab 自带 PyTorch，但 Triton 可能要单独装</span>
+<span class="kw">import</span> triton, torch
+<span class="fn">print</span>(triton.__version__, torch.cuda.get_device_name(<span class="num">0</span>))</pre>
+
+<div class="callout info">
+<b>本系列所有代码都在 Colab T4 上验证过</b>。每章会给一个完整的 cell（导入 + kernel + 调用 + 验证），你直接复制粘贴就能跑。
+</div>
+
+<h3>第一个 hello world</h3>
+<div class="run">复制下面整段进 Colab cell，按 Shift+Enter →</div>
+<pre><span class="kw">import</span> torch, triton
+<span class="kw">import</span> triton.language <span class="kw">as</span> tl
+
+<span class="com">@triton.jit</span>
+<span class="kw">def</span> <span class="fn">hello_kernel</span>(X, BLOCK: tl.constexpr):
+    pid = tl.program_id(<span class="num">0</span>)
+    offs = pid * BLOCK + tl.arange(<span class="num">0</span>, BLOCK)
+    tl.store(X + offs, offs.to(tl.float32))
+
+x = torch.zeros(<span class="num">16</span>, device=<span class="str">"cuda"</span>)
+hello_kernel[(<span class="num">2</span>,)](x, BLOCK=<span class="num">8</span>)   <span class="com"># 2 个 program 各写 8 个数</span>
+<span class="fn">print</span>(x)
+<span class="com"># 输出: tensor([0,1,2,3,4,5,6,7, 8,9,10,11,12,13,14,15], device='cuda:0')</span></pre>
+
+<p>看懂这段：<b>2 个 program、每个 program 写 8 个数、第 0 个 program 写 0..7、第 1 个 program 写 8..15</b>——你已经会读 Triton 代码了。</p>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="mind"><span class="step">§5</span>三个心智模型 · 装在脑子里就再也不会乱</h2>
+
+<div class="card">
+
+<h3>① "我写的代码会被复制 grid 份"</h3>
+<p>启动 <code>kernel[(N,)]</code> 等于<b>把 kernel 函数复制 N 份并发执行</b>，每份的 <code>tl.program_id(0)</code> 不同（0..N-1）。这 N 份之间<b>不共享内存、不通信</b>（除非用 atomic）。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 200" width="900">
+  <text x="40" y="30" fill="#cbd5e1" font-size="13">grid = (4,) · 启动后等价于：</text>
+  <g font-family="SF Mono" font-size="11">
+    <rect x="40" y="50" width="200" height="120" rx="8" fill="#1a1f2b" stroke="#7dd3fc"/>
+    <text x="50" y="72" fill="#7dd3fc" font-weight="700">program 0</text>
+    <text x="50" y="95" fill="#fbbf24">pid = 0</text>
+    <text x="50" y="115" fill="#cbd5e1">offs = 0..1023</text>
+    <text x="50" y="135" fill="#cbd5e1">load → compute → store</text>
+
+    <rect x="260" y="50" width="200" height="120" rx="8" fill="#1a1f2b" stroke="#7dd3fc"/>
+    <text x="270" y="72" fill="#7dd3fc" font-weight="700">program 1</text>
+    <text x="270" y="95" fill="#fbbf24">pid = 1</text>
+    <text x="270" y="115" fill="#cbd5e1">offs = 1024..2047</text>
+    <text x="270" y="135" fill="#cbd5e1">load → compute → store</text>
+
+    <rect x="480" y="50" width="200" height="120" rx="8" fill="#1a1f2b" stroke="#7dd3fc"/>
+    <text x="490" y="72" fill="#7dd3fc" font-weight="700">program 2</text>
+    <text x="490" y="95" fill="#fbbf24">pid = 2</text>
+    <text x="490" y="115" fill="#cbd5e1">offs = 2048..3071</text>
+    <text x="490" y="135" fill="#cbd5e1">load → compute → store</text>
+
+    <rect x="700" y="50" width="160" height="120" rx="8" fill="#1a1f2b" stroke="#7dd3fc"/>
+    <text x="710" y="72" fill="#7dd3fc" font-weight="700">program 3</text>
+    <text x="710" y="95" fill="#fbbf24">pid = 3</text>
+    <text x="710" y="115" fill="#cbd5e1">offs = 3072..</text>
+    <text x="710" y="135" fill="#cbd5e1">(可能要 mask)</text>
+  </g>
+</svg>
+</div>
+
+<h3>② "我操作的是一段连续向量，不是一个数"</h3>
+<p>下面这行：</p>
+<pre>offs = pid * BLOCK + tl.arange(0, BLOCK)   <span class="com"># shape=[BLOCK]</span></pre>
+<p><code>offs</code> 不是标量，是一个 <b>shape=[BLOCK] 的张量</b>。<code>tl.load(A + offs)</code> 也返回 <code>[BLOCK]</code> 的张量。后面所有 +、*、tl.where 都在这个 [BLOCK] 上做。<b>你写的代码看起来像是 numpy 一段、不像是循环</b>。</p>
+
+<h3>③ "形状必须是编译期常量"</h3>
+<p>注意 <code>BLOCK: tl.constexpr</code>——这意味着 <b>BLOCK 必须在 kernel 启动时就定下来</b>，编译器要根据它生成不同的代码。所以：</p>
+<ul class="tight">
+  <li>BLOCK=128 和 BLOCK=1024 编译成两份不同的二进制（首次启动时各编一次）</li>
+  <li><code>tl.arange(0, BLOCK)</code> 里 BLOCK 必须是 constexpr</li>
+  <li>这给"autotune"留了口子——T5 章会讲</li>
+</ul>
+
+<div class="callout warn">
+<b>新手陷阱</b>：把<b>动态变量</b>当 BLOCK 用，比如 <code>BLOCK = a.shape[0]</code>——编译会通过，但每次新 shape 都要重编一次，cold start 巨慢。正确做法：选若干<b>固定的 candidate</b>（128/256/512/1024），autotune 来选。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§6</span>带走这五句话</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① 抽象层次</div><div>CUDA = 单线程视角 · Triton = 单 block 视角 · block 内 thread 编译器自己安排</div>
+  <div class="k">② 一段向量</div><div>tl.load 一次读 BLOCK 个数 · 之后所有运算都在 [BLOCK] 上做 · 像 numpy</div>
+  <div class="k">③ grid 是复制</div><div>kernel[(N,)] 启动 N 份独立并发 · 用 program_id 区分</div>
+  <div class="k">④ constexpr</div><div>shape 必须编译期已知 · 选少量 candidate · autotune 替你选</div>
+  <div class="k">⑤ 性能不需要 manual</div><div>shared mem / vectorize / Tensor Core 全自动 · 你只写算法</div>
+</div>
+
+<div class="callout">
+<b>下一章</b>——把上面 hello kernel 升级成 vector add：讲清楚 grid 怎么算、mask 处理边界、benchmark 对比 PyTorch。 → <a href="02-vector-add.html" style="color:var(--brand)">T1 · 第一个 kernel：vector add</a>
+</div>
+</div>
+
+<div class="foot">
+Triton 系列 · 1 / 6 · <a href="index.html" style="color:var(--brand)">回到目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

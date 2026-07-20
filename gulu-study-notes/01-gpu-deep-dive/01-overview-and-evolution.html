@@ -1,0 +1,466 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>GPU 总体架构与演进史 · 第一章 01/08</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13px}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mute);font-weight:500;background:#151a25}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.num-big{font-size:22px;color:var(--brand);font-family:"SF Mono",monospace;font-weight:600}
+.chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);color:var(--brand2);padding:2px 8px;border-radius:6px;font-size:11.5px;font-family:"SF Mono",monospace;margin:2px}
+.nav{display:flex;justify-content:space-between;margin:40px 0 0;padding-top:20px;border-top:1px solid var(--line);font-size:13px}
+.nav a{color:var(--brand2);text-decoration:none}
+.nav a:hover{color:var(--brand)}
+.bign{font-family:"SF Mono",monospace;color:var(--warn)}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>GPU 总体架构与演进史 <span class="tag">第一章 · 01/08</span></h1>
+<div class="sub">从 1999 年 GeForce 256 到 2024 年 Blackwell B200——25 年 GPU 如何从"画三角形的专用电路"变成"行星级 AI 加速器"。本篇建立全图：die 里装了什么、每代核心变化、为什么 LLM 时代每代都在堆 Tensor Core。</div>
+
+<div class="toc">
+  <a href="#what">§1 GPU 这块硅到底是什么</a>
+  <a href="#die">§2 die 拆开看</a>
+  <a href="#gen">§3 十代架构演进</a>
+  <a href="#why-tc">§4 为什么堆 Tensor Core</a>
+  <a href="#numbers">§5 数字直觉表</a>
+  <a href="#takeaway">§6 带走的六句话</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="what"><span class="step">§1</span>GPU 这块硅到底是什么</h2>
+
+<div class="card">
+<p>先回答一个问题：<b>一颗 H100（H100-SXM5）到底是什么？</b></p>
+
+<div class="kv" style="margin:14px 0">
+  <div class="k">工艺</div><div>TSMC 4N（N4 定制）· 晶体管 800 亿 · die 面积 814 mm²</div>
+  <div class="k">计算单元</div><div>132 个 SM（Streaming Multiprocessor），每个 SM 内有 4 个 sub-partition</div>
+  <div class="k">FP32 算力</div><div>66 TFLOPS（CUDA core）</div>
+  <div class="k">张量算力</div><div>989 TFLOPS FP16 · 1979 TFLOPS FP8（with sparsity 翻倍）</div>
+  <div class="k">片上 SRAM</div><div>L1/SMEM 每 SM 256KB（共 33MB）· L2 50MB</div>
+  <div class="k">片外 HBM</div><div>80GB HBM3（H100-80）· 3.35 TB/s 带宽</div>
+  <div class="k">NVLink</div><div>900 GB/s 双向（18 条 link）</div>
+  <div class="k">TDP</div><div>700W</div>
+</div>
+
+<p>把这些数字拆成一句人话：<b>GPU = 一大堆能独立跑的"小 CPU"（SM）+ 一块巨大但"慢"的共享显存（HBM）+ 高速把卡连起来的网络（NVLink）</b>。</p>
+
+<div class="callout warn">
+<b>和 CPU 的根本差别</b>：CPU 是「少量超强核 + 多级缓存优化单线程延迟」，GPU 是「海量弱核 + 大带宽内存优化吞吐量」。H100 的单个 CUDA core 只能跑到 ~1.8GHz、IPC 远低于 x86 核；但它有 <b>132×128 = 16896 个</b> FP32 ALU，同一周期同时开工——靠<b>数量</b>打败质量。
+</div>
+
+</div>
+
+<!-- ============================================================ -->
+<h2 id="die"><span class="step">§2</span>把 die 拆开看：GPU 上到底装了什么</h2>
+
+<div class="card">
+<p>下面是 H100 完整 GH100 die 的逻辑框图（NVIDIA 白皮书原图简化版）：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1080 620" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="gpc" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#1f2430"/><stop offset="1" stop-color="#161a23"/></linearGradient>
+<linearGradient id="sm" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#2b3547"/><stop offset="1" stop-color="#1f2836"/></linearGradient>
+<linearGradient id="hbm" x1="0" x2="0" y1="0" y2="1"><stop offset="0" stop-color="#3a2a4d"/><stop offset="1" stop-color="#22182f"/></linearGradient>
+</defs>
+<!-- outer die -->
+<rect x="10" y="10" width="1060" height="600" rx="14" fill="#0f1218" stroke="#262b38"/>
+<text x="540" y="35" fill="#6ee7b7" text-anchor="middle" font-size="14" font-family="SF Mono,monospace">GH100 die · 814 mm² · 80B transistors</text>
+
+<!-- HBM stacks 左右各 3 -->
+<g font-family="SF Mono,monospace" font-size="10" fill="#c4b5fd">
+  <rect x="25" y="60" width="60" height="500" fill="url(#hbm)" stroke="#a78bfa" rx="4"/>
+  <text x="55" y="320" text-anchor="middle" transform="rotate(-90 55 320)">HBM3 · Stack 0-2</text>
+  <rect x="995" y="60" width="60" height="500" fill="url(#hbm)" stroke="#a78bfa" rx="4"/>
+  <text x="1025" y="320" text-anchor="middle" transform="rotate(-90 1025 320)">HBM3 · Stack 3-5</text>
+</g>
+
+<!-- L2 cache middle strip -->
+<rect x="100" y="290" width="880" height="40" fill="#2a3a2e" stroke="#6ee7b7" rx="6"/>
+<text x="540" y="315" fill="#6ee7b7" text-anchor="middle" font-size="13" font-family="SF Mono,monospace">L2 Cache · 50 MB (分两半)</text>
+
+<!-- 8 GPCs, each contains ~16 SMs, split into 2 sides -->
+<!-- 上半 4 GPC -->
+<g font-family="SF Mono,monospace" font-size="10">
+  <g transform="translate(105,60)">
+    <rect width="215" height="220" fill="url(#gpc)" stroke="#7dd3fc" rx="6"/>
+    <text x="107" y="16" fill="#7dd3fc" text-anchor="middle">GPC 0</text>
+    <!-- 16 SMs grid -->
+    <g fill="url(#sm)" stroke="#3a4558">
+    <rect x="8" y="24" width="45" height="40" rx="3"/><rect x="56" y="24" width="45" height="40" rx="3"/><rect x="104" y="24" width="45" height="40" rx="3"/><rect x="152" y="24" width="45" height="40" rx="3"/>
+    <rect x="8" y="68" width="45" height="40" rx="3"/><rect x="56" y="68" width="45" height="40" rx="3"/><rect x="104" y="68" width="45" height="40" rx="3"/><rect x="152" y="68" width="45" height="40" rx="3"/>
+    <rect x="8" y="112" width="45" height="40" rx="3"/><rect x="56" y="112" width="45" height="40" rx="3"/><rect x="104" y="112" width="45" height="40" rx="3"/><rect x="152" y="112" width="45" height="40" rx="3"/>
+    <rect x="8" y="156" width="45" height="40" rx="3"/><rect x="56" y="156" width="45" height="40" rx="3"/><rect x="104" y="156" width="45" height="40" rx="3"/><rect x="152" y="156" width="45" height="40" rx="3"/>
+    </g>
+    <text x="30" y="48" fill="#cbd5e1" font-size="9">SM</text>
+  </g>
+  <g transform="translate(325,60)">
+    <rect width="215" height="220" fill="url(#gpc)" stroke="#7dd3fc" rx="6"/>
+    <text x="107" y="16" fill="#7dd3fc" text-anchor="middle">GPC 1</text>
+  </g>
+  <g transform="translate(545,60)">
+    <rect width="215" height="220" fill="url(#gpc)" stroke="#7dd3fc" rx="6"/>
+    <text x="107" y="16" fill="#7dd3fc" text-anchor="middle">GPC 2</text>
+  </g>
+  <g transform="translate(765,60)">
+    <rect width="215" height="220" fill="url(#gpc)" stroke="#7dd3fc" rx="6"/>
+    <text x="107" y="16" fill="#7dd3fc" text-anchor="middle">GPC 3</text>
+  </g>
+
+  <!-- 下半 4 GPC -->
+  <g transform="translate(105,340)">
+    <rect width="215" height="220" fill="url(#gpc)" stroke="#7dd3fc" rx="6"/>
+    <text x="107" y="16" fill="#7dd3fc" text-anchor="middle">GPC 4</text>
+  </g>
+  <g transform="translate(325,340)">
+    <rect width="215" height="220" fill="url(#gpc)" stroke="#7dd3fc" rx="6"/>
+    <text x="107" y="16" fill="#7dd3fc" text-anchor="middle">GPC 5</text>
+  </g>
+  <g transform="translate(545,340)">
+    <rect width="215" height="220" fill="url(#gpc)" stroke="#7dd3fc" rx="6"/>
+    <text x="107" y="16" fill="#7dd3fc" text-anchor="middle">GPC 6</text>
+  </g>
+  <g transform="translate(765,340)">
+    <rect width="215" height="220" fill="url(#gpc)" stroke="#7dd3fc" rx="6"/>
+    <text x="107" y="16" fill="#7dd3fc" text-anchor="middle">GPC 7</text>
+  </g>
+</g>
+
+<!-- NVLink / PCIe pads along bottom (symbolic) -->
+<g font-size="9" font-family="SF Mono,monospace" fill="#fbbf24">
+  <rect x="100" y="575" width="880" height="22" fill="#2a231a" stroke="#fbbf24" rx="4"/>
+  <text x="540" y="590" text-anchor="middle">NVLink 4 (18×) · PCIe Gen5 x16 · 显示输出 · 命令处理器 GigaThread Engine</text>
+</g>
+</svg>
+</div>
+
+<h3>die 上的四大类模块</h3>
+
+<table>
+<thead><tr><th>层级</th><th>名字</th><th>H100 数量</th><th>作用</th></tr></thead>
+<tbody>
+<tr><td>最大</td><td><b>GPC</b>（Graphics Processing Cluster）</td><td>8 个（全开）</td><td>相当于"一整块迷你 GPU"，含光栅器 + TPC + SM</td></tr>
+<tr><td>中等</td><td><b>TPC</b>（Texture Processing Cluster）</td><td>9/GPC</td><td>1 TPC = 2 SM（上古图形血统遗留，纹理单元打包）</td></tr>
+<tr><td>核心</td><td><b>SM</b>（Streaming Multiprocessor）</td><td>132 个启用（144 物理）</td><td>真正跑 CUDA thread 的地方，下一章专门剖开</td></tr>
+<tr><td>服务</td><td>L2 / HBM 控制器 / NVLink / PCIe / GigaThread</td><td>共享</td><td>内存带宽 + 卡间互联 + 调度器</td></tr>
+</tbody>
+</table>
+
+<div class="callout info">
+<b>为什么叫 GPC？历史遗留</b>：GPU 诞生时是画三角形的，每个 GPC 里的 Raster Engine 负责光栅化一块屏幕。AI 时代光栅化用得少，但这套组织仍保留——因为它解决了"如何把 100+ 个 SM 分层分发任务"的电路问题。GigaThread Engine 向 GPC 派发 thread block，GPC 再往下派发到 SM。
+</div>
+
+</div>
+
+<h3>H100 完整版 vs SKU 差异</h3>
+<div class="card">
+<p>物理 die 是 GH100，但市场卖的几种 SKU 屏蔽程度不同：</p>
+<table>
+<thead><tr><th>SKU</th><th>SM 数</th><th>HBM</th><th>FP8 TFLOPS</th><th>TDP</th><th>定位</th></tr></thead>
+<tbody>
+<tr><td>H100 SXM5</td><td>132</td><td>80GB HBM3</td><td>1979</td><td>700W</td><td>数据中心满血</td></tr>
+<tr><td>H100 PCIe</td><td>114</td><td>80GB HBM3</td><td>1513</td><td>350W</td><td>被动散热工作站</td></tr>
+<tr><td>H100 NVL</td><td>132×2</td><td>188GB HBM3</td><td>3958</td><td>700W×2</td><td>双卡 PCIe 套装</td></tr>
+<tr><td>H200 SXM</td><td>132</td><td><b>141GB HBM3e</b></td><td>1979</td><td>700W</td><td>内存升级版（2024）</td></tr>
+<tr><td>GH200</td><td>132 + Grace CPU</td><td>480GB LPDDR5X + 96~144GB HBM3e</td><td>1979</td><td>1000W 包干</td><td>CPU+GPU 芯片间 NVLink C2C</td></tr>
+</tbody>
+</table>
+<div class="callout">
+<b>"屏蔽"很正常</b>：良率问题，物理上 144 SM，但只要有一两个缺陷就屏蔽成 132。同理 B200 物理 160 SM/die × 2 = 320，启用 148 × 2。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="gen"><span class="step">§3</span>十代架构演进：从画三角形到 Transformer Engine</h2>
+
+<div class="card">
+<p>从 2010 年 Fermi 开始算，NVIDIA 数据中心 GPU 大概一年半到两年一代。下面这张表是<b>本章最核心的一张图</b>——理解每代"多了什么"就理解了整个 GPU 史：</p>
+
+<table>
+<thead><tr><th>代号</th><th>年</th><th>旗舰</th><th>工艺</th><th>SM 数</th><th>关键新东西</th></tr></thead>
+<tbody>
+<tr><td><b>Fermi</b></td><td>2010</td><td>GF100 / Tesla M2090</td><td>40nm</td><td>16</td><td>首个统一 L1+shared memory · ECC · C++ 支持 · 真正的通用计算 GPU 从这里开始</td></tr>
+<tr><td><b>Kepler</b></td><td>2012</td><td>GK110 / K20X</td><td>28nm</td><td>15（192 core/SM）</td><td>Dynamic Parallelism（GPU 自己 launch kernel）· Hyper-Q（32 硬件队列）· GPU Direct RDMA</td></tr>
+<tr><td><b>Maxwell</b></td><td>2014</td><td>GM200</td><td>28nm</td><td>24（128 core/SM）</td><td>能效大跃进 · SM 瘦身 · 功耗砍半 · 主要是游戏卡，数据中心未大规模用</td></tr>
+<tr><td><b>Pascal</b></td><td>2016</td><td>GP100 / P100</td><td>16nm FinFET</td><td>56</td><td><b>首次引入 HBM2</b>（732 GB/s）· 首次 NVLink（160 GB/s）· FP16 原生 · 深度学习爆发的硬件起点</td></tr>
+<tr><td><b>Volta</b></td><td>2017</td><td>GV100 / V100</td><td>12nm FFN</td><td>80</td><td><b>首次 Tensor Core</b>（FP16 MMA 16×16×16）· Independent Thread Scheduling（warp 内线程不再强同步）· 深度学习正式成主题</td></tr>
+<tr><td><b>Turing</b></td><td>2018</td><td>TU102 / T4</td><td>12nm</td><td>72</td><td>RT Core（光追）· Tensor Core 2 代支持 INT8/INT4 · T4 是第一代大规模部署的推理卡</td></tr>
+<tr><td><b>Ampere</b></td><td>2020</td><td>GA100 / A100</td><td>7nm</td><td>108</td><td>Tensor Core 3 代（BF16、TF32、<b>2:4 sparsity</b>）· MIG（Multi-Instance GPU）· async copy（global→shared 跳过寄存器）</td></tr>
+<tr><td><b>Hopper</b></td><td>2022</td><td>GH100 / H100</td><td>4N</td><td>132</td><td>Tensor Core 4 代（FP8）· <b>TMA</b>（异步 bulk copy 引擎）· Thread Block Cluster + DSMEM · Transformer Engine · DPX（动态规划指令）· 第 6 章详讲</td></tr>
+<tr><td><b>Ada Lovelace</b></td><td>2022</td><td>AD102 / L40S</td><td>4N</td><td>144</td><td>游戏/工作站为主 · FP8 Tensor Core · 没有 HBM（用 GDDR6）· L40S 在推理市场补位</td></tr>
+<tr><td><b>Blackwell</b></td><td>2024</td><td>GB200 / B200</td><td>4NP</td><td>148×2 双 die</td><td><b>首次双 die + NV-HBI 10TB/s</b> · Tensor Core 5 代（FP4 + Micro-scaling）· 第 2 代 Transformer Engine · NVL72 · 第 7 章详讲</td></tr>
+</tbody>
+</table>
+
+<h3>可视化：SM 数量 + HBM 带宽的指数曲线</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 880 340" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<!-- axes -->
+<line x1="80" y1="280" x2="820" y2="280" stroke="#8b93a7"/>
+<line x1="80" y1="40" x2="80" y2="280" stroke="#8b93a7"/>
+<text x="50" y="285" fill="#8b93a7" text-anchor="end">0</text>
+<text x="50" y="155" fill="#8b93a7" text-anchor="end">150</text>
+<text x="50" y="45" fill="#8b93a7" text-anchor="end">300</text>
+<text x="40" y="160" fill="#6ee7b7" text-anchor="middle" transform="rotate(-90 40 160)">SM 数 / 带宽 (×10 GB/s)</text>
+
+<!-- year ticks -->
+<g fill="#8b93a7">
+<text x="140" y="300">Fermi</text>
+<text x="200" y="300">Kepler</text>
+<text x="260" y="300">Maxwell</text>
+<text x="330" y="300">Pascal</text>
+<text x="400" y="300">Volta</text>
+<text x="470" y="300">Turing</text>
+<text x="540" y="300">Ampere</text>
+<text x="610" y="300">Hopper</text>
+<text x="680" y="300">Ada</text>
+<text x="750" y="300">Blackwell</text>
+</g>
+
+<!-- SM count line -->
+<polyline fill="none" stroke="#6ee7b7" stroke-width="2.5"
+  points="140,268 200,270 260,261 330,236 400,216 470,222 540,194 610,174 680,164 750,42"/>
+<g fill="#6ee7b7">
+<circle cx="140" cy="268" r="4"/><text x="148" y="265">16</text>
+<circle cx="330" cy="236" r="4"/><text x="338" y="233">56</text>
+<circle cx="400" cy="216" r="4"/><text x="408" y="213">80</text>
+<circle cx="540" cy="194" r="4"/><text x="548" y="191">108</text>
+<circle cx="610" cy="174" r="4"/><text x="618" y="171">132</text>
+<circle cx="750" cy="42" r="4"/><text x="700" y="42">296 (双 die)</text>
+</g>
+
+<!-- Bandwidth line (GB/s / 10) -->
+<polyline fill="none" stroke="#fb7185" stroke-width="2.5" stroke-dasharray="5 3"
+  points="140,275 200,270 260,268 330,221 400,208 470,260 540,148 610,113 680,272 750,20"/>
+<g fill="#fb7185">
+<text x="338" y="213">732</text>
+<text x="408" y="198">900</text>
+<text x="548" y="138">2039</text>
+<text x="618" y="103">3350</text>
+<text x="710" y="30">8000 (HBM3e)</text>
+</g>
+
+<!-- legend -->
+<rect x="600" y="50" width="210" height="46" fill="#161a23" stroke="#262b38" rx="6"/>
+<line x1="612" y1="66" x2="636" y2="66" stroke="#6ee7b7" stroke-width="2.5"/><text x="642" y="70" fill="#6ee7b7">SM 数</text>
+<line x1="612" y1="85" x2="636" y2="85" stroke="#fb7185" stroke-width="2.5" stroke-dasharray="5 3"/><text x="642" y="89" fill="#fb7185">HBM 带宽 (GB/s)</text>
+</svg>
+</div>
+
+<div class="callout info">
+<b>看出两条规律</b>：
+<ul class="tight">
+<li><b>SM 数量</b>每代约 +30%（摩尔定律的另一种表达：晶体管多了就多切 SM）。</li>
+<li><b>HBM 带宽</b>每代近乎 ×1.5，Blackwell HBM3e 到了 8TB/s——LLM decode 是 memory-bound，带宽就是命。</li>
+</ul>
+</div>
+
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why-tc"><span class="step">§4</span>为什么每代都在堆 Tensor Core</h2>
+
+<div class="card">
+<p>回到 LLM 视角看这个演进。大模型训练/推理 99% 的 FLOPS 都花在矩阵乘法（GEMM）上：<code>Attention 是 QKᵀ 和 PV 两次 GEMM</code>，<code>FFN 是 two-linear 两次 GEMM</code>，<code>LoRA/量化/KV projection 还是 GEMM</code>——全部是 GEMM。</p>
+
+<p>普通 CUDA core 跑 GEMM 的效率是多少？举例：H100 单 SM 有 128 个 FP32 CUDA core，跑 FMA（fused multiply-add）每周期 256 ops，@ 1.8GHz = 0.46 TFLOPS/SM × 132 SM = <b>60 TFLOPS</b>。</p>
+<p>同一 SM 的 Tensor Core 跑 FP16 MMA：每周期 1024 ops × 4 TC/SM = 4096 ops/周期 × 1.8GHz × 132 SM = <b>989 TFLOPS</b>。</p>
+
+<p class="num-big" style="text-align:center">16.5× 的差距 · 而且只占 die 面积的一小块</p>
+
+<table>
+<thead><tr><th>代</th><th>Tensor Core 代</th><th>支持精度</th><th>旗舰张量算力（dense FP16）</th></tr></thead>
+<tbody>
+<tr><td>Volta</td><td>1</td><td>FP16</td><td>125 TF（V100）</td></tr>
+<tr><td>Turing</td><td>2</td><td>+INT8/INT4</td><td>130 TF（T4 能效机）</td></tr>
+<tr><td>Ampere</td><td>3</td><td>+BF16, TF32, 2:4 sparsity</td><td>312 TF（A100）</td></tr>
+<tr><td>Hopper</td><td>4</td><td>+FP8 (E4M3/E5M2)</td><td>989 TF（H100）</td></tr>
+<tr><td>Ada</td><td>4</td><td>+FP8</td><td>362 TF（L40S）</td></tr>
+<tr><td>Blackwell</td><td>5</td><td>+FP4 (E2M1)·MX 精度</td><td>2250 TF（B200 FP16）</td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>精度不停下探</b>：FP32 → FP16 → BF16 → FP8 → FP4。每降一位，同样晶体管能堆两倍吞吐（乘法器面积 ≈ bit²）。LLM 可以承受降精度的原因：权重分布近高斯 + 激活有大量 outlier 但可缩放。第 5 章 Tensor Core 深度会把每代 MMA 指令的形状拆开讲。
+</div>
+
+<h3>Tensor Core 在 SM 里的位置</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 780 260" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<rect x="10" y="10" width="760" height="240" fill="#11141b" stroke="#262b38" rx="10"/>
+<text x="390" y="30" fill="#6ee7b7" text-anchor="middle">一个 SM 的 1/4（sub-partition） · Hopper</text>
+<!-- sub-partition -->
+<rect x="30" y="50" width="720" height="180" fill="#161a23" stroke="#3a4558" rx="6"/>
+<!-- warp scheduler -->
+<rect x="50" y="65" width="160" height="30" fill="#2d3a4e" stroke="#7dd3fc" rx="4"/>
+<text x="130" y="84" fill="#7dd3fc" text-anchor="middle">Warp Scheduler · Dispatch</text>
+<!-- register file -->
+<rect x="50" y="105" width="160" height="40" fill="#2d3a4e" stroke="#7dd3fc" rx="4"/>
+<text x="130" y="121" fill="#7dd3fc" text-anchor="middle">Register File</text>
+<text x="130" y="137" fill="#8b93a7" text-anchor="middle">64KB (16384×32bit)</text>
+<!-- INT / FP32 cores -->
+<rect x="230" y="65" width="120" height="80" fill="#2a3d2e" stroke="#6ee7b7" rx="4"/>
+<text x="290" y="84" fill="#6ee7b7" text-anchor="middle">FP32 core × 32</text>
+<text x="290" y="102" fill="#6ee7b7" text-anchor="middle">INT32 core × 16</text>
+<text x="290" y="120" fill="#6ee7b7" text-anchor="middle">FP64 core × 16</text>
+<text x="290" y="138" fill="#8b93a7" text-anchor="middle">SIMT ALU</text>
+<!-- Tensor Core -->
+<rect x="370" y="65" width="160" height="80" fill="#3a2a4d" stroke="#a78bfa" rx="4"/>
+<text x="450" y="88" fill="#a78bfa" text-anchor="middle" font-size="14" font-weight="700">Tensor Core × 1</text>
+<text x="450" y="108" fill="#a78bfa" text-anchor="middle">4×8×16 MMA</text>
+<text x="450" y="125" fill="#8b93a7" text-anchor="middle">(wgmma: 64×N×16 warp group)</text>
+<text x="450" y="140" fill="#fbbf24" text-anchor="middle">989 TF FP8 / SM 的来源</text>
+<!-- LD/ST SFU -->
+<rect x="550" y="65" width="85" height="35" fill="#2a3544" stroke="#fbbf24" rx="4"/>
+<text x="592" y="87" fill="#fbbf24" text-anchor="middle">LD/ST × 8</text>
+<rect x="645" y="65" width="85" height="35" fill="#2a3544" stroke="#fbbf24" rx="4"/>
+<text x="688" y="87" fill="#fbbf24" text-anchor="middle">SFU × 1</text>
+<rect x="550" y="110" width="180" height="35" fill="#2a3544" stroke="#fbbf24" rx="4"/>
+<text x="640" y="132" fill="#fbbf24" text-anchor="middle">Tensor Memory Acc (TMA · Hopper 新)</text>
+<!-- shared / L1 -->
+<rect x="50" y="160" width="680" height="50" fill="#26323d" stroke="#fb7185" rx="4"/>
+<text x="390" y="180" fill="#fb7185" text-anchor="middle" font-size="13">Shared Memory + L1 · 256KB/SM (可配置分配)</text>
+<text x="390" y="198" fill="#8b93a7" text-anchor="middle">Hopper 每 SM 228KB SMEM 最大可用</text>
+</svg>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="numbers"><span class="step">§5</span>带回家的数字直觉表</h2>
+
+<div class="card">
+<p>下面是我写 kernel 时脑子里的"参考数字"，背下来能一眼看穿 80% 的性能问题：</p>
+
+<h3>一、延迟（cycles，按 A100/H100 粗略量级）</h3>
+<table>
+<thead><tr><th>操作</th><th>cycles</th><th>ns @1.8GHz</th><th>备注</th></tr></thead>
+<tbody>
+<tr><td>寄存器 ALU（FMA）</td><td>4</td><td>2.2 ns</td><td>最快，pipeline 完全隐藏</td></tr>
+<tr><td>Tensor Core MMA issue</td><td>8-16</td><td>~5 ns</td><td>但一次算 1024+ FMA</td></tr>
+<tr><td>Shared Memory 无冲突</td><td>20-30</td><td>~13 ns</td><td>和 L1 在同一块 SRAM</td></tr>
+<tr><td>L1 Cache 命中</td><td>~30</td><td>~17 ns</td><td></td></tr>
+<tr><td>L2 Cache 命中</td><td>200-250</td><td>~120 ns</td><td>全 die 共享</td></tr>
+<tr><td>HBM 命中</td><td>400-600</td><td>~260 ns</td><td>DRAM row hit</td></tr>
+<tr><td>HBM miss（row activate）</td><td>800+</td><td>~450 ns</td><td>bank conflict / row miss</td></tr>
+<tr><td>atomicAdd global</td><td>几百</td><td></td><td>看竞争</td></tr>
+<tr><td>NVLink 跨卡</td><td>~μs 级</td><td>1500+</td><td>比 HBM 慢一个数量级</td></tr>
+<tr><td>PCIe Gen5</td><td>数 μs</td><td>3000+</td><td>NVLink 的慢兄弟</td></tr>
+</tbody>
+</table>
+
+<h3>二、带宽（GB/s，H100-SXM5）</h3>
+<table>
+<thead><tr><th>通道</th><th>带宽</th><th>倍数（HBM=1×）</th></tr></thead>
+<tbody>
+<tr><td>Register File（per SM）</td><td>~20 TB/s</td><td>~6000×</td></tr>
+<tr><td>Shared Memory（per SM）</td><td>~19 TB/s</td><td>~5700×</td></tr>
+<tr><td>L2 Cache</td><td>~12 TB/s</td><td>~3500×</td></tr>
+<tr><td><b>HBM3</b></td><td>3.35 TB/s</td><td><b>1×</b></td></tr>
+<tr><td>NVLink 4（900 GB/s 双向）</td><td>0.9 TB/s</td><td>0.27×</td></tr>
+<tr><td>PCIe Gen5 x16</td><td>0.128 TB/s</td><td>0.04×</td></tr>
+<tr><td>InfiniBand NDR</td><td>0.05 TB/s</td><td>0.015×</td></tr>
+</tbody>
+</table>
+
+<div class="callout info">
+<b>记住一个比例</b>：<b>SRAM 比 HBM 快 5-10×、HBM 比 NVLink 快 4×、NVLink 比 PCIe 快 8×、PCIe 比网络快 2-3×</b>。做任何分布式优化都在这条层级上跳——目标是把数据往"上"挪。
+</div>
+
+<h3>三、容量金字塔</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 760 260" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="12">
+<!-- 金字塔 -->
+<polygon points="380,20 250,80 510,80" fill="#2a3d2e" stroke="#6ee7b7"/>
+<text x="380" y="55" fill="#6ee7b7" text-anchor="middle">Register File</text>
+<text x="380" y="70" fill="#6ee7b7" text-anchor="middle">64KB × 132 SM ≈ 8MB</text>
+
+<polygon points="250,80 210,130 550,130 510,80" fill="#2d3a4e" stroke="#7dd3fc"/>
+<text x="380" y="110" fill="#7dd3fc" text-anchor="middle">Shared Memory + L1  (228KB × 132 ≈ 30MB)</text>
+
+<polygon points="210,130 170,180 590,180 550,130" fill="#26323d" stroke="#fbbf24"/>
+<text x="380" y="160" fill="#fbbf24" text-anchor="middle">L2 Cache · 50MB</text>
+
+<polygon points="170,180 90,250 670,250 590,180" fill="#3a2a4d" stroke="#a78bfa"/>
+<text x="380" y="220" fill="#a78bfa" text-anchor="middle">HBM · 80-141 GB</text>
+
+<!-- 对照 -->
+<g fill="#8b93a7" text-anchor="start">
+<text x="535" y="50">越上越快越小</text>
+<text x="580" y="215">越下越慢越大</text>
+</g>
+</svg>
+</div>
+<div class="callout warn">
+<b>直觉</b>：H100 一共 30MB 的"宝贵 SRAM"——装不下 70B 模型的任何一层。一层 FFN 权重（4096×16384 BF16 = 134MB）就得 4 次 HBM→SRAM 流水复制。这就是<b>所有 GEMM tiling 的根本动机</b>：切块装进 SRAM 算完再搬下一块。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§6</span>带走的六句话</h2>
+
+<div class="card">
+<div class="callout">
+<ol>
+<li><b>GPU 是"一大堆小 CPU + 巨大慢显存"</b>——132 SM × 128 FP32 ALU = 16896 个算术单元并行干活，靠数量赢。</li>
+<li><b>die 的层级是 GPC → TPC → SM → sub-partition → CUDA core/Tensor Core</b>。下一章我们钻进 SM 内部。</li>
+<li><b>每代 GPU 的本质变化只有三件事：SM 变多、精度变低、带宽变大</b>——所有 feature（TMA、Cluster、FP8、FP4）都是这三件事的衍生。</li>
+<li><b>Tensor Core 比 CUDA core 快 16-32×</b>，LLM 吃的就是 Tensor Core；CUDA core 今天主要服务于 layer norm、softmax、采样等 elementwise 工作。</li>
+<li><b>内存金字塔 5 级延迟/带宽差 6000×</b>。"HBM 是唯一的瓶颈"是过度简化——真正的 art 是把正确的数据在正确的时机搬到正确的层级。</li>
+<li><b>Hopper/Blackwell 新 feature 都在攻"内存&amp;调度"的最后一公里</b>：TMA 自动化 LDG、Cluster 让 SM 之间共享 SMEM、NV-HBI 把两块 die 黏成一块——都不再是"算得快"而是"数据来得快"。</li>
+</ol>
+</div>
+</div>
+
+<div class="nav">
+<a href="index.html">← 返回目录</a>
+<a href="02-sm-anatomy.html">下一章：SM 内部解剖 →</a>
+</div>
+
+<div class="foot">第一章 · GPU 硬件深度 · 01/08</div>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

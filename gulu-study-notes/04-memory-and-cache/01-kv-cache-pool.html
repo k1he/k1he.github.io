@@ -1,0 +1,784 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>08 · KV Cache 物理池 · Paged Attention 内核</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media (max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.kpi-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:10px 0}
+.kpi-box{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:10px 12px;text-align:center}
+.kpi-box .k{color:var(--mute);font-size:11px;margin-bottom:4px}
+.kpi-box .v{color:var(--brand);font-size:18px;font-weight:700;font-family:"SF Mono",monospace}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+.pulse{animation:pulse 1.2s ease-in-out infinite}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>KV Cache 物理池 · Paged Attention 内核 <span class="tag">08</span></h1>
+<div class="sub">page_table 指向的那个"池"到底长什么样？store_kv 和 k_cache(layer_id) 在干嘛？打开 mini-sglang 最后一个黑盒。</div>
+
+<div class="toc">
+  <a href="#why">为什么是池</a>
+  <a href="#shape">物理 tensor shape</a>
+  <a href="#mapping">page_table → 物理位置</a>
+  <a href="#store">store_kv 操作</a>
+  <a href="#read">attention 怎么读</a>
+  <a href="#sizing">_determine_num_pages</a>
+  <a href="#naive">NaiveCache 对比</a>
+  <a href="#summary">总结</a>
+</div>
+
+<!-- ============ PART 1 ============ -->
+<h2 id="why"><span class="step">PART 1</span>为什么 KV 必须是"池"？</h2>
+
+<div class="card">
+<p>先复习一下前面章节埋下的问题：</p>
+
+<ul class="tight">
+  <li>每个 token 在每一层 attention 会产生一组 K 和 V 向量（用于后续 token 查询）</li>
+  <li>请求长度不一样：有的 50 token，有的 5000 token</li>
+  <li>请求数随时变：有的刚到，有的刚走</li>
+</ul>
+
+<h3>朴素方案：每个请求预分配 max_seq_len 的连续 KV buffer</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 800 240" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <text x="400" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">朴素方案：按 max_seq_len (32k) 给每个请求预留</text>
+
+  <g>
+    <text x="40" y="70" fill="#fbbf24" font-size="12" font-weight="600">Req A (实际 200 tok)</text>
+    <rect x="40" y="80" width="720" height="30" fill="#374151" rx="3"/>
+    <rect x="40" y="80" width="5" height="30" fill="var(--brand)" rx="3"/>
+    <text x="400" y="100" text-anchor="middle" fill="#9ca3af" font-size="11">浪费 99.4% (31800 token 空间空着)</text>
+  </g>
+
+  <g>
+    <text x="40" y="150" fill="#7dd3fc" font-size="12" font-weight="600">Req B (实际 3000 tok)</text>
+    <rect x="40" y="160" width="720" height="30" fill="#374151" rx="3"/>
+    <rect x="40" y="160" width="67" height="30" fill="var(--brand)" rx="3"/>
+    <text x="400" y="180" text-anchor="middle" fill="#9ca3af" font-size="11">浪费 90.6%</text>
+  </g>
+
+  <text x="400" y="225" text-anchor="middle" fill="var(--bad)" font-size="12" font-weight="600">结论：平均浪费 ~90% 显存，装不下几个请求就 OOM</text>
+</svg>
+</div>
+
+<h3>Paged 方案：全局 KV 池 + 按需分页</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 900 260" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <text x="450" y="22" text-anchor="middle" fill="#cbd5e1" font-size="13" font-weight="600">Paged：所有请求共享一个大池，按需分配 page</text>
+
+  <!-- KV Pool -->
+  <text x="40" y="70" fill="var(--brand)" font-size="12" font-weight="600">全局 KV Pool</text>
+  <g>
+    <!-- A's pages scattered -->
+    <rect x="40"  y="80" width="40" height="30" fill="#fbbf24" rx="2"/>
+    <rect x="120" y="80" width="40" height="30" fill="#7dd3fc" rx="2"/>
+    <rect x="160" y="80" width="40" height="30" fill="#fbbf24" rx="2"/>
+    <rect x="200" y="80" width="40" height="30" fill="#374151" rx="2"/>
+    <rect x="240" y="80" width="40" height="30" fill="#7dd3fc" rx="2"/>
+    <rect x="280" y="80" width="40" height="30" fill="#374151" rx="2"/>
+    <rect x="320" y="80" width="40" height="30" fill="#fbbf24" rx="2"/>
+    <rect x="360" y="80" width="40" height="30" fill="#7dd3fc" rx="2"/>
+    <rect x="400" y="80" width="40" height="30" fill="#a78bfa" rx="2"/>
+    <rect x="440" y="80" width="40" height="30" fill="#fbbf24" rx="2"/>
+    <rect x="480" y="80" width="40" height="30" fill="#7dd3fc" rx="2"/>
+    <rect x="520" y="80" width="40" height="30" fill="#374151" rx="2"/>
+    <rect x="560" y="80" width="40" height="30" fill="#a78bfa" rx="2"/>
+    <rect x="600" y="80" width="40" height="30" fill="#34d399" rx="2"/>
+    <rect x="640" y="80" width="40" height="30" fill="#374151" rx="2"/>
+    <rect x="680" y="80" width="40" height="30" fill="#34d399" rx="2"/>
+    <rect x="720" y="80" width="40" height="30" fill="#fbbf24" rx="2"/>
+    <rect x="760" y="80" width="40" height="30" fill="#a78bfa" rx="2"/>
+    <rect x="800" y="80" width="40" height="30" fill="#7dd3fc" rx="2"/>
+  </g>
+
+  <!-- Legend -->
+  <g transform="translate(40, 140)">
+    <rect x="0" y="0" width="14" height="14" fill="#fbbf24"/><text x="20" y="12" fill="#cbd5e1" font-size="11">Req A 的 pages</text>
+    <rect x="130" y="0" width="14" height="14" fill="#7dd3fc"/><text x="150" y="12" fill="#cbd5e1" font-size="11">Req B 的 pages</text>
+    <rect x="260" y="0" width="14" height="14" fill="#a78bfa"/><text x="280" y="12" fill="#cbd5e1" font-size="11">Req C 的 pages</text>
+    <rect x="390" y="0" width="14" height="14" fill="#34d399"/><text x="410" y="12" fill="#cbd5e1" font-size="11">Radix 缓存 prefix</text>
+    <rect x="540" y="0" width="14" height="14" fill="#374151"/><text x="560" y="12" fill="#cbd5e1" font-size="11">free</text>
+  </g>
+
+  <text x="450" y="200" text-anchor="middle" fill="#cbd5e1" font-size="12">一个请求的 pages <u>物理上分散</u>，通过 page_table 逻辑映射拼回来</text>
+  <text x="450" y="225" text-anchor="middle" fill="var(--brand)" font-size="12" font-weight="600">显存利用率 > 95%</text>
+</svg>
+</div>
+
+<div class="callout">
+<strong>KV 池的本质：</strong>一块预分配好的大 GPU tensor，<u>所有请求的 K/V 都往里写</u>。分配/释放的最小单位是 page（mini-sglang 默认 page_size=1 token，即一页 = 一个 token 的 KV）。<br>
+后面两章所有讨论都围绕这个池：它的 shape、怎么索引、怎么写入、怎么释放。
+</div>
+</div>
+
+<!-- ============ PART 2 ============ -->
+<h2 id="shape"><span class="step">PART 2</span>物理 tensor 到底长什么样（最关键的 6 维）</h2>
+
+<div class="card">
+<p>mini-sglang 的 KV 池就是一个 <strong>6 维 tensor</strong>，全部在 GPU 上，从启动就预分配好不再变大小。</p>
+
+<pre><code><span class="com"># kvcache/mha_pool.py:28  MHAKVCache.__init__</span>
+self._kv_buffer = torch.<span class="fn">empty</span>(
+    (<span class="num">2</span>, num_layers, num_pages, page_size, local_kv_heads, head_dim),
+    device=device,
+    dtype=dtype,
+)</code></pre>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 420" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="14" font-weight="700">shape = (2, num_layers, num_pages, page_size, local_kv_heads, head_dim)</text>
+
+  <g font-family="SF Mono">
+    <!-- dim 1: K/V -->
+    <rect x="40" y="60" width="180" height="80" fill="#1f2937" stroke="#fbbf24" stroke-width="2" rx="6"/>
+    <text x="130" y="84" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="700">dim 0 · size = 2</text>
+    <text x="130" y="104" text-anchor="middle" fill="#cbd5e1" font-size="11">[K, V]</text>
+    <text x="130" y="122" text-anchor="middle" fill="#8b93a7" font-size="10">Key 和 Value 并排放</text>
+
+    <!-- dim 2: layers -->
+    <rect x="240" y="60" width="180" height="80" fill="#1f2937" stroke="#7dd3fc" stroke-width="2" rx="6"/>
+    <text x="330" y="84" text-anchor="middle" fill="#7dd3fc" font-size="13" font-weight="700">dim 1 · num_layers</text>
+    <text x="330" y="104" text-anchor="middle" fill="#cbd5e1" font-size="11">Qwen3-0.6B: 28</text>
+    <text x="330" y="122" text-anchor="middle" fill="#8b93a7" font-size="10">Llama-70B: 80</text>
+
+    <!-- dim 3: pages -->
+    <rect x="440" y="60" width="180" height="80" fill="#1f2937" stroke="#a78bfa" stroke-width="2" rx="6"/>
+    <text x="530" y="84" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="700">dim 2 · num_pages</text>
+    <text x="530" y="104" text-anchor="middle" fill="#cbd5e1" font-size="11">自动算出，几万～几十万</text>
+    <text x="530" y="122" text-anchor="middle" fill="#8b93a7" font-size="10">占剩余显存 85%</text>
+
+    <!-- dim 4: page_size -->
+    <rect x="640" y="60" width="180" height="80" fill="#1f2937" stroke="#34d399" stroke-width="2" rx="6"/>
+    <text x="730" y="84" text-anchor="middle" fill="#34d399" font-size="13" font-weight="700">dim 3 · page_size</text>
+    <text x="730" y="104" text-anchor="middle" fill="#cbd5e1" font-size="11">默认 1（一页一 token）</text>
+    <text x="730" y="122" text-anchor="middle" fill="#8b93a7" font-size="10">trtllm 要 16/32/64</text>
+
+    <!-- dim 5: kv_heads -->
+    <rect x="840" y="60" width="180" height="80" fill="#1f2937" stroke="#fb7185" stroke-width="2" rx="6"/>
+    <text x="930" y="84" text-anchor="middle" fill="#fb7185" font-size="13" font-weight="700">dim 4 · local_kv_heads</text>
+    <text x="930" y="104" text-anchor="middle" fill="#cbd5e1" font-size="11">GQA + TP 切片后</text>
+    <text x="930" y="122" text-anchor="middle" fill="#8b93a7" font-size="10">例：8/4 = 2 heads</text>
+
+    <!-- dim 6: head_dim -->
+    <rect x="1040" y="60" width="140" height="80" fill="#1f2937" stroke="#f59e0b" stroke-width="2" rx="6"/>
+    <text x="1110" y="84" text-anchor="middle" fill="#f59e0b" font-size="13" font-weight="700">dim 5 · head_dim</text>
+    <text x="1110" y="104" text-anchor="middle" fill="#cbd5e1" font-size="11">典型 128</text>
+  </g>
+
+  <!-- Concrete example -->
+  <rect x="40" y="180" width="1140" height="220" fill="#0a0d12" stroke="var(--line)" rx="10"/>
+  <text x="60" y="208" fill="var(--brand)" font-size="13" font-weight="600">具体例子：H200 上的 Qwen3-0.6B，TP=1，bf16</text>
+
+  <g font-family="SF Mono" font-size="12" fill="#cbd5e1">
+    <text x="60" y="238">shape = (2, 28, 1048576, 1, 2, 128)</text>
+    <text x="60" y="260">          │   │        │       │   │   │</text>
+    <text x="60" y="282" fill="#fbbf24">          K,V 两份</text>
+    <text x="200" y="282" fill="#7dd3fc">28 层</text>
+    <text x="280" y="282" fill="#a78bfa">1M pages</text>
+    <text x="400" y="282" fill="#34d399">page_size=1</text>
+    <text x="520" y="282" fill="#fb7185">2 个 KV head</text>
+    <text x="640" y="282" fill="#f59e0b">head_dim=128</text>
+
+    <text x="60" y="320">总元素数 = 2 × 28 × 1048576 × 1 × 2 × 128 = 15,032,385,536</text>
+    <text x="60" y="342">每元素 bf16 = 2 字节</text>
+    <text x="60" y="364" fill="var(--brand)" font-weight="600">→ 总大小 ≈ 28 GiB（这就是占满 H200 大部分显存的那个 tensor）</text>
+    <text x="60" y="390" fill="var(--mute)">每 token KV 大小 = 2×28×1×2×128×2 = 28,672 字节 ≈ 28 KiB</text>
+  </g>
+</svg>
+</div>
+
+<h3>这 6 维每个的"物理意义"</h3>
+
+<table>
+<tr><th>维度</th><th>对应什么</th><th>为什么在这个位置</th></tr>
+<tr><td><strong>dim 0 (K/V)</strong></td><td>Key 还是 Value</td><td>放最外层方便<code>self._k_buffer = self._kv_buffer[0]</code> 拆分</td></tr>
+<tr><td><strong>num_layers</strong></td><td>Transformer 第几层的 KV</td><td>每层有独立 KV，所以需要这一维区分</td></tr>
+<tr><td><strong>num_pages</strong></td><td>池里的第几页</td><td><u>"虚拟地址"</u> 就是这个维度的索引</td></tr>
+<tr><td><strong>page_size</strong></td><td>这一页里第几个 token</td><td>page_size=1 时这一维退化，留着是为兼容 trtllm 的 16/32/64</td></tr>
+<tr><td><strong>local_kv_heads</strong></td><td>第几个 KV head</td><td>TP 切片后每卡的 local heads</td></tr>
+<tr><td><strong>head_dim</strong></td><td>head 内的哪一维</td><td>每个 head 的向量维度</td></tr>
+</table>
+
+<div class="callout warn">
+<strong>注意 num_pages 那一维是 page 的"虚拟地址"空间</strong>——前面所有章节提到的 <code>page_table[req.table_idx, k] = 某个 page 索引</code>，那个 page 索引就是这一维的下标。<u>这一维最大，决定了池的总大小</u>。
+</div>
+
+<h3>page_size=1 时，每页就是一个 token</h3>
+<p>当 page_size=1，维度 3（page_size）退化成 1，可以把 `num_pages × page_size` 看作一维 token 地址：</p>
+
+<pre><code><span class="com"># kvcache/mha_pool.py:37</span>
+self._storage_shape = (num_pages * page_size, local_kv_heads, head_dim)
+
+<span class="com"># 在 store/read 时 view 成这个 3D shape:</span>
+self._k_buffer[layer_id].<span class="fn">view</span>(self._storage_shape)
+<span class="com"># shape: (num_pages, local_kv_heads, head_dim)  ← 对于 page_size=1</span>
+<span class="com">#        ↑ 现在每个 page 就一个 token 的 K 向量</span></code></pre>
+
+<p>这就是 mini-sglang 把 page_size=1 作为默认的一个好处——可以"按 token 索引"，逻辑简单。</p>
+</div>
+
+<!-- ============ PART 3 ============ -->
+<h2 id="mapping"><span class="step">PART 3</span>page_table 里那个 int32 如何索引 KV 池？</h2>
+
+<div class="card">
+<p>回忆 02 章：<code>page_table[req.table_idx, k] = 某个物理页号</code>。现在看它怎么<u>真正被用来读 KV</u>。</p>
+
+<h3>具体流程（以 FlashInfer 为例）</h3>
+
+<pre><code><span class="com"># attention/fi.py:190  prepare_metadata</span>
+<span class="kw">def</span> <span class="fn">prepare_metadata</span>(self, batch: Batch):
+    reqs = batch.padded_reqs
+    page_table = <span class="fn">get_global_ctx</span>().page_table
+    ...
+    batch.attn_metadata = <span class="fn">FIMetadata</span>(
+        ...
+        <span class="hl">indices=torch.<span class="fn">cat</span>([page_table[req.table_idx, : req.device_len] <span class="kw">for</span> req <span class="kw">in</span> reqs]),</span>
+        ...
+    )</code></pre>
+
+<p>每个请求从 page_table 里取出"自己用过的页号列表"，<u>拼成一根扁平张量</u> → 这就是 05 章讲过的 `indices`。</p>
+
+<h3>举个例子：batch 里两个请求 A, B</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 420" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="14" font-weight="700">从 page_table 到 KV 池的间接寻址</text>
+
+  <!-- Page table -->
+  <g>
+    <text x="180" y="70" text-anchor="middle" fill="var(--pink)" font-size="13" font-weight="700">page_table (GPU int32)</text>
+    <text x="180" y="88" text-anchor="middle" fill="#8b93a7" font-size="10">shape: [max_running_req+1, max_seq_len]</text>
+
+    <rect x="40" y="100" width="80" height="30" fill="#1f2937" stroke="#fb7185"/>
+    <text x="80" y="120" text-anchor="middle" fill="#8b93a7" font-size="10">table_idx</text>
+    <rect x="120" y="100" width="200" height="30" fill="#1f2937" stroke="#fb7185"/>
+    <text x="220" y="120" text-anchor="middle" fill="#8b93a7" font-size="10">page indices (按 token 顺序)</text>
+
+    <!-- Row A (table_idx=0) -->
+    <rect x="40" y="130" width="80" height="30" fill="#2a1f0b" stroke="#fbbf24"/>
+    <text x="80" y="150" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">A (0)</text>
+    <rect x="120" y="130" width="40" height="30" fill="#fbbf24"/>
+    <text x="140" y="150" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">3</text>
+    <rect x="160" y="130" width="40" height="30" fill="#fbbf24"/>
+    <text x="180" y="150" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">7</text>
+    <rect x="200" y="130" width="40" height="30" fill="#fbbf24"/>
+    <text x="220" y="150" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">1</text>
+    <rect x="240" y="130" width="40" height="30" fill="#fbbf24"/>
+    <text x="260" y="150" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">5</text>
+
+    <!-- Row B (table_idx=1) -->
+    <rect x="40" y="160" width="80" height="30" fill="#0b1f2a" stroke="#7dd3fc"/>
+    <text x="80" y="180" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">B (1)</text>
+    <rect x="120" y="160" width="40" height="30" fill="#7dd3fc"/>
+    <text x="140" y="180" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">2</text>
+    <rect x="160" y="160" width="40" height="30" fill="#7dd3fc"/>
+    <text x="180" y="180" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">6</text>
+  </g>
+
+  <!-- Arrow: cat to indices -->
+  <text x="180" y="225" text-anchor="middle" fill="#cbd5e1" font-size="11">↓ torch.cat([page_table[A,:4], page_table[B,:2]])</text>
+
+  <g>
+    <text x="180" y="260" text-anchor="middle" fill="var(--brand)" font-size="13" font-weight="700">indices (扁平)</text>
+    <rect x="40" y="275" width="40" height="30" fill="#fbbf24"/>
+    <text x="60" y="295" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">3</text>
+    <rect x="80" y="275" width="40" height="30" fill="#fbbf24"/>
+    <text x="100" y="295" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">7</text>
+    <rect x="120" y="275" width="40" height="30" fill="#fbbf24"/>
+    <text x="140" y="295" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">1</text>
+    <rect x="160" y="275" width="40" height="30" fill="#fbbf24"/>
+    <text x="180" y="295" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">5</text>
+    <rect x="200" y="275" width="40" height="30" fill="#7dd3fc"/>
+    <text x="220" y="295" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">2</text>
+    <rect x="240" y="275" width="40" height="30" fill="#7dd3fc"/>
+    <text x="260" y="295" text-anchor="middle" fill="#0b0d12" font-size="10" font-weight="600">6</text>
+  </g>
+
+  <text x="180" y="340" text-anchor="middle" fill="#8b93a7" font-size="11">→ 传给 FlashInfer wrapper 的 paged_kv_indices 参数</text>
+
+  <!-- KV Pool (right side) -->
+  <g>
+    <text x="800" y="70" text-anchor="middle" fill="var(--brand2)" font-size="13" font-weight="700">KV Pool (第 layer_id 层)</text>
+    <text x="800" y="88" text-anchor="middle" fill="#8b93a7" font-size="10">shape[layer]: (num_pages, local_kv_heads, head_dim)</text>
+
+    <!-- Pool cells -->
+    <g font-family="SF Mono" font-size="10">
+      <rect x="440" y="110" width="60" height="40" fill="#1f2937" stroke="#262b38"/>
+      <text x="470" y="128" text-anchor="middle" fill="#9ca3af">page#0</text>
+      <text x="470" y="142" text-anchor="middle" fill="#6b7280">(free)</text>
+
+      <rect x="500" y="110" width="60" height="40" fill="#a78bfa" opacity=".6"/>
+      <text x="530" y="128" text-anchor="middle" fill="#0b0d12">page#1</text>
+      <text x="530" y="142" text-anchor="middle" fill="#0b0d12">A[2]</text>
+
+      <rect x="560" y="110" width="60" height="40" fill="#7dd3fc" opacity=".6"/>
+      <text x="590" y="128" text-anchor="middle" fill="#0b0d12">page#2</text>
+      <text x="590" y="142" text-anchor="middle" fill="#0b0d12">B[0]</text>
+
+      <rect x="620" y="110" width="60" height="40" fill="#fbbf24" opacity=".6"/>
+      <text x="650" y="128" text-anchor="middle" fill="#0b0d12">page#3</text>
+      <text x="650" y="142" text-anchor="middle" fill="#0b0d12">A[0]</text>
+
+      <rect x="680" y="110" width="60" height="40" fill="#1f2937" stroke="#262b38"/>
+      <text x="710" y="128" text-anchor="middle" fill="#9ca3af">page#4</text>
+      <text x="710" y="142" text-anchor="middle" fill="#6b7280">(free)</text>
+
+      <rect x="740" y="110" width="60" height="40" fill="#fbbf24" opacity=".6"/>
+      <text x="770" y="128" text-anchor="middle" fill="#0b0d12">page#5</text>
+      <text x="770" y="142" text-anchor="middle" fill="#0b0d12">A[3]</text>
+
+      <rect x="800" y="110" width="60" height="40" fill="#7dd3fc" opacity=".6"/>
+      <text x="830" y="128" text-anchor="middle" fill="#0b0d12">page#6</text>
+      <text x="830" y="142" text-anchor="middle" fill="#0b0d12">B[1]</text>
+
+      <rect x="860" y="110" width="60" height="40" fill="#fbbf24" opacity=".6"/>
+      <text x="890" y="128" text-anchor="middle" fill="#0b0d12">page#7</text>
+      <text x="890" y="142" text-anchor="middle" fill="#0b0d12">A[1]</text>
+
+      <rect x="920" y="110" width="60" height="40" fill="#1f2937" stroke="#262b38"/>
+      <text x="950" y="128" text-anchor="middle" fill="#9ca3af">page#8</text>
+      <text x="950" y="142" text-anchor="middle" fill="#6b7280">(free)</text>
+    </g>
+    <text x="800" y="185" text-anchor="middle" fill="#cbd5e1" font-size="11">物理上分散，每格 = 一页 KV (shape [kv_heads, head_dim])</text>
+  </g>
+
+  <!-- Arrows from indices to pool -->
+  <path d="M 60 305 Q 300 340 650 150" stroke="#fbbf24" fill="none" stroke-width="1" opacity=".7" marker-end="url(#arr)"/>
+  <path d="M 100 305 Q 350 340 890 150" stroke="#fbbf24" fill="none" stroke-width="1" opacity=".7" marker-end="url(#arr)"/>
+  <path d="M 140 305 Q 400 340 530 150" stroke="#fbbf24" fill="none" stroke-width="1" opacity=".7" marker-end="url(#arr)"/>
+  <path d="M 180 305 Q 450 340 770 150" stroke="#fbbf24" fill="none" stroke-width="1" opacity=".7" marker-end="url(#arr)"/>
+  <path d="M 220 305 Q 500 340 590 150" stroke="#7dd3fc" fill="none" stroke-width="1" opacity=".7" marker-end="url(#arr)"/>
+  <path d="M 260 305 Q 550 340 830 150" stroke="#7dd3fc" fill="none" stroke-width="1" opacity=".7" marker-end="url(#arr)"/>
+
+  <defs>
+    <marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#fbbf24"/>
+    </marker>
+  </defs>
+
+  <!-- Result: logical view -->
+  <text x="600" y="220" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">kernel 内部的"逻辑拼接"</text>
+  <g transform="translate(400, 240)">
+    <text x="0" y="20" fill="#fbbf24" font-size="11" font-weight="600">A 的 KV：</text>
+    <rect x="70" y="5" width="40" height="20" fill="#fbbf24"/>
+    <text x="90" y="20" text-anchor="middle" fill="#0b0d12" font-size="10">A[0]</text>
+    <rect x="110" y="5" width="40" height="20" fill="#fbbf24"/>
+    <text x="130" y="20" text-anchor="middle" fill="#0b0d12" font-size="10">A[1]</text>
+    <rect x="150" y="5" width="40" height="20" fill="#fbbf24"/>
+    <text x="170" y="20" text-anchor="middle" fill="#0b0d12" font-size="10">A[2]</text>
+    <rect x="190" y="5" width="40" height="20" fill="#fbbf24"/>
+    <text x="210" y="20" text-anchor="middle" fill="#0b0d12" font-size="10">A[3]</text>
+    <text x="245" y="20" fill="#8b93a7" font-size="10">← 通过 indices [3,7,1,5] 读取</text>
+  </g>
+  <g transform="translate(400, 275)">
+    <text x="0" y="20" fill="#7dd3fc" font-size="11" font-weight="600">B 的 KV：</text>
+    <rect x="70" y="5" width="40" height="20" fill="#7dd3fc"/>
+    <text x="90" y="20" text-anchor="middle" fill="#0b0d12" font-size="10">B[0]</text>
+    <rect x="110" y="5" width="40" height="20" fill="#7dd3fc"/>
+    <text x="130" y="20" text-anchor="middle" fill="#0b0d12" font-size="10">B[1]</text>
+    <text x="165" y="20" fill="#8b93a7" font-size="10">← 通过 indices [2,6] 读取</text>
+  </g>
+</svg>
+</div>
+
+<div class="callout info">
+<strong>读这张图的核心：</strong>
+<ul class="tight">
+  <li><strong>page_table</strong> 是"每个请求的页索引表"——按 token 顺序排列它用过的 pages</li>
+  <li><strong>indices</strong> 是把 batch 所有请求的页索引<u>扁平化拼接</u>，给 kernel 做 paged 寻址</li>
+  <li><strong>KV Pool</strong> 物理上是连续 tensor，但不同请求的 pages 散布各处</li>
+  <li>kernel 内部循环时，<u>第 j 个 key 的物理位置 = indices[cu_seqlens_k[i] + j]</u>，然后去 pool[那个位置] 取出 [kv_heads, head_dim] 的向量</li>
+</ul>
+</div>
+</div>
+
+<!-- ============ PART 4 ============ -->
+<h2 id="store"><span class="step">PART 4</span>store_kv · 算完 K/V 之后往哪写？</h2>
+
+<div class="card">
+<p>每个 attention 层的 forward 会做两件事：<strong>先写新算的 K/V，再读完整 KV 算 attention</strong>。</p>
+
+<h3>触发点：FlashInfer backend 的 forward</h3>
+
+<pre><code><span class="com"># attention/fi.py:176  FlashInferBackend.forward</span>
+<span class="kw">def</span> <span class="fn">forward</span>(self, q, k, v, layer_id, batch):
+    metadata = batch.attn_metadata
+    self.<span class="fn">_initialize_metadata_once</span>(metadata)
+    <span class="hl">self.kvcache.<span class="fn">store_kv</span>(k, v, batch.out_loc, layer_id)</span>   <span class="com"># ★ 先写</span>
+    kv_cache = (self.kvcache.<span class="fn">k_cache</span>(layer_id), self.kvcache.<span class="fn">v_cache</span>(layer_id))
+    kv_cache = (<span class="fn">_flatten_cache</span>(kv_cache[0]), <span class="fn">_flatten_cache</span>(kv_cache[1]))
+    <span class="kw">return</span> metadata.wrapper.<span class="fn">run</span>(q=q, paged_kv_cache=kv_cache)            <span class="com"># 再读</span></code></pre>
+
+<h3>store_kv 内部</h3>
+<pre><code><span class="com"># kvcache/mha_pool.py:45</span>
+<span class="kw">def</span> <span class="fn">store_kv</span>(self, k, v, out_loc, layer_id):
+    <span class="kw">from</span> minisgl.kernel <span class="kw">import</span> store_cache
+    <span class="fn">store_cache</span>(
+        k_cache=self._k_buffer[layer_id].<span class="fn">view</span>(self._storage_shape),   <span class="com"># [num_pages, kv_heads, head_dim]</span>
+        v_cache=self._v_buffer[layer_id].<span class="fn">view</span>(self._storage_shape),
+        indices=out_loc,      <span class="com"># ★ 写入位置</span>
+        k=k,                  <span class="com">#   新算的 K, shape [total_tokens, kv_heads, head_dim]</span>
+        v=v,
+    )</code></pre>
+
+<h3>out_loc 从哪来？</h3>
+<p>回到 scheduler 的 _prepare_batch：</p>
+<pre><code><span class="com"># scheduler/scheduler.py:210</span>
+batch.out_loc = self.engine.page_table[input_mapping]
+<span class="com"># input_mapping 是 (table_idx_per_token, positions_per_token)</span>
+<span class="com"># page_table[input_mapping] 就是"按 token 顺序取出对应物理页号"</span></code></pre>
+
+<p>所以 <code>out_loc</code> 是一个 GPU int32 tensor，shape 等于 batch 里总 token 数，每个元素指向"这个 token 的 K/V 应该写到 pool 的哪个物理位置"。</p>
+
+<h3>store_cache kernel 的语义（简化）</h3>
+
+<pre><code><span class="com"># 对 batch 里每个要写的 token i:</span>
+<span class="kw">for</span> i <span class="kw">in</span> range(total_tokens):
+    loc = indices[i]
+    <span class="hl">k_cache[loc, :, :] = k[i]</span>    <span class="com"># 把新算的 K 写到 pool 的对应物理页</span>
+    <span class="hl">v_cache[loc, :, :] = v[i]</span>    <span class="com"># V 同理</span></code></pre>
+
+<p>这是个<u>完全并行</u>的 scatter 操作，每个 token 独立写自己那一页，所以 CUDA 上很快（纯 memory-bound）。</p>
+
+<div class="callout warn">
+<strong>为什么不用 Python 的 index assignment 而要 CUDA kernel？</strong>
+Python/PyTorch 的 <code>k_cache[indices] = k</code> 在 GPU 上其实也调 scatter kernel，但会多走一层 dispatch + 参数检查。<code>store_cache</code> 是 mini-sglang 自研的 C++ kernel（在 <code>kernel/store.cu</code> 里），省去额外开销，同时可以融合进 CUDA Graph。
+</div>
+</div>
+
+<!-- ============ PART 5 ============ -->
+<h2 id="read"><span class="step">PART 5</span>attention kernel 怎么"读"这个池？</h2>
+
+<div class="card">
+<p>store 完之后，轮到 FlashInfer 的 <code>wrapper.run()</code> 真正做 attention 计算。它拿到的是：</p>
+
+<pre><code>wrapper.<span class="fn">run</span>(q=q, paged_kv_cache=(k_cache_flat, v_cache_flat))
+                            │
+                            └─ shape: (num_pages, 1, kv_heads, head_dim)
+                               ← 就是 self._k_buffer[layer_id].view(...).view(-1, 1, kv_heads, head_dim)</code></pre>
+
+<p><code>_flatten_cache</code> 把 <code>(num_pages, page_size=1, kv_heads, head_dim)</code> 展平成 <code>(num_pages·1, 1, kv_heads, head_dim)</code>——FlashInfer 的接口要求后者格式。</p>
+
+<h3>FlashInfer 内部怎么用 indices + paged_kv_cache？</h3>
+
+<p>参考 05 章的 cu_seqlens + indices。kernel 内部做的事类似：</p>
+
+<pre><code><span class="com"># 伪代码：对第 i 个 query 算 attention</span>
+q_start = cu_seqlens_q[i]
+q_end   = cu_seqlens_q[i+1]
+k_start = cu_seqlens_k[i]
+k_end   = cu_seqlens_k[i+1]
+
+<span class="kw">for</span> qi <span class="kw">in</span> range(q_start, q_end):
+    <span class="kw">for</span> kj <span class="kw">in</span> range(k_start, k_end):
+        <span class="hl">page_idx = indices[kj]</span>                       <span class="com">★ 间接寻址</span>
+        <span class="hl">K_vec = paged_kv_cache[0][page_idx, 0, :, :]</span>   <span class="com">读物理 K</span>
+        <span class="hl">V_vec = paged_kv_cache[1][page_idx, 0, :, :]</span>   <span class="com">读物理 V</span>
+        score = <span class="fn">dot</span>(q[qi], K_vec) / sqrt(head_dim)
+        <span class="com"># ... softmax + 加权和 V_vec ...</span></code></pre>
+
+<p>关键步骤就是那个 <strong>page_idx = indices[kj]</strong>——把"逻辑位置 kj"翻译成"物理位置 page_idx"，然后用它去索引 pool。</p>
+
+<div class="callout">
+<strong>这就是为什么叫"paged attention"</strong>：kernel 必须通过页索引间接寻址才能读到正确的 KV。现代高性能实现（FlashInfer、FlashAttention 3 的 paged 版本、TRT-LLM 的 fmha）都在 kernel 内部<u>把这个间接寻址和 softmax/gemm 融合</u>，避免分散的 memory read 变成瓶颈。
+</div>
+
+<h3>put it all together · 一次 decode 层的完整数据流</h3>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 480" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="14" font-weight="700">一次 decode 层 attention 的完整 KV 交互</text>
+
+  <!-- Input hidden -->
+  <rect x="40" y="60" width="160" height="50" fill="#1f2937" stroke="#cbd5e1" rx="6"/>
+  <text x="120" y="80" text-anchor="middle" fill="#cbd5e1" font-size="12" font-weight="600">hidden [T, 4096]</text>
+  <text x="120" y="100" text-anchor="middle" fill="#8b93a7" font-size="10">本层输入</text>
+
+  <!-- QKV proj -->
+  <rect x="240" y="60" width="160" height="50" fill="#2a1f0b" stroke="#fbbf24" rx="6"/>
+  <text x="320" y="80" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">QKV proj</text>
+  <text x="320" y="100" text-anchor="middle" fill="#8b93a7" font-size="10">matmul + RoPE</text>
+
+  <!-- q, k, v outputs -->
+  <rect x="440" y="40" width="90" height="28" fill="#fbbf24" rx="4"/>
+  <text x="485" y="58" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">q [T,H,D]</text>
+
+  <rect x="440" y="75" width="90" height="28" fill="#7dd3fc" rx="4"/>
+  <text x="485" y="93" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">k [T,Hkv,D]</text>
+
+  <rect x="440" y="110" width="90" height="28" fill="#a78bfa" rx="4"/>
+  <text x="485" y="128" text-anchor="middle" fill="#0b0d12" font-size="11" font-weight="600">v [T,Hkv,D]</text>
+
+  <!-- store_kv -->
+  <rect x="580" y="75" width="160" height="63" fill="#0f2a1f" stroke="#34d399" rx="6"/>
+  <text x="660" y="97" text-anchor="middle" fill="#34d399" font-size="12" font-weight="600">① store_kv</text>
+  <text x="660" y="114" text-anchor="middle" fill="#cbd5e1" font-size="10">scatter k, v</text>
+  <text x="660" y="130" text-anchor="middle" fill="#cbd5e1" font-size="10">用 out_loc 作为地址</text>
+
+  <!-- KV Pool -->
+  <rect x="800" y="60" width="160" height="80" fill="#1a0f2a" stroke="#fb7185" rx="6"/>
+  <text x="880" y="82" text-anchor="middle" fill="#fb7185" font-size="12" font-weight="600">KV Pool</text>
+  <text x="880" y="100" text-anchor="middle" fill="#cbd5e1" font-size="10">_kv_buffer[layer_id]</text>
+  <text x="880" y="116" text-anchor="middle" fill="#cbd5e1" font-size="10">shape [num_pages,</text>
+  <text x="880" y="130" text-anchor="middle" fill="#cbd5e1" font-size="10">       Hkv, D]</text>
+
+  <line x1="530" y1="110" x2="580" y2="110" stroke="#34d399" stroke-width="2"/>
+  <line x1="740" y1="110" x2="800" y2="110" stroke="#34d399" stroke-width="2" marker-end="url(#arr2)"/>
+
+  <!-- FlashInfer wrapper.run -->
+  <rect x="40" y="200" width="220" height="80" fill="#0b1f2a" stroke="#7dd3fc" rx="6"/>
+  <text x="150" y="222" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="600">② wrapper.run(q, paged_kv)</text>
+  <text x="150" y="240" text-anchor="middle" fill="#cbd5e1" font-size="10">indices: [page 号列表]</text>
+  <text x="150" y="256" text-anchor="middle" fill="#cbd5e1" font-size="10">cu_seqlens_q/k</text>
+  <text x="150" y="272" text-anchor="middle" fill="#cbd5e1" font-size="10">last_page_len</text>
+
+  <line x1="485" y1="68" x2="150" y2="200" stroke="#fbbf24" stroke-width="2" marker-end="url(#arr2)" stroke-dasharray="4 3"/>
+  <text x="320" y="170" fill="#fbbf24" font-size="10">q 直接送 kernel</text>
+
+  <line x1="880" y1="140" x2="250" y2="235" stroke="#fb7185" stroke-width="2" marker-end="url(#arr2)" stroke-dasharray="4 3"/>
+  <text x="560" y="200" fill="#fb7185" font-size="10">kernel 按 indices 间接读 pool</text>
+
+  <!-- Inside kernel -->
+  <rect x="320" y="200" width="420" height="80" fill="#0a0d12" stroke="var(--line)" rx="6"/>
+  <text x="530" y="222" text-anchor="middle" fill="#cbd5e1" font-size="11" font-weight="600">kernel 内部（参见 05 章）</text>
+  <text x="340" y="242" fill="#cbd5e1" font-size="10" font-family="SF Mono">for qi in q_range:</text>
+  <text x="340" y="256" fill="#cbd5e1" font-size="10" font-family="SF Mono">  for kj in k_range:</text>
+  <text x="340" y="270" fill="#cbd5e1" font-size="10" font-family="SF Mono">    K = pool[<tspan fill="#fb7185">indices[kj]</tspan>]  ← paged lookup</text>
+
+  <!-- Output -->
+  <rect x="800" y="210" width="160" height="60" fill="#0f2a1f" stroke="#34d399" rx="6"/>
+  <text x="880" y="232" text-anchor="middle" fill="#34d399" font-size="12" font-weight="600">③ attn_out</text>
+  <text x="880" y="250" text-anchor="middle" fill="#cbd5e1" font-size="10">[T, H, D]</text>
+  <text x="880" y="266" text-anchor="middle" fill="#cbd5e1" font-size="10">→ O proj</text>
+
+  <line x1="740" y1="240" x2="800" y2="240" stroke="#34d399" stroke-width="2" marker-end="url(#arr2)"/>
+
+  <defs>
+    <marker id="arr2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto">
+      <path d="M0,0 L10,5 L0,10 z" fill="#cbd5e1"/>
+    </marker>
+  </defs>
+
+  <!-- Summary text -->
+  <text x="600" y="350" text-anchor="middle" fill="var(--brand)" font-size="13" font-weight="700">整个 layer 对 KV Pool 做 2 次访问：</text>
+  <text x="300" y="380" text-anchor="middle" fill="#34d399" font-size="12">① 写：store_kv → scatter</text>
+  <text x="300" y="398" text-anchor="middle" fill="#8b93a7" font-size="11">位置由 out_loc 指定</text>
+  <text x="900" y="380" text-anchor="middle" fill="#fb7185" font-size="12">② 读：attention kernel → 间接 gather</text>
+  <text x="900" y="398" text-anchor="middle" fill="#8b93a7" font-size="11">位置由 indices 指定</text>
+
+  <text x="600" y="440" text-anchor="middle" fill="#cbd5e1" font-size="11">80 层 transformer 就访问 80×2 = 160 次 KV pool</text>
+</svg>
+</div>
+</div>
+
+<!-- ============ PART 6 ============ -->
+<h2 id="sizing"><span class="step">PART 6</span>num_pages 怎么定？_determine_num_pages 的算法</h2>
+
+<div class="card">
+<p>KV 池大小不是用户手动设的，而是<u>根据剩余显存自动算</u>的。这决定了系统能同时处理多少 token，是性能的关键。</p>
+
+<pre><code><span class="com"># engine/engine.py:148</span>
+<span class="kw">def</span> <span class="fn">_determine_num_pages</span>(self, old_free_memory, config):
+    new_free_memory = self.<span class="fn">_sync_get_memory</span>()[1]      <span class="com"># 模型加载完后的剩余</span>
+
+    <span class="com"># 每页需要多少字节？</span>
+    cache_per_page = (
+        <span class="num">2</span>                                             <span class="com"># K + V</span>
+        * config.model_config.head_dim
+        * <span class="fn">div_even</span>(config.model_config.num_kv_heads, config.tp_info.size, allow_replicate=<span class="kw">True</span>)
+        * config.page_size
+        * self.dtype.itemsize
+        * config.model_config.num_layers
+    )
+
+    num_pages = config.num_page_override
+    <span class="kw">if</span> num_pages <span class="kw">is</span> <span class="kw">None</span>:
+        model_memory = old_free_memory - new_free_memory
+        <span class="hl">available_memory = int(config.memory_ratio * old_free_memory) - model_memory</span>
+        <span class="hl">num_pages = available_memory // cache_per_page</span>
+    <span class="kw">return</span> num_pages</code></pre>
+
+<h3>算法的三步</h3>
+
+<div class="kpi-grid">
+  <div class="kpi-box"><div class="k">① old_free_memory</div><div class="v" style="font-size:14px">加载模型之前的剩余</div></div>
+  <div class="kpi-box"><div class="k">② model_memory</div><div class="v" style="font-size:14px">= old − new</div></div>
+  <div class="kpi-box"><div class="k">③ available</div><div class="v" style="font-size:14px">= ratio×old − model</div></div>
+  <div class="kpi-box"><div class="k">④ num_pages</div><div class="v" style="font-size:14px">= available / per_page</div></div>
+</div>
+
+<h3>举个具体例子 · H200 80GB 跑 Qwen3-0.6B bf16</h3>
+<pre><code>old_free_memory   = 80 GB              <span class="com"># 启动时剩余</span>
+模型 bf16           = 1.2 GB              <span class="com"># Qwen3-0.6B 权重</span>
+new_free_memory   = 78.8 GB             <span class="com"># 模型加载后</span>
+
+memory_ratio      = 0.85 (默认)
+available_memory  = 0.85 × 80 - 1.2 = 67 GB
+
+<span class="com"># 每页大小 (bf16, 1 token, 2 kv_heads, head_dim=128, 28 层)</span>
+cache_per_page    = 2 × 128 × 2 × 1 × 2 × 28 = <strong>28,672 字节</strong>
+
+num_pages         = 67 GB / 28,672 B ≈ <strong>2,515,000</strong>
+<span class="com"># 即能容纳 250 万个 token 的 KV！非常宽裕</span></code></pre>
+
+<h3>为什么 memory_ratio 默认是 0.85 而不是 1.0？</h3>
+
+<div class="callout warn">
+剩下 15% 用于：
+<ul class="tight">
+  <li><strong>Activation memory</strong>：每次 forward 的中间张量（q/k/v/attention scores 等）</li>
+  <li><strong>CUDA Graph workspace</strong>：录制 graph 时的 kernel workspace（见 07 章）</li>
+  <li><strong>FlashInfer workspace</strong>：128 MiB 固定分配（<code>fi.py:90</code>）</li>
+  <li><strong>NCCL buffer</strong>：all-reduce 的通信 buffer（TP > 1 时）</li>
+  <li><strong>PyTorch 内部缓存</strong>：allocator caching pool 等</li>
+</ul>
+这些加起来通常 10-15%。留多了浪费 KV 容量，留少了 OOM。默认 0.85 是经验值。
+</div>
+
+<h3>可以调吗？</h3>
+<pre><code><span class="com"># 显存紧的话可以调小（给 graph/activation 多让点）</span>
+python -m minisgl --model ... --memory-ratio 0.75
+
+<span class="com"># 显存充足、关了 graph，可以调大</span>
+python -m minisgl --model ... --memory-ratio 0.92 --cuda-graph-max-bs 0
+
+<span class="com"># 或者完全手动指定</span>
+python -m minisgl --model ... --num-page-override 100000</code></pre>
+</div>
+
+<!-- ============ PART 7 ============ -->
+<h2 id="naive"><span class="step">PART 7</span>对比 NaiveCache：没有 Radix 的基线</h2>
+
+<div class="card">
+<p>02 章讲 CacheManager 时提过 <code>--cache naive</code> 是个可选项。看看它和 Radix 的差别。</p>
+
+<pre><code><span class="com"># kvcache/naive_cache.py (整个文件就几十行)</span>
+<span class="kw">class</span> <span class="fn">NaivePrefixCache</span>(BasePrefixCache):
+    <span class="kw">def</span> <span class="fn">match_prefix</span>(self, input_ids):
+        <span class="kw">return</span> <span class="fn">MatchResult</span>(<span class="fn">NaiveCacheHandle</span>(cached_len=<span class="num">0</span>))  <span class="com"># 永不命中</span>
+
+    <span class="kw">def</span> <span class="fn">insert_prefix</span>(self, input_ids, indices):
+        <span class="kw">return</span> <span class="fn">InsertResult</span>(cached_len=<span class="fn">len</span>(indices), ...)  <span class="com"># 假装插入了</span>
+
+    <span class="kw">def</span> <span class="fn">evict</span>(self, size):
+        <span class="kw">return</span> self.empty_tensor  <span class="com"># 什么都不 evict</span></code></pre>
+
+<h3>Naive vs Radix 对比表</h3>
+<table>
+<tr><th>维度</th><th>NaiveCache</th><th>RadixCache</th></tr>
+<tr><td>前缀命中</td><td>❌ 永远 0</td><td>✅ 命中共享 prefix 就复用</td></tr>
+<tr><td>eviction 策略</td><td>整个请求结束时一次性释放</td><td>按 timestamp LRU evict 叶子</td></tr>
+<tr><td>物理 pool</td><td>完全一样</td><td>完全一样</td></tr>
+<tr><td>per-request 开销</td><td>几乎无</td><td>树查 + ref_count 维护</td></tr>
+<tr><td>适用场景</td><td>benchmark 做 ablation / prefix 无复用的工作负载</td><td>生产环境，尤其多轮对话/共享 system prompt</td></tr>
+</table>
+
+<div class="callout info">
+<strong>KV 池（MHAKVCache）对两种 cache 类型是共享的</strong>——它只负责"物理存储"，不关心"哪些 prefix 可以复用"。Radix/Naive 区别只在<u>上层的 prefix 树结构</u>。这是 mini-sglang 的一个好抽象：<code>BasePrefixCache</code> 和 <code>BaseKVCachePool</code> 完全解耦。
+</div>
+</div>
+
+<!-- ============ Summary ============ -->
+<h2 id="summary"><span class="step">SUM</span>总结：一张图记住 KV 物理池</h2>
+
+<div class="card">
+
+<div class="svg-wrap">
+<svg viewBox="0 0 1200 440" xmlns="http://www.w3.org/2000/svg" style="width:100%;height:auto;font-family:inherit">
+  <text x="600" y="22" text-anchor="middle" fill="#cbd5e1" font-size="14" font-weight="700">KV Cache 三层抽象</text>
+
+  <!-- Layer 1: Physical pool -->
+  <rect x="40" y="60" width="1120" height="90" fill="#1a0f2a" stroke="#fb7185" stroke-width="2" rx="10"/>
+  <text x="60" y="88" fill="#fb7185" font-size="14" font-weight="700">① 物理层 · MHAKVCache._kv_buffer</text>
+  <text x="60" y="110" fill="#cbd5e1" font-size="12" font-family="SF Mono">shape = (2, num_layers, num_pages, page_size, local_kv_heads, head_dim)</text>
+  <text x="60" y="130" fill="#8b93a7" font-size="11">一个 GPU 上的大 tensor，占显存大头（几十 GB）· 启动时预分配，大小不变 · 物理连续</text>
+
+  <!-- Layer 2: Virtual address -->
+  <rect x="40" y="180" width="1120" height="90" fill="#0b1f2a" stroke="#7dd3fc" stroke-width="2" rx="10"/>
+  <text x="60" y="208" fill="#7dd3fc" font-size="14" font-weight="700">② 虚拟地址层 · page_table</text>
+  <text x="60" y="230" fill="#cbd5e1" font-size="12" font-family="SF Mono">shape = [max_running_req+1, max_seq_len] (int32)</text>
+  <text x="60" y="250" fill="#8b93a7" font-size="11">每个活跃请求一行，第 k 个 token 对应的物理页号存在 page_table[table_idx, k] · TableManager 发号</text>
+
+  <!-- Layer 3: Prefix structure -->
+  <rect x="40" y="300" width="1120" height="90" fill="#0f2a1f" stroke="#34d399" stroke-width="2" rx="10"/>
+  <text x="60" y="328" fill="#34d399" font-size="14" font-weight="700">③ 前缀复用层 · RadixPrefixCache</text>
+  <text x="60" y="350" fill="#cbd5e1" font-size="12" font-family="SF Mono">Radix Tree ——  key=token_ids, value=page_indices, ref_count</text>
+  <text x="60" y="370" fill="#8b93a7" font-size="11">决定哪些 page 可以复用给新请求 · 锁住正在用的 prefix · LRU evict 释放给 free_slots</text>
+
+  <text x="600" y="420" text-anchor="middle" fill="var(--brand)" font-size="12" font-weight="600">三层彻底解耦 · 物理层和前缀树完全独立（可换 Naive 或 Radix）</text>
+</svg>
+</div>
+
+<h3>一句话总结每个问题</h3>
+<table>
+<tr><th>问题</th><th>答案</th></tr>
+<tr><td>KV 物理池 shape 是什么？</td><td>6 维 tensor <code>(2, layers, pages, page_size, kv_heads, head_dim)</code>，占显存 60-70%</td></tr>
+<tr><td>page_table 里那个 int 是啥？</td><td>pool 第 3 维（num_pages 维）的下标，即"物理页号"</td></tr>
+<tr><td>怎么写？</td><td>store_kv 用 out_loc 做 scatter，每个新 token 独立写自己的页</td></tr>
+<tr><td>怎么读？</td><td>attention kernel 通过 indices 间接寻址，把逻辑位置翻译成物理页号</td></tr>
+<tr><td>池多大？</td><td>自动算：<code>(memory_ratio × 剩余显存 − 模型大小) / 每页字节数</code></td></tr>
+<tr><td>Radix 和 NaiveCache 区别？</td><td>上层前缀树不同，下层物理池完全一样</td></tr>
+</table>
+
+<h3>你现在应该能回答这些"隐藏问题"</h3>
+<ul class="tight">
+  <li>为什么开 Radix Cache 不会多占显存？（它只是在物理池上加了一层索引，不增加存储）</li>
+  <li>为什么 page_size=1 是 mini-sglang 的默认？（逻辑简单——"按 token 索引"，paged lookup 和 normal scatter 几乎等价）</li>
+  <li>为什么 TP 下每张卡都有完整形状的 page_table？（只有 KV pool 按 kv_heads 切了，page 索引空间在所有卡上一致）</li>
+  <li>为什么 num_layers 在第 2 维而不是第 0 维？（因为 <code>k_cache(layer_id)</code> 和 <code>v_cache(layer_id)</code> 是高频操作，放在 K/V 之后可以快速切片）</li>
+</ul>
+</div>
+
+<div class="foot">
+<a href="index.html" style="color:var(--brand2)">← 回到学习手册首页</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,397 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Warp 执行模型 · 第一章 03/08</title>
+<style>
+:root{--bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;--line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;--pink:#fb7185;--purple:#a78bfa;--code:#0f1218;}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0;font-size:13px}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--mute);font-weight:500;background:#151a25}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:200px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.nav{display:flex;justify-content:space-between;margin:40px 0 0;padding-top:20px;border-top:1px solid var(--line);font-size:13px}
+.nav a{color:var(--brand2);text-decoration:none}.nav a:hover{color:var(--brand)}
+.num-big{font-size:22px;color:var(--brand);font-family:"SF Mono",monospace;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Warp 执行模型 · 32 线程的"集体步操" <span class="tag">第一章 · 03/08</span></h1>
+<div class="sub">为什么 warp 一定是 32？SIMT 和 SIMD 的根本差异？warp divergence 损失多少？occupancy 算什么？这些是写 kernel 的"道路交通规则"——不懂 = 闭眼开车。</div>
+
+<div class="toc">
+  <a href="#why32">§1 为什么 warp 是 32</a>
+  <a href="#simt">§2 SIMT vs SIMD</a>
+  <a href="#diverge">§3 Warp Divergence</a>
+  <a href="#its">§4 Independent Thread Scheduling</a>
+  <a href="#occ">§5 Occupancy 占用率</a>
+  <a href="#hide">§6 Latency Hiding</a>
+  <a href="#prim">§7 Warp 原语：shfl/vote/match</a>
+  <a href="#takeaway">§8 带走的七句话</a>
+</div>
+
+<!-- ================================ -->
+<h2 id="why32"><span class="step">§1</span>Warp 为什么是 32</h2>
+<div class="card">
+<p><b>warp = 32 个线程的"步操队"</b>——同一 warp 的 32 线程共享一条指令、一个 PC，每个 cycle 一起前进一步。这是 NVIDIA 从 G80（2006）就定下的常数，至今未变。</p>
+
+<h3>三个理由</h3>
+<ul class="tight">
+<li><b>电路级别的扇出</b>：1 条指令需要广播到 N 个 ALU。N=32 时，时序、布线、功耗都"刚刚好"。N=64（AMD CDNA 一直走 wave64）会让单个 lane 的物理距离更长，时钟难提；N=16 太小，每条指令的"开销 / 收益"不划算。</li>
+<li><b>寄存器读端口</b>：每条指令最多 3 个源操作数 × 32 线程 × 4 B = 384 B/cycle。对应 SRAM 读端口宽度，正好匹配 SM 内部 crossbar。</li>
+<li><b>访存合并粒度</b>：32 个线程访问 4 字节连续地址 = 128 字节，正好是 GDDR/HBM 的一个最小事务（cache line）。<b>这是访存"coalescing"为什么对齐 128B 的根因</b>。</li>
+</ul>
+
+<div class="callout info">
+<b>对比 AMD</b>：CDNA(MI300) 默认 wave64，但 RDNA(消费卡) 改成 wave32 了——RDNA 团队也认了 wave32 在很多负载下更高效。所以 32 这个数字不是 NVIDIA 拍脑袋，是工程上的稳定最优解。
+</div>
+</div>
+
+<!-- ================================ -->
+<h2 id="simt"><span class="step">§2</span>SIMT vs SIMD：相邻但不同</h2>
+<div class="card">
+<p>很多文档说 GPU 是 SIMD，严格来说不对——NVIDIA 把它命名为 <b>SIMT（Single Instruction, Multiple Threads）</b>。差异看似细微，写 kernel 的体验完全不同。</p>
+
+<table>
+<thead><tr><th></th><th>SIMD（CPU AVX-512）</th><th>SIMT（GPU warp）</th></tr></thead>
+<tbody>
+<tr><td>编程模型</td><td>1 个线程 + 矢量寄存器 <code>__m512</code></td><td>32 个"线程"，每线程像在独立跑标量代码</td></tr>
+<tr><td>指令长度</td><td>1 条 vec 指令 = 16 个 float</td><td>1 条 SASS 指令 = 32 lane 同步执行</td></tr>
+<tr><td>分支</td><td>需要程序员手写 mask</td><td>硬件用 active mask 自动 mask</td></tr>
+<tr><td>寻址</td><td>通常连续；gather/scatter 慢</td><td>每 lane 自己算地址；无分散惩罚（但有 coalescing 偏好）</td></tr>
+<tr><td>视觉感受</td><td>"我在 packed 操作"</td><td>"我在写 32 个独立线程"</td></tr>
+</tbody>
+</table>
+
+<div class="callout">
+<b>SIMT 是 SIMD 的"高级抽象"</b>：硬件还是矢量执行，但编译器/硬件帮你处理了 mask 和 gather/scatter——你写的是 <code>if (tid &lt; n) data[tid] = ...</code>，看起来像 32 个独立线程；硬件实际是 1 条指令 + 32-bit active mask。
+</div>
+</div>
+
+<!-- ================================ -->
+<h2 id="diverge"><span class="step">§3</span>Warp Divergence · 当 32 个线程"想各干各的"</h2>
+<div class="card">
+<p>所有 SIMT 系统的"原罪"——只要 warp 内 32 线程走了不同分支，硬件只能<b>串行执行每个分支</b>。</p>
+
+<pre>__global__ void kernel(int* x){
+  int tid = threadIdx.x;
+  if (tid % 2 == 0) {
+      x[tid] = a();   <span class="com">// 偶数线程</span>
+  } else {
+      x[tid] = b();   <span class="com">// 奇数线程</span>
+  }
+}</pre>
+
+<h3>硬件做了什么</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 880 280" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<!-- timeline -->
+<line x1="60" y1="40" x2="820" y2="40" stroke="#8b93a7"/>
+<text x="60" y="32" fill="#8b93a7">cycle:</text>
+<g fill="#8b93a7" font-size="10">
+<text x="120" y="32">0</text><text x="220" y="32">1-10</text><text x="370" y="32">11-20</text><text x="540" y="32">21</text><text x="660" y="32">22+</text>
+</g>
+
+<!-- step1: branch eval -->
+<rect x="100" y="50" width="80" height="30" fill="#1f2b3a" stroke="#7dd3fc" rx="4"/>
+<text x="140" y="69" fill="#7dd3fc" text-anchor="middle">cmp tid%2</text>
+
+<!-- step2: even path -->
+<rect x="200" y="50" width="140" height="50" fill="#1f3328" stroke="#6ee7b7" rx="4"/>
+<text x="270" y="69" fill="#6ee7b7" text-anchor="middle">a() · 偶 lane 工作</text>
+<text x="270" y="86" fill="#fb7185" text-anchor="middle">奇 lane: STALL (mask 关)</text>
+
+<!-- step3: odd path -->
+<rect x="350" y="50" width="140" height="50" fill="#3a2a4d" stroke="#a78bfa" rx="4"/>
+<text x="420" y="69" fill="#a78bfa" text-anchor="middle">b() · 奇 lane 工作</text>
+<text x="420" y="86" fill="#fb7185" text-anchor="middle">偶 lane: STALL (mask 关)</text>
+
+<!-- step4: reconvene -->
+<rect x="500" y="50" width="60" height="30" fill="#2a3544" stroke="#fbbf24" rx="4"/>
+<text x="530" y="69" fill="#fbbf24" text-anchor="middle">SYNC</text>
+
+<!-- step5: continue -->
+<rect x="570" y="50" width="200" height="30" fill="#1f3328" stroke="#6ee7b7" rx="4"/>
+<text x="670" y="69" fill="#6ee7b7" text-anchor="middle">下一指令 · 32 lane 全 active</text>
+
+<!-- 结论 -->
+<text x="60" y="140" fill="#f87171">代价：原本 ~10 cycle 的工作变成 20 cycle</text>
+<text x="60" y="160" fill="#f87171">本质：硬件用 active mask 控制 lane，关掉的 lane 仍要"陪跑"占周期。</text>
+
+<!-- 极端情况 -->
+<text x="60" y="200" fill="#fbbf24">极端：32-way switch（每 lane 走不同 case），代价 = 32× 单分支</text>
+<rect x="60" y="215" width="20" height="20" fill="#1f3328" stroke="#6ee7b7"/>
+<text x="86" y="230" fill="#6ee7b7">案例 1 → 仅 lane 0</text>
+<rect x="220" y="215" width="20" height="20" fill="#3a2a4d" stroke="#a78bfa"/>
+<text x="246" y="230" fill="#a78bfa">案例 2 → 仅 lane 1</text>
+<text x="380" y="230" fill="#8b93a7">... × 32</text>
+<text x="60" y="260" fill="#f87171">→ 共 32× 时间</text>
+</svg>
+</div>
+
+<h3>避免 divergence 的实战技巧</h3>
+<ul class="tight">
+<li><b>条件按 warp 而非 thread 划分</b>：<code>if (warpIdx % 2 == 0)</code> → 整个 warp 走同一路径，0 divergence。</li>
+<li><b>用 predicated execution</b>：短的 if 编译器会自动转成 <code>SEL</code>（select）指令，无分支。</li>
+<li><b>排序消除 divergence</b>：sort by branch tag 后 launch，使同一 warp 内 lane 倾向同分支。</li>
+<li><b>mask 化 reduce</b>：reduce 时用 <code>__activemask()</code> + <code>__shfl_sync</code> 处理掉部分活跃情况。</li>
+</ul>
+
+<div class="callout warn">
+<b>Volta 之前 vs 之后</b>：Volta 引入 Independent Thread Scheduling 后，divergence 的"重新合流"（reconvergence）变得更智能；但<b>开销仍在</b>——只是更少出现死锁，不是更便宜。
+</div>
+</div>
+
+<!-- ================================ -->
+<h2 id="its"><span class="step">§4</span>Independent Thread Scheduling（Volta+）</h2>
+<div class="card">
+<p>Volta 之前 warp 内每个 lane 共享 PC（program counter），这导致一种"经典 GPU bug"：</p>
+
+<pre>__device__ int x = 0;
+if (lane == 0) {
+    while (atomicCAS(&lock, 0, 1) != 0);  <span class="com">// lane 0 抢锁</span>
+}
+// 期望：lane 1-31 等 lane 0 拿到锁
+// Pre-Volta 实际：死锁！</pre>
+
+<p>原因：pre-Volta 整个 warp 共享 PC，lane 0 在 spin 时其他 31 个 lane 也卡在同一指令——它们永远等不到 lane 0 进入锁后的 release 指令。</p>
+
+<h3>Volta 的修复</h3>
+<p>Volta 给<b>每个 lane 独立的 PC 和 stack</b>。warp 仍按 SIMT 跑，但 scheduler 可以"在 warp 内切换线程子集"——比如先让 lane 1-31 跑一会儿，再切回 lane 0 spin 一次。</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 880 220" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<text x="100" y="25" fill="#f87171">Pre-Volta: 共享 PC</text>
+<g fill="#3a2a2a" stroke="#f87171">
+<rect x="40" y="40" width="60" height="30"/><rect x="100" y="40" width="60" height="30"/><rect x="160" y="40" width="60" height="30"/><rect x="220" y="40" width="60" height="30"/>
+</g>
+<g fill="#f87171" font-size="10" text-anchor="middle">
+<text x="70" y="60">lane 0</text><text x="130" y="60">lane 1</text><text x="190" y="60">lane 2</text><text x="250" y="60">...31</text>
+</g>
+<text x="40" y="95" fill="#8b93a7">PC = 0x100  ← 全部 lane 必须同步</text>
+<text x="40" y="115" fill="#f87171">→ if 内 spin lock 死锁</text>
+
+<text x="500" y="25" fill="#6ee7b7">Volta+: 每 lane 独立 PC</text>
+<g fill="#1f3328" stroke="#6ee7b7">
+<rect x="440" y="40" width="60" height="30"/><rect x="500" y="40" width="60" height="30"/><rect x="560" y="40" width="60" height="30"/><rect x="620" y="40" width="60" height="30"/>
+</g>
+<g fill="#6ee7b7" font-size="10" text-anchor="middle">
+<text x="470" y="60">lane 0</text><text x="530" y="60">lane 1</text><text x="590" y="60">lane 2</text><text x="650" y="60">...31</text>
+</g>
+<text x="440" y="95" fill="#8b93a7">PC[0]=0x100, PC[1..31]=0x108 ← 不同位置</text>
+<text x="440" y="115" fill="#6ee7b7">→ 调度器轮转执行；spin lock 正常工作</text>
+
+<text x="40" y="170" fill="#fbbf24">⚠ 副作用：原先"warp 内同步"的隐式假设崩了</text>
+<text x="40" y="190" fill="#fbbf24">必须用 __syncwarp() / __shfl_sync(MASK, ...)，不能再依赖"反正在一个 warp 里"</text>
+</svg>
+</div>
+
+<div class="callout warn">
+<b>历史包袱</b>：Volta 之前的 CUDA 代码经常用 <code>__shfl(...)</code>（无 _sync 后缀）的隐式同步形式。Volta 之后这些 API <b>deprecated</b>，必须显式传 mask + 用 <code>_sync</code> 版本。否则在 Volta+ 上行为未定义。
+</div>
+</div>
+
+<!-- ================================ -->
+<h2 id="occ"><span class="step">§5</span>Occupancy · 一个 SM 上能放多少 warp</h2>
+<div class="card">
+<p>Occupancy = <b>实际 resident warps / 硬件最大 warps</b>。Hopper 每 SM 最多 64 warp，A100 也是 64，T4 是 32。</p>
+
+<h3>四个限制因素</h3>
+<table>
+<thead><tr><th>资源</th><th>H100/SM 上限</th><th>每 thread/block 占多少</th></tr></thead>
+<tbody>
+<tr><td>线程数</td><td>2048（= 64 warp × 32）</td><td>blockDim.x × blockDim.y</td></tr>
+<tr><td>Block 数</td><td>32</td><td>1（每 block）</td></tr>
+<tr><td>Register</td><td>65536</td><td>每 thread × thread/block</td></tr>
+<tr><td>Shared Memory</td><td>228 KB</td><td>每 block 静态 + dynamic</td></tr>
+</tbody>
+</table>
+
+<h3>算一个例子：</h3>
+<pre>kernel: blockDim = 256 threads = 8 warp
+        每 thread 用 64 个 register
+        每 block 用 16 KB SMEM
+
+→ Register 限制: 65536 / (256 × 64) = 4 block/SM
+→ SMEM 限制:    228 / 16 = 14 block/SM
+→ Block 数限制:  32 block/SM
+→ Thread 限制:   2048 / 256 = 8 block/SM
+
+实际 = min(4, 14, 32, 8) = <b>4 block/SM</b>
+       = 4 × 8 = 32 warp resident
+       = 32/64 = <b>50% occupancy</b></pre>
+
+<p>瓶颈是<b>寄存器</b>。要把 occupancy 推到 100%，要么把 thread/block 从 256 减到 128，要么把 register 从 64 减到 32。</p>
+
+<h3>但 100% Occupancy 不等于最快</h3>
+<div class="callout bad">
+<b>常见误区：以为 occupancy 越高越好</b>。
+事实：很多 LLM kernel 跑在 25-50% occupancy 反而最快。
+原因：
+<ul class="tight">
+<li>每线程更多寄存器 → 更激进的 unrolling、更深的 ILP</li>
+<li>更少 warp → SMEM 配额更大，能装更大 tile</li>
+<li>Tensor Core 已经把 SM 喂饱了，不需要那么多 warp 隐藏延迟</li>
+</ul>
+FlashAttention-2 H100 kernel: 每线程 232 个 register，occupancy 仅 12.5%——但跑得最快。
+</div>
+</div>
+
+<!-- ================================ -->
+<h2 id="hide"><span class="step">§6</span>Latency Hiding · 为什么需要那么多 warp</h2>
+<div class="card">
+<p>HBM 访问 ~400 cycle，FMA 仅 4 cycle——如果一个 warp stall 在 HBM load，SM 闲 100×。</p>
+
+<p>解决：<b>同一 SM 同时驻留多个 warp</b>，scheduler 在它们之间快速切换：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 920 240" xmlns="http://www.w3.org/2000/svg" font-family="SF Mono,monospace" font-size="11">
+<!-- timeline -->
+<text x="40" y="30" fill="#8b93a7">cycle →</text>
+<line x1="100" y1="40" x2="900" y2="40" stroke="#8b93a7"/>
+<g font-size="10" fill="#8b93a7">
+<text x="120" y="32">0</text><text x="220" y="32">100</text><text x="380" y="32">300</text><text x="540" y="32">500</text><text x="700" y="32">700</text>
+</g>
+
+<!-- W0 -->
+<text x="40" y="80" fill="#6ee7b7">W0</text>
+<rect x="100" y="65" width="40" height="22" fill="#1f3328" stroke="#6ee7b7" rx="3"/>
+<text x="120" y="80" fill="#6ee7b7" text-anchor="middle">FMA</text>
+<rect x="140" y="65" width="200" height="22" fill="#3a2a2a" stroke="#f87171" rx="3"/>
+<text x="240" y="80" fill="#f87171" text-anchor="middle">stall (HBM 等 400 cycle)</text>
+<rect x="340" y="65" width="50" height="22" fill="#1f3328" stroke="#6ee7b7" rx="3"/>
+<text x="365" y="80" fill="#6ee7b7" text-anchor="middle">FMA</text>
+
+<!-- W1 -->
+<text x="40" y="115" fill="#7dd3fc">W1</text>
+<rect x="100" y="100" width="22" height="22" fill="#1a2a3a" rx="3"/>
+<rect x="140" y="100" width="40" height="22" fill="#1a2a3a" stroke="#7dd3fc" rx="3"/>
+<text x="160" y="115" fill="#7dd3fc" text-anchor="middle">FMA</text>
+<rect x="180" y="100" width="160" height="22" fill="#3a2a2a" stroke="#f87171" rx="3"/>
+<text x="260" y="115" fill="#f87171" text-anchor="middle">stall</text>
+
+<!-- W2 -->
+<text x="40" y="150" fill="#a78bfa">W2</text>
+<rect x="180" y="135" width="40" height="22" fill="#2f2240" stroke="#a78bfa" rx="3"/>
+<text x="200" y="150" fill="#a78bfa" text-anchor="middle">FMA</text>
+<rect x="220" y="135" width="160" height="22" fill="#3a2a2a" stroke="#f87171" rx="3"/>
+
+<!-- W3 -->
+<text x="40" y="185" fill="#fb7185">W3</text>
+<rect x="220" y="170" width="40" height="22" fill="#3a2a35" stroke="#fb7185" rx="3"/>
+<text x="240" y="185" fill="#fb7185" text-anchor="middle">FMA</text>
+<rect x="260" y="170" width="160" height="22" fill="#3a2a2a" stroke="#f87171" rx="3"/>
+
+<!-- 解释 -->
+<text x="500" y="120" fill="#6ee7b7">→ W0 stall 时，scheduler 切到 W1/W2/W3</text>
+<text x="500" y="140" fill="#6ee7b7">→ ALU 永不空闲</text>
+<text x="500" y="170" fill="#fbbf24">需要的 warp 数 ≥ 延迟 / 单 warp 单指令 cycle</text>
+<text x="500" y="190" fill="#fbbf24">HBM 400 / 1 ≈ 400 cycle 间隙 → 需要很多 warp</text>
+</svg>
+</div>
+
+<h3>Little 定律给出的 warp 数</h3>
+<pre>需要 warp 数 = 内存延迟 × 内存带宽 / 单 warp 单次访存量
+            ≈ 400 cycle × (3.35 TB/s × 1 SM 份额) / 128 B
+            ≈ 16~32 warp/SM 才能打满 HBM</pre>
+
+<div class="callout">
+<b>但有 Tensor Core 的 GEMM 不靠 warp 隐藏延迟</b>：因为 wgmma 自己是异步的，它内部就把延迟隐藏了。这就是为什么 FlashAttention-3 用 12.5% occupancy 也能 90% peak。
+</div>
+</div>
+
+<!-- ================================ -->
+<h2 id="prim"><span class="step">§7</span>Warp 原语：shfl / vote / match</h2>
+<div class="card">
+<p>warp 内 32 线程能直接互相交换数据/状态，<b>不走 SMEM、不走寄存器</b>——通过专用 datapath（cross-lane shuffle network）。这些是 reduce/softmax/sort 的常用基石。</p>
+
+<h3>shfl 系列：lane 间数据搬运</h3>
+<pre>// 同一 warp 内的 lane 互相借数据
+__shfl_sync(mask, val, srcLane);          <span class="com">// 从 srcLane 读取</span>
+__shfl_up_sync(mask, val, delta);         <span class="com">// 从 lane-delta 处读取</span>
+__shfl_down_sync(mask, val, delta);       <span class="com">// 从 lane+delta 处读取</span>
+__shfl_xor_sync(mask, val, laneMask);     <span class="com">// XOR 模式（蝶式 reduce）</span></pre>
+
+<h3>典型用法：warp 内 sum reduce</h3>
+<pre>// 单条指令树形 reduce，比 SMEM 版快 3-5×
+float warp_sum(float v) {
+  for (int delta = 16; delta &gt;= 1; delta /= 2)
+    v += __shfl_xor_sync(0xffffffff, v, delta);
+  return v;  <span class="com">// 全 lane 都拿到 sum</span>
+}</pre>
+
+<h3>vote / ballot：condition 聚合</h3>
+<pre>// 整个 warp 内有多少 lane 条件成立？
+unsigned mask = __ballot_sync(0xffffffff, x &gt; 0);
+int count = __popc(mask);    <span class="com">// popcount = 1 的位数</span>
+
+// 全 lane 都成立？
+bool all_pos = __all_sync(0xffffffff, x &gt; 0);
+// 任一成立？
+bool any_pos = __any_sync(0xffffffff, x &gt; 0);</pre>
+
+<h3>match（Volta+）：相等性聚合</h3>
+<pre>// 找出 warp 内有多少 lane 持有相同值（用于稀疏 reduce、ATG）
+unsigned same = __match_any_sync(0xffffffff, key);
+unsigned all  = __match_all_sync(0xffffffff, key, &amp;pred);</pre>
+
+<div class="callout info">
+<b>这些原语全部走专用网络</b>，不占 SMEM bank、不消耗 LD/ST cycle，每个 cycle 1 op，是最便宜的 warp 内通信方式。FlashAttention 的 online softmax max/sum 全靠它们；vLLM 的 sampling top-k 也用它们。
+</div>
+</div>
+
+<!-- ================================ -->
+<h2 id="takeaway"><span class="step">§8</span>带走的七句话</h2>
+<div class="card">
+<div class="callout">
+<ol>
+<li><b>warp = 32 线程一指令</b>——这是 GPU 一切设计（coalescing、bank 数、寄存器宽度）的"长度单位"。</li>
+<li><b>SIMT 是带 mask 的 SIMD</b>——硬件帮你处理 divergence，但不免费。</li>
+<li><b>Warp Divergence 损失 = 路径数</b>——分支分得越细越慢，按 warp 划分而非按 thread。</li>
+<li><b>Volta 后 lane 各有 PC</b>——可写 spin lock，但 <code>__shfl</code> 必须用 <code>_sync</code> 版本。</li>
+<li><b>Occupancy ≠ 越高越好</b>——LLM kernel 常以 25-50% 跑得最快（更多 reg、更大 tile）。</li>
+<li><b>Latency Hiding 靠多 warp 切换</b>——HBM 400 cycle 用 16-32 个 warp 凑掩盖。但 Tensor Core 自带异步，依赖 warp 切换的程度大幅降低。</li>
+<li><b>warp 原语（shfl/ballot/match）零成本通信</b>——所有快 reduce、softmax、sampling 的内核都重度依赖。</li>
+</ol>
+</div>
+</div>
+
+<div class="nav">
+<a href="02-sm-anatomy.html">← 上一章：SM 内部解剖</a>
+<a href="04-memory-hierarchy.html">下一章：内存层次与 HBM →</a>
+</div>
+
+<div class="foot">第一章 · GPU 硬件深度 · 03/08</div>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

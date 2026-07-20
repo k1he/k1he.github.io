@@ -1,0 +1,815 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>高性能网络 · hostNetwork / RDMA / SR-IOV</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>高性能网络 · hostNetwork / RDMA / SR-IOV <span class="tag">第三层 · 11/15</span></h1>
+<div class="sub">多机推理的核心瓶颈是网络——NCCL all-reduce 需要接近裸机的带宽和延迟。本章讲清楚三种绕过 K8S 网络栈的方案，以及实际部署中如何组合使用。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么要绕过 K8S 网络栈</a>
+  <a href="#hostnetwork">§1 hostNetwork 模式</a>
+  <a href="#rdma">§2 RDMA 基础</a>
+  <a href="#sriov">§3 SR-IOV 网卡直通</a>
+  <a href="#multus">§4 Multus CNI 多网卡</a>
+  <a href="#lws">§5 LWS 多机推理实践</a>
+  <a href="#takeaway">§6 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么 NCCL 多机推理要绕过 K8S 网络栈</h2>
+
+<div class="card">
+<h3>NCCL all-reduce 对网络的要求</h3>
+<p>多机推理（Tensor Parallelism / Pipeline Parallelism）的核心通信原语是 <b>all-reduce</b>：每张 GPU 需要把梯度/激活值同步给所有其他 GPU。对网络的要求极其苛刻：</p>
+<ul class="tight">
+  <li><b>带宽</b>：8 卡 A100/H100 节点间通信量 = 模型隐藏层大小 × 2 × (N-1)/N，Qwen3-72B TP=8 每次 all-reduce ~1.2GB 数据</li>
+  <li><b>延迟</b>：每个 Transformer 层都有一次 all-reduce，延迟直接叠加到推理延迟上（200 层 × 5us = 1ms 额外 per token）</li>
+  <li><b>抖动</b>：NCCL 同步操作是阻塞的，任何一台机器慢了所有人都得等</li>
+</ul>
+
+<h3>普通 CNI 的瓶颈</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 920 340" width="920">
+  <!-- 标题 -->
+  <text x="20" y="25" fill="#8b93a7" font-size="13" font-weight="600">普通 Overlay CNI（如 Calico VXLAN / Flannel）数据路径</text>
+
+  <!-- Pod A -->
+  <rect x="30" y="50" width="180" height="50" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="50" y="72" fill="#fbbf24" font-size="12" font-weight="600">Pod A (GPU Worker 0)</text>
+  <text x="50" y="88" fill="#8b93a7" font-size="10">NCCL send()</text>
+
+  <!-- 用户态 → 内核态 -->
+  <path d="M120 100 L120 130" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="130" y="122" fill="#fb7185" font-size="10">① 用户态→内核</text>
+
+  <!-- TCP/IP 协议栈 -->
+  <rect x="50" y="130" width="140" height="40" rx="6" fill="#1f2937" stroke="#fb7185"/>
+  <text x="65" y="155" fill="#fb7185" font-size="11">TCP/IP 协议栈</text>
+
+  <!-- 中断 -->
+  <path d="M120 170 L120 200" stroke="#f87171" stroke-width="1.5"/>
+  <text x="130" y="192" fill="#f87171" font-size="10">② 内存拷贝+中断</text>
+
+  <!-- veth -->
+  <rect x="50" y="200" width="140" height="35" rx="6" fill="#1f2937" stroke="#8b93a7"/>
+  <text x="65" y="222" fill="#8b93a7" font-size="11">veth pair</text>
+
+  <!-- VXLAN 封装 -->
+  <path d="M120 235 L120 265" stroke="#f87171" stroke-width="1.5"/>
+  <text x="130" y="258" fill="#f87171" font-size="10">③ VXLAN 封装（+50B）</text>
+
+  <!-- 物理网卡 -->
+  <rect x="50" y="265" width="140" height="35" rx="6" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="65" y="287" fill="#a78bfa" font-size="11">物理 NIC (eth0)</text>
+
+  <!-- 网络传输 -->
+  <path d="M190 282 L430 282" stroke="#6ee7b7" stroke-width="2" stroke-dasharray="6 3"/>
+  <text x="270" y="272" fill="#6ee7b7" font-size="11">物理网络</text>
+
+  <!-- Node B 镜像 -->
+  <rect x="430" y="265" width="140" height="35" rx="6" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="445" y="287" fill="#a78bfa" font-size="11">物理 NIC (eth0)</text>
+
+  <path d="M500 265 L500 235" stroke="#f87171" stroke-width="1.5"/>
+  <text x="510" y="258" fill="#f87171" font-size="10">④ VXLAN 解封</text>
+
+  <rect x="430" y="200" width="140" height="35" rx="6" fill="#1f2937" stroke="#8b93a7"/>
+  <text x="445" y="222" fill="#8b93a7" font-size="11">veth pair</text>
+
+  <path d="M500 200 L500 170" stroke="#f87171" stroke-width="1.5"/>
+
+  <rect x="430" y="130" width="140" height="40" rx="6" fill="#1f2937" stroke="#fb7185"/>
+  <text x="445" y="155" fill="#fb7185" font-size="11">TCP/IP 协议栈</text>
+
+  <path d="M500 130 L500 100" stroke="#fb7185" stroke-width="1.5"/>
+  <text x="510" y="122" fill="#fb7185" font-size="10">⑤ 内核→用户态</text>
+
+  <rect x="410" y="50" width="180" height="50" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="430" y="72" fill="#fbbf24" font-size="12" font-weight="600">Pod B (GPU Worker 1)</text>
+  <text x="430" y="88" fill="#8b93a7" font-size="10">NCCL recv()</text>
+
+  <!-- 右侧开销说明 -->
+  <rect x="640" y="60" width="260" height="210" rx="10" fill="#1f2937" stroke="#f87171"/>
+  <text x="660" y="85" fill="#f87171" font-size="12" font-weight="700">Overlay CNI 的开销</text>
+  <text x="660" y="110" fill="#8b93a7" font-size="11">1. 用户态↔内核态切换 × 2</text>
+  <text x="660" y="130" fill="#8b93a7" font-size="11">2. TCP 协议处理（seq/ack/拥塞控制）</text>
+  <text x="660" y="150" fill="#8b93a7" font-size="11">3. 内存拷贝 2-3 次（sk_buff）</text>
+  <text x="660" y="170" fill="#8b93a7" font-size="11">4. VXLAN 封装/解封（CPU 消耗）</text>
+  <text x="660" y="190" fill="#8b93a7" font-size="11">5. 软中断处理（占用 CPU 核）</text>
+  <text x="660" y="215" fill="#f87171" font-size="12" font-weight="600">实测带宽：~25 Gbps</text>
+  <text x="660" y="235" fill="#f87171" font-size="12" font-weight="600">实测延迟：~50 us</text>
+  <text x="660" y="255" fill="#6ee7b7" font-size="12">目标：400 Gbps / &lt;2 us</text>
+
+  <!-- 底部对比 -->
+  <text x="30" y="325" fill="#8b93a7" font-size="11.5">结论：Overlay CNI 最多跑满 25 Gbps——只有 RDMA 理论带宽的 6%。对 NCCL all-reduce 来说完全不可接受。</text>
+</svg>
+</div>
+
+<div class="callout bad">
+<b>为什么 Overlay CNI 对 NCCL 完全不够用？</b><br>
+NCCL 需要的是 GPU 显存到远端 GPU 显存的直达通道。Overlay 网络的每个包都要经过：用户态拷贝 → 内核协议栈 → veth → VXLAN 封装 → 物理网卡。这条路径上有 2-3 次内存拷贝、大量 CPU 中断处理，带宽上不去、延迟压不下、还占用宝贵的 CPU 资源。
+</div>
+
+<h3>目标：接近裸机的网络性能</h3>
+<table>
+<thead><tr><th>方案</th><th>带宽</th><th>延迟</th><th>CPU 开销</th><th>复杂度</th></tr></thead>
+<tbody>
+<tr><td>Overlay CNI (VXLAN)</td><td>~25 Gbps</td><td>~50 us</td><td>高（内核协议栈）</td><td>低</td></tr>
+<tr><td style="color:var(--brand2)">hostNetwork</td><td>~100 Gbps</td><td>~20 us</td><td>中（仍走内核）</td><td>低</td></tr>
+<tr><td style="color:var(--brand)">RDMA (RoCE v2)</td><td>~200 Gbps</td><td>~2 us</td><td>极低（绕过内核）</td><td>中</td></tr>
+<tr><td style="color:var(--brand)">RDMA (InfiniBand NDR)</td><td>~400 Gbps</td><td>~1 us</td><td>极低</td><td>高</td></tr>
+<tr><td style="color:var(--brand2)">SR-IOV + RDMA</td><td>~400 Gbps</td><td>~1.5 us</td><td>极低</td><td>中高</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="hostnetwork"><span class="step">§1</span>hostNetwork 模式 · 最简单的零开销方案</h2>
+
+<div class="card">
+<h3>什么是 hostNetwork</h3>
+<p>设置 <code>spec.hostNetwork: true</code> 后，Pod 直接使用<b>宿主机的网络命名空间</b>——不创建独立的 network namespace，不走 CNI 插件，不经过 veth pair。Pod 看到的网卡、IP、端口就是节点本身的。</p>
+
+<h3>效果</h3>
+<ul class="tight">
+  <li><b>Pod IP = Node IP</b>：Pod 不再有独立的 cluster IP</li>
+  <li><b>零网络开销</b>：数据直接走宿主机网络栈，没有 Overlay 封装</li>
+  <li><b>直接访问宿主机网卡</b>：Pod 内可以直接看到 <code>eth0</code>、<code>ib0</code> 等物理网卡</li>
+  <li><b>不经过 Service 网络</b>：kube-proxy 的 iptables/IPVS 规则对 hostNetwork Pod 无效</li>
+</ul>
+
+<h3>优缺点</h3>
+<div class="grid cols-2">
+<div>
+<h4>优点</h4>
+<ul class="tight">
+  <li>配置极简，一行搞定</li>
+  <li>性能接近裸机（仍走内核但无 Overlay）</li>
+  <li>NCCL 可直接使用宿主机 IB/RoCE 网卡</li>
+  <li>无需额外安装 CNI 插件或 device plugin</li>
+</ul>
+</div>
+<div>
+<h4>缺点</h4>
+<ul class="tight">
+  <li><b>端口冲突</b>：同节点多个 Pod 不能用同一端口</li>
+  <li><b>安全隔离差</b>：Pod 可看到所有网卡、所有端口</li>
+  <li><b>不走 Service</b>：无法通过 ClusterIP/NodePort 路由</li>
+  <li><b>调度约束</b>：通常需要 1 Pod / Node（推理场景正好）</li>
+</ul>
+</div>
+</div>
+
+<h3>YAML 示例：多机推理 Pod 配置</h3>
+<pre><span style="color:#6ee7b7">apiVersion</span>: v1
+<span style="color:#6ee7b7">kind</span>: Pod
+<span style="color:#6ee7b7">metadata</span>:
+  name: sglang-worker-0
+  labels:
+    app: sglang-inference
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#fbbf24">hostNetwork: true</span>          <span style="color:#8b93a7"># 使用宿主机网络命名空间</span>
+  <span style="color:#fbbf24">dnsPolicy: ClusterFirstWithHostNet</span>  <span style="color:#8b93a7"># hostNetwork 时必须显式设置 DNS 策略</span>
+  containers:
+  - name: sglang
+    image: lmsysorg/sglang:latest
+    ports:
+    - containerPort: 30000    <span style="color:#8b93a7"># 直接占用宿主机 30000 端口</span>
+      hostPort: 30000
+    env:
+    <span style="color:#8b93a7"># 告诉 NCCL 用哪张网卡做 Socket 通信</span>
+    - name: <span style="color:#fbbf24">NCCL_SOCKET_IFNAME</span>
+      value: "eth0"           <span style="color:#8b93a7"># 管理网网卡名，用于 NCCL 初始化握手</span>
+    <span style="color:#8b93a7"># 如果节点有 IB/RoCE 网卡，NCCL 会自动发现并使用</span>
+    - name: NCCL_IB_DISABLE
+      value: "0"              <span style="color:#8b93a7"># 0=启用 IB（默认）</span>
+    resources:
+      limits:
+        nvidia.com/gpu: "8"
+  nodeSelector:
+    nvidia.com/gpu.product: "NVIDIA-H100-80GB-HBM3"
+</pre>
+
+<div class="callout warn">
+<b>NCCL_SOCKET_IFNAME 的重要性</b>：NCCL 初始化时需要通过 TCP Socket 交换各节点的 IB/RoCE 地址。如果不指定 <code>NCCL_SOCKET_IFNAME</code>，NCCL 可能选到一个 Pod 间不互通的网卡（如 lo），导致初始化卡住。hostNetwork 模式下通常设为 <code>eth0</code> 或 <code>bond0</code>。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+LWS 多机推理 Pod 用 <code>hostNetwork: true</code> + <code>NCCL_SOCKET_IFNAME=eth0</code>。这是当前最主流、最稳定的多机推理网络配置。IB/RoCE 网卡由 NCCL 自动发现，Socket 只用来做初始化握手，不走数据面。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="rdma"><span class="step">§2</span>RDMA 基础 · 绕过内核直达远端内存</h2>
+
+<div class="card">
+<h3>什么是 RDMA（Remote Direct Memory Access）</h3>
+<p>RDMA 允许应用程序<b>直接读写远端机器的内存</b>，整个过程不经过操作系统内核：</p>
+<ul class="tight">
+  <li>无内核参与：数据在网卡硬件层面完成传输，CPU 不做任何拷贝</li>
+  <li>零拷贝：数据从 GPU 显存 → 本地网卡 → 网络 → 远端网卡 → 远端 GPU 显存（GDR：GPU Direct RDMA）</li>
+  <li>极低延迟：1-2 微秒（TCP 的 1/25）</li>
+  <li>极低 CPU 开销：CPU 只负责发起请求，不参与数据传输</li>
+</ul>
+
+<h3>TCP vs RDMA 数据路径对比</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 920 400" width="920">
+  <!-- 左侧：TCP 路径 -->
+  <text x="30" y="25" fill="#f87171" font-size="14" font-weight="700">TCP 路径（传统）</text>
+
+  <rect x="30" y="40" width="160" height="35" rx="6" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="50" y="62" fill="#fbbf24" font-size="11">GPU 显存 (HBM)</text>
+
+  <path d="M110 75 L110 95" stroke="#f87171" stroke-width="1.2"/>
+  <text x="120" y="90" fill="#f87171" font-size="9">DMA 到主存</text>
+
+  <rect x="30" y="95" width="160" height="35" rx="6" fill="#1f2937" stroke="#8b93a7"/>
+  <text x="50" y="117" fill="#8b93a7" font-size="11">CPU 主存 (DDR)</text>
+
+  <path d="M110 130 L110 150" stroke="#f87171" stroke-width="1.2"/>
+  <text x="120" y="145" fill="#f87171" font-size="9">用户态→内核</text>
+
+  <rect x="30" y="150" width="160" height="35" rx="6" fill="#1f2937" stroke="#fb7185"/>
+  <text x="50" y="172" fill="#fb7185" font-size="11">内核 TCP/IP 协议栈</text>
+
+  <path d="M110 185 L110 205" stroke="#f87171" stroke-width="1.2"/>
+  <text x="120" y="200" fill="#f87171" font-size="9">sk_buff 拷贝</text>
+
+  <rect x="30" y="205" width="160" height="35" rx="6" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="50" y="227" fill="#a78bfa" font-size="11">网卡驱动 (NIC)</text>
+
+  <path d="M110 240 L110 265" stroke="#6ee7b7" stroke-width="2" stroke-dasharray="4 2"/>
+  <text x="120" y="258" fill="#6ee7b7" font-size="9">物理传输</text>
+
+  <rect x="30" y="265" width="160" height="25" rx="6" fill="#6ee7b7" opacity=".15" stroke="#6ee7b7"/>
+  <text x="50" y="282" fill="#6ee7b7" font-size="10">~25 Gbps / ~50 us</text>
+
+  <!-- 中间分隔线 -->
+  <line x1="450" y1="15" x2="450" y2="390" stroke="#262b38" stroke-width="1" stroke-dasharray="4 4"/>
+
+  <!-- 右侧：RDMA 路径 -->
+  <text x="490" y="25" fill="#6ee7b7" font-size="14" font-weight="700">RDMA 路径（GPU Direct RDMA）</text>
+
+  <rect x="490" y="40" width="160" height="35" rx="6" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="510" y="62" fill="#fbbf24" font-size="11">GPU 显存 (HBM)</text>
+
+  <path d="M570 75 L570 205" stroke="#6ee7b7" stroke-width="3"/>
+  <text x="580" y="120" fill="#6ee7b7" font-size="10">PCIe 直通</text>
+  <text x="580" y="140" fill="#6ee7b7" font-size="10">（绕过 CPU）</text>
+
+  <!-- 虚线框：跳过的层 -->
+  <rect x="490" y="95" width="160" height="100" rx="6" fill="none" stroke="#8b93a7" stroke-dasharray="4 3" opacity=".4"/>
+  <text x="510" y="130" fill="#8b93a7" font-size="11" opacity=".5">CPU 主存</text>
+  <text x="510" y="155" fill="#8b93a7" font-size="11" opacity=".5">内核协议栈</text>
+  <text x="510" y="175" fill="#f87171" font-size="11" font-weight="600">全部跳过!</text>
+
+  <rect x="490" y="205" width="160" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="510" y="227" fill="#6ee7b7" font-size="11" font-weight="600">RDMA NIC (HCA)</text>
+
+  <path d="M570 240 L570 265" stroke="#6ee7b7" stroke-width="2" stroke-dasharray="4 2"/>
+  <text x="580" y="258" fill="#6ee7b7" font-size="9">物理传输</text>
+
+  <rect x="490" y="265" width="160" height="25" rx="6" fill="#6ee7b7" opacity=".15" stroke="#6ee7b7"/>
+  <text x="510" y="282" fill="#6ee7b7" font-size="10">~400 Gbps / ~1 us</text>
+
+  <!-- 底部对比框 -->
+  <rect x="30" y="310" width="860" height="75" rx="10" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="50" y="335" fill="#6ee7b7" font-size="13" font-weight="700">性能对比</text>
+  <text x="50" y="358" fill="#8b93a7" font-size="12">TCP:  带宽 ~25 Gbps · 延迟 ~50 us · CPU 占用 30-50%（处理中断和协议）</text>
+  <text x="50" y="375" fill="#6ee7b7" font-size="12">RDMA: 带宽 ~400 Gbps (NDR) · 延迟 ~1 us · CPU 占用 &lt;1%（只发 WQE 描述符）</text>
+</svg>
+</div>
+
+<h3>两种 RDMA 实现</h3>
+<table>
+<thead><tr><th>技术</th><th>传输介质</th><th>带宽</th><th>部署要求</th><th>成本</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:var(--brand)"><b>InfiniBand (IB)</b></td>
+  <td>专用 IB 网络</td>
+  <td>NDR 400Gbps / HDR 200Gbps</td>
+  <td>专用交换机 + IB 网卡（HCA）</td>
+  <td>高</td>
+</tr>
+<tr>
+  <td style="color:var(--brand2)"><b>RoCE v2 (RDMA over Converged Ethernet)</b></td>
+  <td>普通以太网</td>
+  <td>100/200/400 Gbps</td>
+  <td>支持 PFC 的以太网交换机 + RDMA 网卡</td>
+  <td>中</td>
+</tr>
+</tbody>
+</table>
+
+<div class="callout info">
+<b>云厂商现状</b>：腾讯云 GPU 集群（CVM GN 系列、TACO 训推集群）主要使用 <b>RoCE v2</b>（基于 Mellanox ConnectX-6/7 网卡）。IB 通常在自建 IDC 的超大规模训练集群中使用。两者在 NCCL 层面的 API 完全一致，差别主要在交换网络。
+</div>
+
+<h3>K8S 中使用 RDMA 的前提</h3>
+<ul class="tight">
+  <li><b>硬件</b>：节点上有 RDMA 网卡（如 Mellanox ConnectX-6 Dx），且驱动已加载（<code>mlx5_core</code>）</li>
+  <li><b>内核模块</b>：<code>ib_core</code>、<code>rdma_ucm</code>、<code>ib_uverbs</code> 等已加载</li>
+  <li><b>设备暴露</b>：通过 <code>rdma-shared-device-plugin</code> 或 <code>k8s-rdma-shared-dev-plugin</code> 将 RDMA 设备注册为 K8S extended resource</li>
+  <li><b>容器挂载</b>：Pod 需要挂载 <code>/dev/infiniband/</code> 设备文件</li>
+</ul>
+
+<pre><span style="color:#8b93a7"># Pod 请求 RDMA 设备</span>
+<span style="color:#6ee7b7">resources</span>:
+  limits:
+    nvidia.com/gpu: "8"
+    <span style="color:#fbbf24">rdma/hca_shared_devices_a: "1"</span>  <span style="color:#8b93a7"># 请求一个 RDMA 共享设备</span>
+</pre>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：如何验证 RDMA 是否就绪</button>
+<div class="expand-content">
+<pre><span style="color:#8b93a7"># 在节点上检查 RDMA 设备</span>
+$ ibstat
+CA 'mlx5_0'
+    CA type: MT4125
+    Number of ports: 1
+    Port 1:
+        State: Active
+        Physical state: LinkUp
+        Rate: 200 Gbps
+
+<span style="color:#8b93a7"># 在 Pod 内验证 RDMA 连通性</span>
+$ ib_write_bw -d mlx5_0 --report_gbits
+---------------------------------------------------------------------------------------
+ #bytes  #iterations  BW peak[Gb/sec]  BW average[Gb/sec]  MsgRate[Mpps]
+ 65536   5000         197.31           196.88              0.375568
+---------------------------------------------------------------------------------------
+
+<span style="color:#8b93a7"># 检查 K8S 中 RDMA 资源是否注册</span>
+$ kubectl describe node gpu-node-01 | grep rdma
+  rdma/hca_shared_devices_a:  8
+  rdma/hca_shared_devices_a:  8
+</pre>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="sriov"><span class="step">§3</span>SR-IOV · 网卡虚拟化直通</h2>
+
+<div class="card">
+<h3>什么是 SR-IOV</h3>
+<p><b>SR-IOV（Single Root I/O Virtualization）</b>允许一块物理网卡在硬件层面切分成多个"虚拟网卡"——每个虚拟网卡（VF）可以直通分配给一个 Pod，绕过宿主机内核。</p>
+
+<ul class="tight">
+  <li><b>PF（Physical Function）</b>：物理网卡本身，具备完整管理能力</li>
+  <li><b>VF（Virtual Function）</b>：从 PF 切出的轻量虚拟设备，只有数据通路能力</li>
+  <li>每个 VF 直通给一个 Pod → Pod 内应用直接操作网卡硬件 → 性能接近裸机</li>
+</ul>
+
+<h3>SR-IOV 架构图</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 380" width="900">
+  <!-- 物理网卡 -->
+  <rect x="250" y="300" width="400" height="60" rx="10" fill="#1f2937" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="370" y="325" fill="#6ee7b7" font-size="14" font-weight="700">物理网卡 (PF) — Mellanox CX-7</text>
+  <text x="370" y="345" fill="#8b93a7" font-size="11">400 Gbps · SR-IOV 开启 · 最多 128 VFs</text>
+
+  <!-- VFs -->
+  <rect x="270" y="230" width="80" height="40" rx="6" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="285" y="255" fill="#a78bfa" font-size="11">VF 0</text>
+
+  <rect x="370" y="230" width="80" height="40" rx="6" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="385" y="255" fill="#a78bfa" font-size="11">VF 1</text>
+
+  <rect x="470" y="230" width="80" height="40" rx="6" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="485" y="255" fill="#a78bfa" font-size="11">VF 2</text>
+
+  <rect x="570" y="230" width="80" height="40" rx="6" fill="#1f2937" stroke="#8b93a7" stroke-dasharray="3 2"/>
+  <text x="585" y="255" fill="#8b93a7" font-size="11">VF N</text>
+
+  <!-- 连线 VF → PF -->
+  <line x1="310" y1="270" x2="350" y2="300" stroke="#a78bfa" stroke-width="1.2"/>
+  <line x1="410" y1="270" x2="410" y2="300" stroke="#a78bfa" stroke-width="1.2"/>
+  <line x1="510" y1="270" x2="480" y2="300" stroke="#a78bfa" stroke-width="1.2"/>
+  <line x1="610" y1="270" x2="550" y2="300" stroke="#8b93a7" stroke-width="1" stroke-dasharray="3 2"/>
+
+  <!-- 宿主机内核 -->
+  <rect x="200" y="175" width="500" height="40" rx="6" fill="#1f2937" stroke="#8b93a7" stroke-dasharray="4 3"/>
+  <text x="370" y="200" fill="#8b93a7" font-size="12">宿主机内核（VF 直通后，数据不经过这里）</text>
+
+  <!-- Pods -->
+  <rect x="250" y="50" width="120" height="70" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="270" y="72" fill="#fbbf24" font-size="11" font-weight="600">Pod A</text>
+  <text x="270" y="90" fill="#8b93a7" font-size="10">GPU Worker 0</text>
+  <text x="270" y="107" fill="#a78bfa" font-size="10">绑定 VF 0</text>
+
+  <rect x="400" y="50" width="120" height="70" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="420" y="72" fill="#fbbf24" font-size="11" font-weight="600">Pod B</text>
+  <text x="420" y="90" fill="#8b93a7" font-size="10">GPU Worker 1</text>
+  <text x="420" y="107" fill="#a78bfa" font-size="10">绑定 VF 1</text>
+
+  <rect x="550" y="50" width="120" height="70" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="570" y="72" fill="#fbbf24" font-size="11" font-weight="600">Pod C</text>
+  <text x="570" y="90" fill="#8b93a7" font-size="10">GPU Worker 2</text>
+  <text x="570" y="107" fill="#a78bfa" font-size="10">绑定 VF 2</text>
+
+  <!-- 直通箭头 -->
+  <path d="M310 120 L310 175" stroke="#6ee7b7" stroke-width="2" marker-end="url(#arrowGreen)"/>
+  <path d="M310 175 L310 230" stroke="#6ee7b7" stroke-width="2" stroke-dasharray="4 2"/>
+
+  <path d="M460 120 L460 175" stroke="#6ee7b7" stroke-width="2"/>
+  <path d="M460 175 L460 230" stroke="#6ee7b7" stroke-width="2" stroke-dasharray="4 2"/>
+
+  <path d="M610 120 L610 175" stroke="#6ee7b7" stroke-width="2"/>
+  <path d="M610 175 L610 230" stroke="#6ee7b7" stroke-width="2" stroke-dasharray="4 2"/>
+
+  <!-- 标注：绕过内核 -->
+  <text x="720" y="195" fill="#6ee7b7" font-size="11" font-weight="600">VF 直通</text>
+  <text x="720" y="212" fill="#6ee7b7" font-size="10">绕过内核!</text>
+
+  <!-- 说明文字 -->
+  <text x="30" y="375" fill="#8b93a7" font-size="11.5">每个 Pod 独占一个 VF，数据通路完全隔离。Pod 看到的网卡就是一个独立的 RDMA 设备，性能等同裸机。</text>
+</svg>
+</div>
+
+<h3>sriov-network-operator 自动化管理</h3>
+<p>手动管理 VF 创建和绑定很复杂。<code>sriov-network-operator</code> 提供了声明式的自动化：</p>
+<pre><span style="color:#8b93a7"># 1. 定义 SR-IOV 网络策略（创建 VF）</span>
+<span style="color:#6ee7b7">apiVersion</span>: sriovnetwork.openshift.io/v1
+<span style="color:#6ee7b7">kind</span>: SriovNetworkNodePolicy
+<span style="color:#6ee7b7">metadata</span>:
+  name: rdma-policy
+  namespace: sriov-network-operator
+<span style="color:#6ee7b7">spec</span>:
+  nodeSelector:
+    feature.node.kubernetes.io/rdma: "true"
+  resourceName: rdma_vf          <span style="color:#8b93a7"># 注册的 K8S resource 名</span>
+  numVfs: 8                      <span style="color:#8b93a7"># 每块网卡切出 8 个 VF</span>
+  nicSelector:
+    vendor: "15b3"               <span style="color:#8b93a7"># Mellanox 厂商 ID</span>
+    pfNames: ["ens4f0"]          <span style="color:#8b93a7"># 物理网卡名</span>
+  deviceType: netdevice           <span style="color:#8b93a7"># netdevice=内核驱动 / vfio-pci=DPDK</span>
+  isRdma: true                   <span style="color:#8b93a7"># 启用 RDMA 能力</span>
+
+---
+<span style="color:#8b93a7"># 2. 定义 SR-IOV 网络（Pod 挂载入口）</span>
+<span style="color:#6ee7b7">apiVersion</span>: sriovnetwork.openshift.io/v1
+<span style="color:#6ee7b7">kind</span>: SriovNetwork
+<span style="color:#6ee7b7">metadata</span>:
+  name: rdma-network
+  namespace: sriov-network-operator
+<span style="color:#6ee7b7">spec</span>:
+  resourceName: rdma_vf
+  networkNamespace: inference     <span style="color:#8b93a7"># Pod 所在 namespace</span>
+  ipam: '{"type": "host-local", "subnet": "192.168.100.0/24"}'
+</pre>
+
+<h3>性能特点</h3>
+<ul class="tight">
+  <li><b>接近裸机</b>：VF 直通意味着 Pod 直接操作网卡硬件，没有额外 CPU 开销</li>
+  <li><b>硬件隔离</b>：每个 VF 有独立的收发队列，Pod 间流量互不干扰</li>
+  <li><b>RDMA 支持</b>：配合 <code>isRdma: true</code>，VF 继承 PF 的 RDMA 能力</li>
+  <li><b>多 Pod 共享</b>：一块 400G 网卡可以切出 8-128 个 VF，适合多任务场景</li>
+</ul>
+
+<div class="callout info">
+<b>SR-IOV vs hostNetwork</b>：hostNetwork 简单但是"全或无"——Pod 拿到整个宿主机网络。SR-IOV 更精细：每个 Pod 只拿到一个 VF，保持了网络隔离的同时获得裸机性能。对于单节点跑多个推理服务的场景，SR-IOV 更合适。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="multus"><span class="step">§4</span>Multus CNI · 一个 Pod 多张网卡</h2>
+
+<div class="card">
+<h3>为什么需要多网卡</h3>
+<p>多机推理的 Pod 同时有两种网络需求：</p>
+<ul class="tight">
+  <li><b>管理网</b>：被 Service/Ingress 路由、健康检查、日志采集、kubectl exec → 走默认 CNI（Calico/Cilium）</li>
+  <li><b>数据网</b>：NCCL all-reduce 通信 → 走 RDMA/SR-IOV 高速网络</li>
+</ul>
+<p><b>Multus CNI</b> 是一个"CNI 的 CNI"——它允许一个 Pod 同时挂载多个网络接口，每个接口由不同的 CNI 插件管理。</p>
+
+<h3>架构</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 800 280" width="800">
+  <!-- Pod -->
+  <rect x="250" y="20" width="300" height="100" rx="12" fill="#1f2937" stroke="#fbbf24" stroke-width="2"/>
+  <text x="350" y="45" fill="#fbbf24" font-size="14" font-weight="700">Pod (GPU Worker)</text>
+
+  <!-- eth0 -->
+  <rect x="275" y="60" width="110" height="40" rx="6" fill="#162924" stroke="#6ee7b7"/>
+  <text x="295" y="77" fill="#6ee7b7" font-size="10" font-weight="600">eth0 (管理网)</text>
+  <text x="295" y="92" fill="#8b93a7" font-size="9">10.244.1.5</text>
+
+  <!-- net1 -->
+  <rect x="415" y="60" width="110" height="40" rx="6" fill="#1a1520" stroke="#a78bfa"/>
+  <text x="435" y="77" fill="#a78bfa" font-size="10" font-weight="600">net1 (数据网)</text>
+  <text x="435" y="92" fill="#8b93a7" font-size="9">192.168.100.5</text>
+
+  <!-- 向下连线 -->
+  <line x1="330" y1="120" x2="330" y2="160" stroke="#6ee7b7" stroke-width="1.5"/>
+  <line x1="470" y1="120" x2="470" y2="160" stroke="#a78bfa" stroke-width="1.5"/>
+
+  <!-- Multus 层 -->
+  <rect x="200" y="160" width="400" height="35" rx="8" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="350" y="182" fill="#7dd3fc" font-size="12" font-weight="600">Multus CNI（多网卡调度器）</text>
+
+  <!-- 向下分发 -->
+  <line x1="300" y1="195" x2="300" y2="230" stroke="#6ee7b7" stroke-width="1.2"/>
+  <line x1="500" y1="195" x2="500" y2="230" stroke="#a78bfa" stroke-width="1.2"/>
+
+  <!-- 底层 CNI -->
+  <rect x="220" y="230" width="160" height="35" rx="6" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="240" y="252" fill="#6ee7b7" font-size="11">Calico / Cilium</text>
+
+  <rect x="420" y="230" width="160" height="35" rx="6" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="440" y="252" fill="#a78bfa" font-size="11">SR-IOV CNI / RDMA</text>
+
+  <!-- 标注 -->
+  <text x="220" y="275" fill="#8b93a7" font-size="10">Service/Ingress/健康检查</text>
+  <text x="420" y="275" fill="#8b93a7" font-size="10">NCCL all-reduce 高速通信</text>
+</svg>
+</div>
+
+<h3>NetworkAttachmentDefinition 配置</h3>
+<pre><span style="color:#8b93a7"># 定义一个额外的 RDMA 网络</span>
+<span style="color:#6ee7b7">apiVersion</span>: k8s.cni.cncf.io/v1
+<span style="color:#6ee7b7">kind</span>: NetworkAttachmentDefinition
+<span style="color:#6ee7b7">metadata</span>:
+  name: rdma-net
+  namespace: inference
+<span style="color:#6ee7b7">spec</span>:
+  config: |
+    {
+      "cniVersion": "0.3.1",
+      "type": "sriov",              <span style="color:#8b93a7">// 底层使用 SR-IOV CNI</span>
+      "name": "rdma-network",
+      "ipam": {
+        "type": "host-local",
+        "subnet": "192.168.100.0/24",
+        "rangeStart": "192.168.100.10",
+        "rangeEnd": "192.168.100.250"
+      }
+    }
+</pre>
+
+<h3>Pod 使用多网卡</h3>
+<pre><span style="color:#6ee7b7">apiVersion</span>: v1
+<span style="color:#6ee7b7">kind</span>: Pod
+<span style="color:#6ee7b7">metadata</span>:
+  name: sglang-worker-0
+  annotations:
+    <span style="color:#fbbf24">k8s.v1.cni.cncf.io/networks: rdma-net</span>  <span style="color:#8b93a7"># 挂载额外网络</span>
+<span style="color:#6ee7b7">spec</span>:
+  containers:
+  - name: sglang
+    image: lmsysorg/sglang:latest
+    env:
+    - name: NCCL_SOCKET_IFNAME
+      value: "eth0"               <span style="color:#8b93a7"># 管理网（默认 CNI）用于握手</span>
+    - name: NCCL_IB_HCA
+      value: "mlx5_2"            <span style="color:#8b93a7"># 指定 RDMA 数据网卡</span>
+    resources:
+      limits:
+        nvidia.com/gpu: "8"
+        <span style="color:#fbbf24">rdma/rdma_vf: "1"</span>         <span style="color:#8b93a7"># 请求一个 SR-IOV VF</span>
+</pre>
+
+<div class="callout warn">
+<b>Multus 的代价</b>：额外的复杂度。需要部署 Multus DaemonSet、维护 NetworkAttachmentDefinition、处理多网卡的路由表。如果你的场景是"每个节点只跑一个推理任务"，<code>hostNetwork</code> 可能是更务实的选择。Multus 更适合"单节点多任务 + 需要网络隔离"的场景。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="lws"><span class="step">§5</span>LWS 多机推理的网络配置实践</h2>
+
+<div class="card">
+<h3>LeaderWorkerSet 的 Pod 间通信需求</h3>
+<p>LWS 部署多机推理时（如 2 节点 16 卡 TP=16），Pod 之间有两种通信：</p>
+<ul class="tight">
+  <li><b>控制面通信</b>：Leader 与 Worker 的健康检查、任务分发（走普通网络即可）</li>
+  <li><b>数据面通信</b>：NCCL all-reduce / all-gather（必须走高速网络，对带宽和延迟极度敏感）</li>
+</ul>
+
+<h3>推荐配置：hostNetwork + IB/RoCE</h3>
+<pre><span style="color:#6ee7b7">apiVersion</span>: leaderworkerset.x-k8s.io/v1
+<span style="color:#6ee7b7">kind</span>: LeaderWorkerSet
+<span style="color:#6ee7b7">metadata</span>:
+  name: sglang-multi-node
+  namespace: inference
+<span style="color:#6ee7b7">spec</span>:
+  replicas: 1                         <span style="color:#8b93a7"># 1 个推理实例（跨 2 台机器）</span>
+  leaderWorkerTemplate:
+    size: 2                           <span style="color:#8b93a7"># 2 个 Pod（1 leader + 1 worker）</span>
+    leaderTemplate:
+      metadata:
+        labels:
+          role: leader
+      spec:
+        <span style="color:#fbbf24">hostNetwork: true</span>
+        <span style="color:#fbbf24">dnsPolicy: ClusterFirstWithHostNet</span>
+        terminationGracePeriodSeconds: 90
+        containers:
+        - name: sglang
+          image: lmsysorg/sglang:latest
+          command: ["python3", "-m", "sglang.launch_server"]
+          args:
+          - "--model-path=/models/qwen3-72b"
+          - "--tp=16"
+          - "--nnodes=2"
+          - "--node-rank=0"
+          - "--nccl-init-addr=$(LWS_LEADER_ADDRESS):29500"
+          env:
+          <span style="color:#8b93a7"># ===== NCCL 网络配置 =====</span>
+          - name: <span style="color:#fbbf24">NCCL_SOCKET_IFNAME</span>
+            value: "eth0"             <span style="color:#8b93a7"># TCP 握手用管理网</span>
+          - name: <span style="color:#fbbf24">NCCL_IB_DISABLE</span>
+            value: "0"                <span style="color:#8b93a7"># 启用 InfiniBand/RoCE</span>
+          - name: <span style="color:#fbbf24">NCCL_NET_GDR_LEVEL</span>
+            value: "5"                <span style="color:#8b93a7"># GPU Direct RDMA 级别（5=最大）</span>
+          - name: <span style="color:#fbbf24">NCCL_P2P_LEVEL</span>
+            value: "5"                <span style="color:#8b93a7"># P2P 通信级别</span>
+          - name: NCCL_IB_HCA
+            value: "mlx5"             <span style="color:#8b93a7"># IB 设备名前缀</span>
+          - name: NCCL_IB_GID_INDEX
+            value: "3"                <span style="color:#8b93a7"># RoCE v2 GID 索引</span>
+          <span style="color:#8b93a7"># ===== LWS 自动注入的变量 =====</span>
+          - name: LWS_LEADER_ADDRESS
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/leader-address']
+          ports:
+          - containerPort: 30000      <span style="color:#8b93a7"># 推理服务端口</span>
+          - containerPort: 29500      <span style="color:#8b93a7"># NCCL init 端口</span>
+          resources:
+            limits:
+              nvidia.com/gpu: "8"
+          startupProbe:
+            httpGet:
+              path: /health
+              port: 30000
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 30      <span style="color:#8b93a7"># 最多等 330s（模型加载+NCCL init）</span>
+    workerTemplate:
+      spec:
+        <span style="color:#fbbf24">hostNetwork: true</span>
+        <span style="color:#fbbf24">dnsPolicy: ClusterFirstWithHostNet</span>
+        containers:
+        - name: sglang
+          image: lmsysorg/sglang:latest
+          command: ["python3", "-m", "sglang.launch_server"]
+          args:
+          - "--model-path=/models/qwen3-72b"
+          - "--tp=16"
+          - "--nnodes=2"
+          - "--node-rank=1"
+          - "--nccl-init-addr=$(LWS_LEADER_ADDRESS):29500"
+          env:
+          - name: NCCL_SOCKET_IFNAME
+            value: "eth0"
+          - name: NCCL_IB_DISABLE
+            value: "0"
+          - name: NCCL_NET_GDR_LEVEL
+            value: "5"
+          - name: NCCL_P2P_LEVEL
+            value: "5"
+          - name: NCCL_IB_HCA
+            value: "mlx5"
+          - name: NCCL_IB_GID_INDEX
+            value: "3"
+          - name: LWS_LEADER_ADDRESS
+            valueFrom:
+              fieldRef:
+                fieldPath: metadata.annotations['leaderworkerset.sigs.k8s.io/leader-address']
+          resources:
+            limits:
+              nvidia.com/gpu: "8"
+</pre>
+
+<h3>NCCL 环境变量详解</h3>
+<table>
+<thead><tr><th>变量</th><th>值</th><th>含义</th></tr></thead>
+<tbody>
+<tr><td><code>NCCL_SOCKET_IFNAME</code></td><td>eth0</td><td>TCP Socket 通信使用的网卡（仅用于 NCCL 初始化握手）</td></tr>
+<tr><td><code>NCCL_IB_DISABLE</code></td><td>0</td><td>0=启用 IB/RoCE，1=禁用（降级到 TCP Socket）</td></tr>
+<tr><td><code>NCCL_NET_GDR_LEVEL</code></td><td>5</td><td>GPU Direct RDMA 级别。5=跨 PCIe switch 也允许 GDR</td></tr>
+<tr><td><code>NCCL_P2P_LEVEL</code></td><td>5</td><td>同节点 GPU 间 P2P 通信级别。5=允许跨 NUMA</td></tr>
+<tr><td><code>NCCL_IB_HCA</code></td><td>mlx5</td><td>选择哪些 IB 设备参与通信（前缀匹配）</td></tr>
+<tr><td><code>NCCL_IB_GID_INDEX</code></td><td>3</td><td>RoCE v2 使用的 GID 索引（通常 3 = IPv4 RoCE v2）</td></tr>
+<tr><td><code>NCCL_DEBUG</code></td><td>INFO/WARN</td><td>调试时设为 INFO 可以看到 NCCL 选择了哪条通信路径</td></tr>
+</tbody>
+</table>
+
+<h3>排障：nccl-tests 验证带宽</h3>
+<pre><span style="color:#8b93a7"># 在两个节点上运行 nccl-tests 的 all_reduce_perf</span>
+<span style="color:#8b93a7"># Node 0（Leader）:</span>
+$ mpirun -np 16 --hostfile hostfile \
+    -x NCCL_SOCKET_IFNAME=eth0 \
+    -x NCCL_IB_DISABLE=0 \
+    -x NCCL_DEBUG=INFO \
+    /opt/nccl-tests/build/all_reduce_perf \
+    -b 8 -e 2G -f 2 -g 1
+
+<span style="color:#8b93a7"># 期望输出（H100 + 400G IB NDR）:</span>
+#       size    count   type   redop  root   time   algbw   busbw
+     2097152   524288  float     sum    -1   0.03   69.81  131.14
+    33554432  8388608  float     sum    -1   0.21  157.34  295.01
+   268435456 67108864  float     sum    -1   1.42  188.81  354.02
+
+<span style="color:#8b93a7"># busbw 应接近网卡理论带宽的 85%+</span>
+<span style="color:#8b93a7"># 400G NDR 理论 busbw ~375 Gbps，实测 350+ 为正常</span>
+<span style="color:#8b93a7"># 如果 busbw 只有 20-30 Gbps，说明走了 TCP 没走 RDMA</span>
+</pre>
+
+<div class="callout bad">
+<b>常见排障场景</b>：
+<ul class="tight" style="margin-top:6px">
+<li><b>NCCL 卡住不动</b>：通常是 <code>NCCL_SOCKET_IFNAME</code> 选了错误的网卡，或节点间 TCP 29500 端口不通</li>
+<li><b>busbw 只有 20-30 Gbps</b>：NCCL 降级到了 TCP Socket 通信。检查 <code>NCCL_DEBUG=INFO</code> 日志中是否出现 "NET/IB" 还是 "NET/Socket"</li>
+<li><b>"No IB device found"</b>：Pod 内看不到 RDMA 设备。检查 device-plugin 是否正常、<code>/dev/infiniband/</code> 是否挂载</li>
+<li><b>GDR 没启用</b>：日志显示 "GPU Direct RDMA Disabled"。检查 <code>nvidia-peermem</code> 模块是否加载</li>
+</ul>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+调试 NCCL 网络问题的标准步骤：① 设置 <code>NCCL_DEBUG=INFO</code> 看日志 → ② 确认 "NET/IB" 出现（而非 "NET/Socket"） → ③ 跑 <code>all_reduce_perf</code> 确认 busbw → ④ 对比理论带宽判断是否正常。如果一切正确但推理延迟仍高，问题可能在 GPU 拓扑（NUMA affinity）而非网络。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§6</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① 核心矛盾</div><div>NCCL 需要 400Gbps/1us 的网络，Overlay CNI 只能给 25Gbps/50us——差 16 倍带宽、50 倍延迟</div>
+  <div class="k">② hostNetwork</div><div>最简单的方案：Pod 直接用宿主机网络。零开销，但牺牲隔离性。适合"一节点一任务"的推理场景</div>
+  <div class="k">③ RDMA</div><div>应用直接读写远端内存，绕过 CPU 和内核。IB (400G) 或 RoCE v2 (200G) 是多机推理的性能保障</div>
+  <div class="k">④ SR-IOV</div><div>网卡硬件切 VF 直通给 Pod，隔离+高性能兼得。适合单节点多任务场景</div>
+  <div class="k">⑤ Multus CNI</div><div>一个 Pod 两张网卡：管理网走 Calico + 数据网走 RDMA/SR-IOV。最灵活但最复杂</div>
+  <div class="k">⑥ 实战选择</div><div>多机推理首选 hostNetwork + NCCL 自动发现 IB/RoCE。有隔离需求时升级到 SR-IOV + Multus</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——网络解决了"Pod 间怎么通信"，但集群资源不是无限的。当推理请求波动时，如何自动伸缩？HPA 按 QPS 扩 Pod、VPA 调资源 requests、Karpenter 按需加节点——三层弹性协同。→ <a href="12-hpa-vpa-karpenter.html" style="color:var(--brand)">12-hpa-vpa-karpenter.html</a>
+</div>
+</div>
+
+<div class="foot">
+第三层 · 11 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

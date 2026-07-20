@@ -1,0 +1,579 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>Decode Worker：预分配 + 收货 + 首 token 交接</title>
+<style>
+
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+  --R0:#fbbf24;--R1:#7dd3fc;--R2:#a78bfa;--R3:#34d399;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+.cols-4{grid-template-columns:repeat(4,1fr)}
+@media (max-width:900px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+
+/* Demo */
+.demo{background:#0f1218;border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}
+.demo-title{font-size:16px;font-weight:600;color:var(--brand);margin:0 0 4px}
+.demo-sub{color:var(--mute);font-size:12.5px;margin-bottom:14px}
+.demo-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
+.demo-btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:7px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:all .12s}
+.demo-btn:hover{border-color:var(--brand);color:var(--brand)}
+.demo-btn.primary{background:var(--brand);color:var(--bg);border-color:var(--brand);font-weight:600}
+.demo-btn.primary:hover{background:#5cd6a4}
+.demo-step{font-family:"SF Mono",monospace;font-size:12px;color:var(--mute);margin-left:auto;background:#1a1f2b;padding:4px 10px;border-radius:6px;border:1px solid var(--line)}
+.demo-narration{background:rgba(110,231,183,.08);border-left:3px solid var(--brand);padding:10px 14px;border-radius:0 8px 8px 0;margin-top:12px;color:#cbd5e1;font-size:13px;min-height:42px;transition:all .3s}
+
+.rank-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}
+.rank-card{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px;text-align:center;transition:all .3s}
+.rank-card.active{border-color:var(--brand);box-shadow:0 0 12px rgba(110,231,183,.3)}
+.rank-card .rid{font-family:"SF Mono",monospace;font-weight:700;font-size:14px;margin-bottom:6px}
+.rank-card .body{color:var(--mute);font-family:"SF Mono",monospace;font-size:11px;line-height:1.5}
+.bar-h{display:flex;flex-direction:column;gap:3px;margin:8px 0}
+.bar-row{display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center;font-size:11px}
+.bar-row .lbl{color:var(--mute);font-family:"SF Mono",monospace}
+.bar-track{height:24px;background:#0a0d12;border:1px solid var(--line);border-radius:4px;position:relative;overflow:hidden}
+.bar-seg{position:absolute;top:2px;bottom:2px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0b0d12;transition:all .35s}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.pulse{animation:pulse 1s ease-in-out infinite}
+.kpi{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace}
+.kpi span{background:#1a1f2b;padding:3px 8px;border-radius:5px;border:1px solid var(--line)}
+.kpi span b{color:var(--brand)}
+
+
+.queue-box{background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:12px;min-height:110px;position:relative}
+.queue-title{font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace;margin-bottom:8px;display:flex;justify-content:space-between}
+.queue-title .cnt{color:var(--brand)}
+.req-chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:11px;font-family:"SF Mono",monospace;margin:3px;transition:all .35s;cursor:pointer}
+.req-chip.bootstrapping{border-color:var(--warn);color:var(--warn)}
+.req-chip.waiting{border-color:var(--brand2);color:var(--brand2)}
+.req-chip.transferring{border-color:var(--purple);color:var(--purple);animation:pulse 1s ease-in-out infinite}
+.req-chip.success{border-color:var(--brand);color:var(--brand);background:rgba(110,231,183,0.15)}
+.req-chip.failed{border-color:var(--bad);color:var(--bad)}
+.req-chip.active{box-shadow:0 0 10px currentColor}
+.msg-line{font-family:"SF Mono",monospace;font-size:11.5px;padding:4px 10px;margin:2px 0;border-radius:4px;background:#0f1218;border-left:2px solid var(--line);color:var(--mute)}
+.msg-line.active{border-color:var(--brand);color:var(--ink);background:rgba(110,231,183,0.05)}
+.msg-line .ts{color:var(--purple);margin-right:8px}
+.msg-line .tag{color:var(--warn);margin-right:8px}
+.path{color:var(--mute);font-size:11px;font-family:"SF Mono",monospace}
+.hl{background:rgba(251,191,36,.15);color:var(--warn);padding:0 3px;border-radius:3px}
+.step-badge{display:inline-block;background:var(--brand);color:var(--bg);border-radius:50%;width:22px;height:22px;line-height:22px;text-align:center;font-size:12px;font-weight:700;margin-right:8px}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+.nav a:hover{color:var(--brand)}
+.flow-node{fill:#11141b;stroke:#262b38;stroke-width:1.5}
+.flow-node.active{stroke:#6ee7b7;stroke-width:2.2}
+.flow-node.active-warn{stroke:#fbbf24;stroke-width:2.2}
+.flow-node.active-blue{stroke:#7dd3fc;stroke-width:2.2}
+.flow-edge{stroke:#3a4050;stroke-width:1.5;fill:none}
+.flow-edge.active{stroke:#fbbf24;stroke-width:2}
+.flow-label{fill:#e6e8ee;font-family:"SF Mono",monospace;font-size:11px}
+.flow-label.sub{fill:#8b93a7;font-size:10px}
+.click-hint{font-size:11px;color:var(--mute);margin-top:6px;text-align:center}
+
+</style>
+</head><body><div class="wrap"><h1>Decode Worker：预分配 + 收货 + 首 token 交接<span class="tag">PD · 5/7</span></h1><div class="sub">D 侧三大核心结构、DecodeReqToTokenPool 的 pre_alloc 额度设计、pop_preallocated/send_metadata/commit 源码。两个交互演示：pool 对比 + 请求流转。</div><div class="toc"><a href="#role">D 的三大结构</a><a href="#add">PreallocQueue.add</a><a href="#pop">pop_preallocated + send_metadata</a><a href="#transfer">pop_transferred + commit</a><a href="#evloop">event loop</a><a href="#summary">要点</a></div>
+<!-- PART 1 -->
+<h2 id="role"><span class="step">PART 1</span>Decode Worker 的核心数据结构</h2>
+<div class="card">
+<p>D 是 PD 架构里最复杂的一侧。因为它既要 <strong>在 KV 还没到位之前提前占好 KV 空间</strong>，又要避免这些提前占用挤爆真正在跑 decode 的 running_batch。</p>
+
+<h3>三大核心结构</h3>
+<table>
+<tr><th>结构</th><th>职责</th><th>源码</th></tr>
+<tr><td><code>DecodePreallocQueue</code></td><td>新请求落地点，做 KV 预分配，发 metadata 给 P</td><td><span class="path">decode.py:378</span></td></tr>
+<tr><td><code>DecodeTransferQueue</code></td><td>等 P 的 KV + aux 传过来；commit 首 token</td><td><span class="path">decode.py:946</span></td></tr>
+<tr><td><code>DecodeReqToTokenPool</code></td><td>改版的 req pool，多一个 pre_alloc_size 维度</td><td><span class="path">decode.py:96</span></td></tr>
+</table>
+
+<h3>DecodeReqToTokenPool：关键魔改</h3>
+<pre><span class="path">// disaggregation/decode.py:96-106（注释）</span>
+<span class="com">"""
+普通 ReqToTokenPool:
+  #pre-allocated + #transfer + #running &lt;= max_running_requests
+
+DecodeReqToTokenPool:
+  #running &lt;= max_running_requests
+  #pre-allocated + #transfer &lt;= pre_alloc_size
+"""</span></pre>
+
+<div class="callout warn">
+<strong>为什么要改</strong>：如果沿用普通 pool，那些"已经预分配了 KV 但还在等 P 传数据"的请求会占用 max_running_requests 额度。当 KV transfer 慢时，running_batch 的坑位都被等 KV 的请求占走，真正能 decode 的请求数急剧下降。DecodeReqToTokenPool 把这两类请求放到<u>独立预算</u>里。
+</div>
+</div>
+
+<!-- Interactive: DecodeReqToTokenPool visualization -->
+<div class="demo">
+<div class="demo-title">🧠 DecodeReqToTokenPool 分区可视化</div>
+<div class="demo-sub">对比普通 pool vs DecodeReqToTokenPool：同样的请求流入，两者表现完全不同</div>
+
+<div class="demo-controls">
+  <button class="demo-btn primary" id="pool-gen">▶ 模拟高 KV transfer 延迟</button>
+  <button class="demo-btn" id="pool-reset">↻ 重置</button>
+</div>
+
+<div style="background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px">
+  <div style="font-size:12.5px;color:var(--bad);margin-bottom:6px">❌ 普通 ReqToTokenPool（max = 8）</div>
+  <div id="pool-naive" style="display:flex;gap:4px;flex-wrap:wrap;min-height:40px;padding:6px;background:#0f1218;border:1px solid var(--line);border-radius:6px"></div>
+  <div class="kpi" style="margin-top:6px">
+    <span>running 额度剩余: <b id="pn-r">8</b></span>
+    <span>可接受新请求: <b id="pn-new">8</b></span>
+    <span>decode tokens/s: <b id="pn-tps">0</b></span>
+  </div>
+
+  <div style="font-size:12.5px;color:var(--brand);margin-top:14px;margin-bottom:6px">✅ DecodeReqToTokenPool（max_running=8 + pre_alloc=8）</div>
+  <div id="pool-new-run" style="display:flex;gap:4px;flex-wrap:wrap;min-height:40px;padding:6px;background:#0f1218;border:1px solid var(--line);border-radius:6px">
+    <div style="font-size:10px;color:var(--mute);margin-right:6px">running:</div>
+  </div>
+  <div id="pool-new-pre" style="display:flex;gap:4px;flex-wrap:wrap;min-height:40px;padding:6px;background:#0f1218;border:1px solid var(--line);border-radius:6px;margin-top:4px">
+    <div style="font-size:10px;color:var(--mute);margin-right:6px">pre-alloc / transfer:</div>
+  </div>
+  <div class="kpi" style="margin-top:6px">
+    <span>running 额度剩余: <b id="pp-r">8</b></span>
+    <span>pre-alloc 额度剩余: <b id="pp-p">8</b></span>
+    <span>decode tokens/s: <b id="pp-tps">0</b></span>
+  </div>
+</div>
+
+<div class="demo-narration" id="pool-narr">点按钮模拟：20 个请求陆续进来，KV transfer 平均 500ms。观察两种 pool 的 decode tokens/s 差距。</div>
+</div>
+
+<script>
+(function(){
+  let timer=null;
+  let naivePool = []; // {id, state}
+  let newRun = [], newPre = [];
+  let tpsNaive=0, tpsNew=0;
+
+  function render(){
+    const nEl = document.getElementById('pool-naive');
+    nEl.innerHTML = '';
+    naivePool.forEach(r=>{
+      const c=document.createElement('span');
+      c.className='req-chip '+(r.state==='transfer'?'transferring':r.state==='running'?'success':'bootstrapping');
+      c.textContent = '#'+r.id;
+      nEl.appendChild(c);
+    });
+    document.getElementById('pn-r').textContent = Math.max(0, 8-naivePool.length);
+    document.getElementById('pn-new').textContent = Math.max(0, 8-naivePool.length);
+    const runningCount = naivePool.filter(r=>r.state==='running').length;
+    document.getElementById('pn-tps').textContent = (runningCount*20).toFixed(0);
+
+    const runEl = document.getElementById('pool-new-run');
+    runEl.innerHTML = '<div style="font-size:10px;color:var(--mute);margin-right:6px">running:</div>';
+    newRun.forEach(r=>{
+      const c=document.createElement('span');
+      c.className='req-chip success';
+      c.textContent='#'+r.id;
+      runEl.appendChild(c);
+    });
+    const preEl = document.getElementById('pool-new-pre');
+    preEl.innerHTML = '<div style="font-size:10px;color:var(--mute);margin-right:6px">pre-alloc / transfer:</div>';
+    newPre.forEach(r=>{
+      const c=document.createElement('span');
+      c.className='req-chip transferring';
+      c.textContent='#'+r.id;
+      preEl.appendChild(c);
+    });
+    document.getElementById('pp-r').textContent = Math.max(0, 8-newRun.length);
+    document.getElementById('pp-p').textContent = Math.max(0, 8-newPre.length);
+    document.getElementById('pp-tps').textContent = (newRun.length*20).toFixed(0);
+  }
+
+  function simulate(){
+    if(timer) return;
+    let reqId=0;
+    timer = setInterval(()=>{
+      // 每 150ms 来一个请求
+      reqId++;
+      // Naive: 如果还有额度，进 transfer；否则拒绝（实际上会 block）
+      if(naivePool.length < 8){
+        naivePool.push({id:reqId, state:'transfer'});
+        // 500ms 后转 running
+        setTimeout(()=>{
+          const r = naivePool.find(x=>x.id===reqId);
+          if(r) r.state = 'running';
+          render();
+        }, 500);
+      }
+      // New pool: 进 pre-alloc
+      if(newPre.length < 8){
+        newPre.push({id:reqId});
+        setTimeout(()=>{
+          // transfer 完移到 running
+          const idx = newPre.findIndex(x=>x.id===reqId);
+          if(idx>=0){
+            newPre.splice(idx,1);
+            if(newRun.length < 8){
+              newRun.push({id:reqId});
+            }
+          }
+          render();
+        }, 500);
+      }
+      // Running 每 80ms 完成一个 decode step，简化为 200ms 移出
+      render();
+      if(reqId>=20){ clearInterval(timer); timer=null; }
+    }, 150);
+  }
+
+  document.getElementById('pool-gen').addEventListener('click',simulate);
+  document.getElementById('pool-reset').addEventListener('click',()=>{
+    clearInterval(timer); timer=null;
+    naivePool=[]; newRun=[]; newPre=[];
+    render();
+  });
+  render();
+})();
+</script>
+
+<!-- PART 2: add -->
+<h2 id="add"><span class="step">PART 2</span>深读 1：DecodePreallocQueue.add</h2>
+<div class="card">
+<pre><span class="path">// disaggregation/decode.py:406-462</span>
+<span class="kw">def</span> <span class="fn">add</span>(self, req: Req, is_retracted: bool = <span class="kw">False</span>) -> None:
+    <span class="kw">if</span> self._check_if_req_exceed_kv_capacity(req):
+        <span class="kw">return</span>
+
+    <span class="kw">if</span> is_retracted:
+        self.retracted_queue.append(req)
+        <span class="kw">return</span>
+
+    decode_req = self.<span class="fn">_create_receiver_and_enqueue</span>(req)
+
+    <span class="kw">if</span> <span class="fn">_is_fake_transfer</span>(req, self.scheduler.server_args):
+        decode_req.kv_receiver.<span class="fn">init</span>(0); <span class="kw">return</span>
+
+    <span class="com"># 快速路径：dp_rank 已在 cache 里</span>
+    prefill_dp_rank = self.<span class="fn">_resolve_prefill_dp_rank</span>(req)
+    <span class="kw">if</span> prefill_dp_rank <span class="kw">is not</span> <span class="kw">None</span>:
+        decode_req.kv_receiver.<span class="fn">init</span>(prefill_dp_rank)
+        <span class="kw">return</span>
+
+    <span class="com"># 慢路径：进 pending，下一轮集体查 bootstrap server</span>
+    self.pending_reqs.append(decode_req)
+
+<span class="kw">def</span> <span class="fn">_create_receiver_and_enqueue</span>(self, req):
+    kv_receiver = MooncakeKVReceiver(
+        mgr=self.kv_manager,
+        bootstrap_addr=f<span class="str">"{req.bootstrap_host}:{req.bootstrap_port}"</span>,
+        bootstrap_room=req.bootstrap_room,
+    )
+    decode_req = DecodeRequest(req=req, kv_receiver=kv_receiver)
+    self.queue.append(decode_req)
+    <span class="kw">return</span> decode_req</pre>
+
+<div class="callout">
+<strong>注意</strong>：这一步只是<u>登记请求</u>，<strong>没有</strong>分配 KV page。真正分配发生在下一轮 <code>pop_preallocated</code>，那里会检查 pool 余量再决定。
+</div>
+</div>
+
+<!-- PART 3: pop_preallocated -->
+<h2 id="pop"><span class="step">PART 3</span>深读 2：pop_preallocated + send_metadata</h2>
+<div class="card">
+<p>这是 D 侧最精妙的一步：<strong>在 P 还没开始算的时候，D 先给这个请求在自己的 KV pool 里挖好坑</strong>，并把坑的地址告诉 P。</p>
+
+<pre><span class="path">// decode.py:645-817（精简）</span>
+<span class="kw">def</span> <span class="fn">pop_preallocated</span>(self, rids_to_check=<span class="kw">None</span>):
+    self.<span class="fn">_resolve_pending_reqs</span>()   <span class="com"># 解析慢路径的 dp_rank</span>
+    self.<span class="fn">_update_handshake_waiters</span>()
+
+    retractable_tokens = sum(len(r.origin_input_ids)+len(r.output_ids)
+                             <span class="kw">for</span> r <span class="kw">in</span> self.scheduler.running_batch.reqs)
+    allocatable = self.<span class="fn">_allocatable_tokens</span>(retractable_tokens, count_retracted=<span class="kw">True</span>)
+
+    <span class="kw">for</span> i, decode_req <span class="kw">in</span> enumerate(self.queue):
+        <span class="kw">if not</span> decode_req.waiting_for_input: <span class="kw">continue</span>
+        <span class="kw">if</span> self.req_to_token_pool.<span class="fn">available_size</span>() &lt;= 0: <span class="kw">break</span>
+        <span class="kw">if</span> self.req_to_metadata_buffer_idx_allocator.<span class="fn">available_size</span>() &lt;= 0: <span class="kw">break</span>
+
+        <span class="com"># 内存预算检查</span>
+        origin_len = len(decode_req.req.origin_input_ids)
+        needed = origin_len + self.num_reserved_decode_tokens
+        <span class="kw">if</span> needed &gt; allocatable: <span class="kw">break</span>
+        allocatable -= needed
+
+        <span class="com"># ★ 真正分配 KV page</span>
+        dst_kv_indices = self.<span class="fn">_pre_alloc</span>(decode_req.req)
+        kv_indices = (self.req_to_token_pool.req_to_token[decode_req.req.req_pool_idx]
+                       [:origin_len].cpu().numpy())
+        page_indices = <span class="fn">kv_to_page_indices</span>(kv_indices, page_size)
+
+        decode_req.metadata_buffer_index = self.req_to_metadata_buffer_idx_allocator.<span class="fn">alloc</span>()
+        <span class="com"># ★ 把 page 地址发给 P</span>
+        decode_req.kv_receiver.<span class="fn">send_metadata</span>(
+            page_indices, decode_req.metadata_buffer_index, state_indices,
+        )
+        preallocated.append(decode_req)</pre>
+
+<pre><span class="path">// mooncake/conn.py:1820-1867</span>
+<span class="kw">def</span> <span class="fn">send_metadata</span>(self, kv_indices, aux_index, state_indices):
+    <span class="kw">for</span> bootstrap_info <span class="kw">in</span> self.bootstrap_infos:
+        sock, lock = self.<span class="fn">_connect_to_bootstrap_server</span>(bootstrap_info)
+        <span class="kw">with</span> lock:
+            sock.<span class="fn">send_multipart</span>([
+                str(self.bootstrap_room).encode(),   <span class="com"># room</span>
+                self.kv_mgr.local_ip.encode(),        <span class="com"># D endpoint for reverse ZMQ</span>
+                str(self.kv_mgr.rank_port).encode(),
+                self.session_id.encode(),             <span class="com"># mooncake session</span>
+                kv_indices.tobytes(),                 <span class="com"># ★ 目标 page 索引</span>
+                str(aux_index).encode(),              <span class="com"># metadata buffer slot</span>
+                state_indices_bytes,
+                str(self.required_dst_info_num).encode(),
+            ])</pre>
+</div>
+
+<!-- PART 4: transfer queue -->
+<h2 id="transfer"><span class="step">PART 4</span>深读 3：DecodeTransferQueue.pop_transferred + commit</h2>
+<div class="card">
+<p>P 把 KV 和 aux（metadata）都传过来之后，D 侧的 DecodeTransferQueue 负责"收货"——commit 到 req 上。</p>
+
+<pre><span class="path">// decode.py:946-1168（精简）</span>
+<span class="kw">def</span> <span class="fn">pop_transferred</span>(self):
+    polls = <span class="fn">poll_and_all_reduce</span>([dr.kv_receiver <span class="kw">for</span> dr <span class="kw">in</span> self.queue])
+
+    <span class="kw">for</span> dr, poll <span class="kw">in</span> zip(self.queue, polls):
+        <span class="kw">if</span> poll == KVPoll.Failed:
+            abort; release_kv_cache(dr); <span class="kw">continue</span>
+        <span class="kw">elif</span> poll == KVPoll.Success:
+            should_remove = self.<span class="fn">_commit_transfer_to_req</span>(dr)
+            <span class="kw">if</span> should_remove:
+                transferred.append(dr.req)
+
+<span class="kw">def</span> <span class="fn">_commit_transfer_to_req</span>(self, dr) -> bool:
+    idx = dr.metadata_buffer_index
+    (output_id, cached_tokens, logprobs_val, ...,
+     output_bootstrap_room) = self.metadata_buffers.<span class="fn">get_buf</span>(idx)
+
+    actual_room = output_bootstrap_room[0].<span class="fn">item</span>()
+    expected = dr.req.bootstrap_room <span class="kw">or</span> 0
+
+    <span class="kw">if</span> actual_room == 0: <span class="kw">return</span> <span class="kw">False</span>  <span class="com"># metadata 还没刷到</span>
+    <span class="kw">elif</span> actual_room != expected:
+        <span class="com"># ★★ metadata buffer 串包，立即 abort</span>
+        <span class="fn">prepare_abort</span>(dr.req, <span class="str">"Metadata corruption detected..."</span>)
+        dr.kv_receiver.<span class="fn">clear</span>()
+        <span class="kw">return</span> <span class="kw">True</span>
+
+    <span class="com"># 正常提交</span>
+    dr.req.output_ids.append(output_id[0].item())
+    dr.req.cached_tokens = cached_tokens[0].item()
+    <span class="kw">if</span> dr.req.return_logprob:
+        dr.req.output_token_logprobs_val.append(logprobs_val[0].item())
+    <span class="kw">return</span> <span class="kw">True</span></pre>
+
+<div class="callout bad">
+<strong>bootstrap_room 校验</strong>是 PD 一致性的<u>最后一道防线</u>。metadata_buffer 是一个共享池（size 个 slot 循环用），如果 buffer 分配/释放时序错乱，可能拿到别人的 metadata。这里强校验才提交。
+</div>
+</div>
+
+<!-- Interactive: request flow through D side -->
+<div class="demo">
+<div class="demo-title">🎬 请求到达 D 后：两段流水线动画</div>
+<div class="demo-sub">观察一个请求如何在 D 侧穿过 PreallocQueue → TransferQueue → WaitingQueue → running_batch</div>
+
+<div class="demo-controls">
+  <button class="demo-btn primary" id="dl-play">▶ 播放</button>
+  <button class="demo-btn" id="dl-next">下一步</button>
+  <button class="demo-btn" id="dl-reset">↻ 重置</button>
+  <span class="demo-step" id="dl-step">step 0 / 8</span>
+</div>
+
+<div style="background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px">
+  <div class="grid cols-4" style="gap:8px">
+    <div class="queue-box" id="dl-q1">
+      <div class="queue-title">PreallocQueue <span class="cnt" id="dl-c1">0</span></div>
+      <div id="dl-r1"></div>
+    </div>
+    <div class="queue-box" id="dl-q2">
+      <div class="queue-title">TransferQueue <span class="cnt" id="dl-c2">0</span></div>
+      <div id="dl-r2"></div>
+    </div>
+    <div class="queue-box" id="dl-q3">
+      <div class="queue-title">WaitingQueue <span class="cnt" id="dl-c3">0</span></div>
+      <div id="dl-r3"></div>
+    </div>
+    <div class="queue-box" id="dl-q4">
+      <div class="queue-title">running_batch <span class="cnt" id="dl-c4">0</span></div>
+      <div id="dl-r4"></div>
+    </div>
+  </div>
+
+  <div style="margin-top:14px;font-family:'SF Mono',monospace;font-size:11.5px;background:#0f1218;border:1px solid var(--line);border-radius:8px;padding:10px">
+    <div style="color:var(--mute);margin-bottom:6px">当前这一步在执行的源码</div>
+    <div id="dl-code" style="white-space:pre-wrap;color:#cbd5e1">（点播放开始）</div>
+  </div>
+
+  <div class="kpi" style="margin-top:10px">
+    <span>KVPoll: <b id="dl-poll">-</b></span>
+    <span>KV pool 占用: <b id="dl-kv">0</b> pages</span>
+    <span>metadata buffer slot: <b id="dl-mb">-</b></span>
+  </div>
+</div>
+
+<div class="demo-narration" id="dl-narr">req#1 进来，先进 PreallocQueue 等预分配；预分配成功后进 TransferQueue 等 P 的 KV；transfer 完后进 WaitingQueue，下一轮进 running_batch 开始 decode。</div>
+</div>
+
+<script>
+(function(){
+  const S = [
+    {q:{p:[1],t:[],w:[],r:[]}, poll:"Bootstrapping", kv:0, mb:"-",
+     code:"# decode.py:406\ndef add(self, req):\n    decode_req = self._create_receiver_and_enqueue(req)\n    prefill_dp_rank = self._resolve_prefill_dp_rank(req)\n    if prefill_dp_rank is not None:\n        decode_req.kv_receiver.init(prefill_dp_rank)",
+     narr:"① <strong>PreallocQueue.add</strong>：创建 MooncakeKVReceiver，查 bootstrap server 拿到 P 的 dp_rank（或进 pending）。此时没分配 KV。"},
+    {q:{p:[1],t:[],w:[],r:[]}, poll:"WaitingForInput", kv:0, mb:"-",
+     code:"# mooncake/conn.py (receiver.init)\n# 1. 第一次握手：把 D 自己的 kv/aux 指针发给 P\nsock.send_multipart([\"None\", local_ip, rank_port, session_id,\n                     packed_kv_ptrs, packed_aux_ptrs, ...])",
+     narr:"② <strong>receiver.init</strong>：向 P 发首次握手，登记 D 的 KV/aux 指针。P 的 bootstrap_thread 把这些存到 decode_kv_args_table。"},
+    {q:{p:[1],t:[],w:[],r:[]}, poll:"WaitingForInput", kv:"16", mb:"3",
+     code:"# decode.py:645\nfor decode_req in self.queue:\n    if available_size <= 0: break\n    dst_kv_indices = self._pre_alloc(req)  # ★\n    kv_indices = req_to_token[req_pool_idx][:origin_len]\n    metadata_buffer_idx = allocator.alloc()",
+     narr:"③ <strong>pop_preallocated · _pre_alloc</strong>：真正在 DecodeReqToTokenPool 里分配 req_pool_idx，并给 prompt 的每个 token 分配 KV page（这里 16 个 page）。"},
+    {q:{p:[1],t:[],w:[],r:[]}, poll:"Transferring", kv:"16", mb:"3",
+     code:"# mooncake/conn.py:1820 (receiver.send_metadata)\nsock.send_multipart([room, local_ip, rank_port, session_id,\n                     kv_indices.tobytes(),  # ★ 目标 page 地址\n                     str(aux_index).encode(), ...])",
+     narr:"④ <strong>send_metadata</strong>：通过 ZMQ 把 (room, 目标 page 地址, aux_slot) 发给 P。P 的 bootstrap_thread 收到这条消息会把 KVPoll 切到 WaitingForInput（对 P 而言）。"},
+    {q:{p:[],t:[1],w:[],r:[]}, poll:"Transferring", kv:"16", mb:"3",
+     code:"# decode.py (main loop)\nreq_conns = self.disagg_decode_prealloc_queue.pop_preallocated()\nself.disagg_decode_transfer_queue.extend(req_conns)",
+     narr:"⑤ req 从 PreallocQueue 移到 <strong>TransferQueue</strong>。此时 P 还没把 KV 传过来，req 在 TransferQueue 里 idle。"},
+    {q:{p:[],t:[1],w:[],r:[]}, poll:"Transferring", kv:"16", mb:"3",
+     code:"# 后台：Mooncake RDMA 异步在搬数据\n# P 的 transfer_worker 调 send_kvcache、send_aux\n# 每个 chunk 完成后：sync_status_to_decode_endpoint(room, Success)\n# D 的 decode_thread 收到后 update_status",
+     narr:"⑥ 后台 Mooncake 做 RDMA。每个 chunk 完成后 P 通过 ZMQ 反向告诉 D；收齐 required_prefill_response_num 条后 D 把 KVPoll 切到 Success。"},
+    {q:{p:[],t:[],w:[1],r:[]}, poll:"Success", kv:"16", mb:"3",
+     code:"# decode.py:946\ndef pop_transferred(self):\n    ...\n    if poll == KVPoll.Success:\n        self._commit_transfer_to_req(dr)\n# commit: 读 metadata buffer，校验 bootstrap_room\n# 把 output_id[0] 放进 req.output_ids",
+     narr:"⑦ <strong>pop_transferred + commit</strong>：校验 bootstrap_room 匹配，把首 token 从 metadata buffer 读出来追加到 req.output_ids。req 进入 waiting_queue。"},
+    {q:{p:[],t:[],w:[],r:[1]}, poll:"Success", kv:"16+1", mb:"freed",
+     code:"# decode.py event loop\nbatch = self.get_next_disagg_decode_batch_to_run()\n# 这个 batch 是 prebuilt extend batch (已有 KV)\n# 直接进入 decode，每步生成 1 个 token\nresult = self.run_batch(batch)\n# stream_output → SSE → router → client",
+     narr:"⑧ req 加入 <strong>running_batch</strong>。之后每步 decode 生成 1 个 token，通过 stream_output → HTTP SSE → router → client。首 token 来自第 ⑦ 步的 commit。"},
+  ];
+  const TOTAL = S.length;
+
+  function renderQ(step){
+    const qs = step===0 ? {p:[],t:[],w:[],r:[]} : S[step-1].q;
+    const maps = [['dl-r1','dl-c1','p','bootstrapping'],['dl-r2','dl-c2','t','transferring'],
+                  ['dl-r3','dl-c3','w','waiting'],['dl-r4','dl-c4','r','success']];
+    maps.forEach(([rid,cid,key,cls])=>{
+      const r = document.getElementById(rid); r.innerHTML='';
+      const list = qs[key]||[];
+      list.forEach(id=>{
+        const chip = document.createElement('span');
+        chip.className='req-chip '+cls+' active';
+        chip.textContent = 'req#'+id;
+        r.appendChild(chip);
+      });
+      document.getElementById(cid).textContent = list.length;
+    });
+  }
+
+  let cur=0, timer=null;
+  function render(step){
+    document.getElementById('dl-step').textContent = `step ${step} / ${TOTAL}`;
+    if(step===0){
+      renderQ(0);
+      document.getElementById('dl-narr').innerHTML = 'req#1 进来，先进 PreallocQueue 等预分配；预分配成功后进 TransferQueue 等 P 的 KV；transfer 完后进 WaitingQueue，下一轮进 running_batch 开始 decode。';
+      document.getElementById('dl-code').textContent = '（点播放开始）';
+      document.getElementById('dl-poll').textContent = '-';
+      document.getElementById('dl-kv').textContent = '0';
+      document.getElementById('dl-mb').textContent = '-';
+      return;
+    }
+    const s = S[step-1];
+    renderQ(step);
+    document.getElementById('dl-narr').innerHTML = s.narr;
+    document.getElementById('dl-code').textContent = s.code;
+    document.getElementById('dl-poll').textContent = s.poll;
+    document.getElementById('dl-kv').textContent = s.kv;
+    document.getElementById('dl-mb').textContent = s.mb;
+  }
+  render(0);
+  document.getElementById('dl-play').addEventListener('click',()=>{
+    if(timer) return;
+    timer = setInterval(()=>{cur++; render(cur); if(cur>=TOTAL){clearInterval(timer); timer=null;}}, 1800);
+  });
+  document.getElementById('dl-next').addEventListener('click',()=>{ if(cur<TOTAL){cur++; render(cur);}});
+  document.getElementById('dl-reset').addEventListener('click',()=>{clearInterval(timer); timer=null; cur=0; render(0);});
+})();
+</script>
+
+<!-- PART 5: event loop -->
+<h2 id="evloop"><span class="step">PART 5</span>D 的 event loop</h2>
+<div class="card">
+<pre><span class="path">// decode.py:1171-1225</span>
+@torch.no_grad()
+<span class="kw">def</span> <span class="fn">event_loop_normal_disagg_decode</span>(self):
+    <span class="kw">while</span> <span class="kw">True</span>:
+        recv_reqs = self.<span class="fn">recv_requests</span>()
+        self.<span class="fn">process_input_requests</span>(recv_reqs)
+        self.<span class="fn">process_decode_queue</span>()                      <span class="com"># ★ PD 专属</span>
+
+        batch = self.<span class="fn">get_next_disagg_decode_batch_to_run</span>()  <span class="com"># prebuilt extend batch</span>
+        self.cur_batch = batch
+        <span class="kw">if</span> batch:
+            result = self.<span class="fn">run_batch</span>(batch)
+            self.<span class="fn">process_batch_result</span>(batch, result)
+        <span class="kw">else</span>:
+            self.<span class="fn">on_idle</span>()</pre>
+
+<pre><span class="path">// decode.py:1331-1362</span>
+<span class="kw">def</span> <span class="fn">process_decode_queue</span>(self):
+    <span class="com"># 先恢复 retracted 请求</span>
+    resumed = self.disagg_decode_prealloc_queue.<span class="fn">resume_retracted_reqs</span>()
+    self.waiting_queue.extend(resumed)
+    <span class="kw">if</span> self.disagg_decode_prealloc_queue.retracted_queue: <span class="kw">return</span>
+
+    <span class="com"># 降频 poll：避免每 iter 都 poll CPU 集合通信</span>
+    self.polling_count = (self.polling_count + 1) % self.polling_interval
+    <span class="kw">if</span> self.polling_count % self.polling_interval == 0:
+        req_conns, _ = self.disagg_decode_prealloc_queue.<span class="fn">pop_preallocated</span>()
+        self.disagg_decode_transfer_queue.<span class="fn">extend</span>(req_conns)
+        transferred = self.disagg_decode_transfer_queue.<span class="fn">pop_transferred</span>()
+        self.waiting_queue.<span class="fn">extend</span>(transferred)</pre>
+
+<div class="callout">
+<strong>polling_interval 的意义</strong>：每 iter 跑 <code>all_reduce</code> poll 状态对 TP 组是个不小的 CPU 开销。D 侧用 polling_interval（默认 5）降频，只在每 N 轮检查一次。</div>
+</div>
+
+<!-- PART 6 -->
+<h2 id="summary"><span class="step">PART 6</span>本章要点</h2>
+<div class="card">
+<table>
+<tr><th>问题</th><th>答案</th></tr>
+<tr><td>D 有几个队列？</td><td>3 个：PreallocQueue → TransferQueue → waiting_queue（+ running_batch）</td></tr>
+<tr><td>为什么 D 要特殊的 ReqToTokenPool？</td><td>隔离 pre-alloc 预算和 running 预算，避免 slow transfer 挤爆 running_batch</td></tr>
+<tr><td>D 什么时候分配 KV？</td><td>pop_preallocated 里，不是 add 的时候</td></tr>
+<tr><td>send_metadata 发的是什么？</td><td>(bootstrap_room, D 自己的 ZMQ endpoint, mooncake session, 目标 page 索引, aux 索引)</td></tr>
+<tr><td>首 token 怎么到达 D？</td><td>P 写进共享 metadata buffer → Mooncake send_aux RDMA 到 D → D 的 commit 从 buffer 读出来</td></tr>
+<tr><td>bootstrap_room 校验防什么？</td><td>metadata buffer slot 复用导致的串包（另一请求的 metadata 被误读）</td></tr>
+</table>
+</div>
+<div class="nav"><a href="04-prefill-worker.html">← 上一篇：Prefill Worker</a><a href="06-kv-transfer-bootstrap.html">下一篇：KV Transfer →</a></div><div class="foot">SGLang PD Disaggregation · 原理 → 源码 → 流转 → 交互演示</div></div>  <script src="../course-nav.js"></script>
+</body></html>

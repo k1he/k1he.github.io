@@ -1,0 +1,807 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>Service 与网络基础 · 四种类型 / kube-proxy / DNS</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>Service 与网络基础 <span class="tag">第一层 · 04/15</span></h1>
+<div class="sub">四种 Service 类型 / kube-proxy 的三种模式 / CoreDNS 解析链路——搞清楚流量从集群外到推理 Pod 经过了谁。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么 Pod IP 不能直接用</a>
+  <a href="#types">§1 Service 的四种类型</a>
+  <a href="#kube-proxy">§2 kube-proxy 三种模式</a>
+  <a href="#dns">§3 DNS 解析链路</a>
+  <a href="#packet-path">§4 完整网络路径</a>
+  <a href="#inference">§5 Service 与推理服务</a>
+  <a href="#takeaway">§6 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么 Pod IP 不能直接用</h2>
+
+<div class="card">
+<p>每个 Pod 都有自己的 IP，为什么不能直接拿来访问？三个致命问题：</p>
+<ul class="tight">
+  <li><b>Pod 随时会死</b>：被驱逐、OOM、滚动更新——IP 就变了。硬编码 Pod IP = 定时炸弹</li>
+  <li><b>Pod 可能有多副本</b>：3 个推理 Pod 跑同一个模型，你请求发给谁？需要负载均衡</li>
+  <li><b>Pod IP 只在集群内可达</b>：集群外的客户端根本访问不到 Pod 的 overlay 网络</li>
+  <li><b>Pod IP 没有语义</b>：10.244.1.37 是什么服务？DNS 名字 <code>sglang-svc.inference</code> 才有语义</li>
+</ul>
+
+<div class="callout info">
+<b>Service 就是解决方案</b>：它提供一个稳定的虚拟 IP（ClusterIP）+ DNS 名，背后自动关联一组 Pod。Pod 死了换了 IP？Endpoints Controller 自动更新后端列表。客户端只认 Service，不认 Pod。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+推理集群典型场景：SGLang 部署了 4 个副本跑 Qwen3-72B，每个 Pod 独占 8 卡 A100。上游 router 只需要知道 <code>sglang-svc:80</code> 这一个入口，kube-proxy 自动把请求均匀分发到 4 个 Pod。任何一个 Pod 因 OOM 重启换了 IP，对 router 完全无感。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="types"><span class="step">§1</span>Service 的四种类型</h2>
+
+<div class="card">
+
+<h3>ClusterIP（默认）—— 集群内虚拟 IP + Endpoints</h3>
+<p>分配一个<b>虚拟 IP</b>（只存在于 iptables/IPVS 规则中，不绑定任何网卡），集群内 Pod 可通过这个 VIP 访问后端 Pod。</p>
+
+<pre><span style="color:#6ee7b7">apiVersion</span>: v1
+<span style="color:#6ee7b7">kind</span>: Service
+<span style="color:#6ee7b7">metadata</span>:
+  name: sglang-svc
+  namespace: inference
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#fbbf24">type: ClusterIP</span>              <span style="color:#8b93a7"># 默认值，可不写</span>
+  selector:
+    app: sglang                  <span style="color:#8b93a7"># 匹配带这个 label 的 Pod</span>
+  ports:
+  - name: http
+    port: 80                     <span style="color:#8b93a7"># Service 暴露的端口（客户端访问用）</span>
+    targetPort: 30000            <span style="color:#8b93a7"># Pod 实际监听的端口（SGLang 默认 30000）</span>
+    protocol: TCP
+</pre>
+
+<p>创建后，K8S 自动维护 <b>Endpoints</b>（或 EndpointSlice）对象：</p>
+<pre><span style="color:#8b93a7"># kubectl get endpoints sglang-svc -n inference</span>
+NAME         ENDPOINTS
+sglang-svc   10.244.1.5:30000,10.244.2.8:30000,10.244.3.12:30000
+
+<span style="color:#8b93a7"># 只有通过 readinessProbe 的 Pod 才会出现在 Endpoints 里</span>
+<span style="color:#8b93a7"># Pod 模型没加载完 → readiness 失败 → 不在 Endpoints 里 → 不接流量</span>
+</pre>
+
+<div class="callout info">
+<b>核心机制</b>：Endpoints Controller watch 所有 Pod 和 Service。发现 Pod label 匹配某 Service 的 <code>selector</code> 且 Pod 处于 Ready 状态 → 把 Pod IP:port 加入该 Service 的 Endpoints。kube-proxy 再把 Endpoints 翻译成节点上的转发规则。
+</div>
+
+<h3>NodePort —— 节点端口映射</h3>
+<p>在 ClusterIP 基础上，额外在<b>每个节点</b>的固定端口上打开监听。外部流量可通过 <code>&lt;NodeIP&gt;:&lt;NodePort&gt;</code> 进入。</p>
+
+<pre><span style="color:#6ee7b7">spec</span>:
+  <span style="color:#fbbf24">type: NodePort</span>
+  selector:
+    app: sglang
+  ports:
+  - port: 80
+    targetPort: 30000
+    <span style="color:#fbbf24">nodePort: 31080</span>             <span style="color:#8b93a7"># 范围 30000-32767，不指定则随机分配</span>
+</pre>
+
+<div class="callout warn">
+<b>NodePort 的局限</b>：端口范围有限（30000-32767 只有 2768 个）、无法做域名路由、每个服务占一个端口、安全性差（直接暴露节点端口）——不适合生产环境直接对外。通常只用于开发测试，或作为 LoadBalancer 的底层实现。
+</div>
+
+<h3>LoadBalancer —— 云厂商 LB 对接</h3>
+<p>在 NodePort 基础上，自动向云厂商申请一个外部负载均衡器（如腾讯云 CLB / AWS NLB），并把流量导到 NodePort。</p>
+
+<pre><span style="color:#6ee7b7">spec</span>:
+  <span style="color:#fbbf24">type: LoadBalancer</span>
+  selector:
+    app: sglang
+  ports:
+  - port: 80
+    targetPort: 30000
+<span style="color:#8b93a7"># 创建后 kubectl get svc 会看到 EXTERNAL-IP 列有公网 IP</span>
+<span style="color:#8b93a7"># 云厂商通过 annotation 传入更多配置：</span>
+<span style="color:#8b93a7"># metadata:</span>
+<span style="color:#8b93a7">#   annotations:</span>
+<span style="color:#8b93a7">#     service.kubernetes.io/tke-existed-lbid: "lb-xxxxxxx"  # 复用已有 CLB</span>
+</pre>
+
+<div class="callout info">
+<b>层叠关系</b>：LoadBalancer ⊃ NodePort ⊃ ClusterIP。创建一个 LoadBalancer Service 实际上同时拥有了 ClusterIP 和 NodePort。流量路径：外部 → LB 公网 IP → NodePort → iptables DNAT → Pod。
+</div>
+
+<h3>ExternalName —— CNAME 映射</h3>
+<p>不创建 ClusterIP，只在 CoreDNS 中注册一条 CNAME 记录。访问 Service DNS 名时返回外部域名。</p>
+
+<pre><span style="color:#6ee7b7">spec</span>:
+  <span style="color:#fbbf24">type: ExternalName</span>
+  externalName: model-registry.cos.ap-guangzhou.myqcloud.com  <span style="color:#8b93a7"># 指向外部服务</span>
+<span style="color:#8b93a7"># 集群内访问 model-registry.inference.svc.cluster.local</span>
+<span style="color:#8b93a7"># → 直接 CNAME 到外部对象存储地址</span>
+</pre>
+
+<p>典型场景：集群内服务想用统一 DNS 名访问集群外的模型仓库/数据库。后续迁移到集群内时只需改 Service 类型，客户端代码无需改动。</p>
+
+<h3>Headless Service（ClusterIP: None）—— StatefulSet 专用</h3>
+<p>不分配 VIP，DNS 查询直接返回所有后端 Pod 的 A 记录。每个 Pod 有独立的 DNS 名。</p>
+
+<pre><span style="color:#6ee7b7">apiVersion</span>: v1
+<span style="color:#6ee7b7">kind</span>: Service
+<span style="color:#6ee7b7">metadata</span>:
+  name: sglang-headless
+  namespace: inference
+<span style="color:#6ee7b7">spec</span>:
+  <span style="color:#fbbf24">clusterIP: None</span>              <span style="color:#8b93a7"># 关键：设为 None 就是 headless</span>
+  selector:
+    app: sglang
+  ports:
+  - port: 30000
+    targetPort: 30000
+</pre>
+
+<div class="callout info">
+<b>Headless 的 DNS 行为</b>：
+<ul class="tight" style="margin-top:6px">
+<li>查询 <code>sglang-headless.inference.svc.cluster.local</code> → 返回所有 Ready Pod 的 IP 列表（多条 A 记录）</li>
+<li>配合 StatefulSet 时，每个 Pod 有独立 DNS：<code>sglang-0.sglang-headless.inference.svc.cluster.local</code></li>
+<li>客户端自己决定连哪个 Pod（或连全部）——没有 kube-proxy 介入</li>
+</ul>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+多机推理（tensor parallel 跨节点）时，worker 之间需要点对点通信（NCCL）。Headless Service + StatefulSet 让每个 worker 有稳定的 DNS 名（如 <code>sglang-0.sglang-headless</code>、<code>sglang-1.sglang-headless</code>），master 可以精确指定跟谁通信，而不是被 kube-proxy 随机负载均衡到错误的 Pod。
+</div>
+
+<h3>四种类型 + Headless 对比</h3>
+<table>
+<thead><tr><th>类型</th><th>VIP</th><th>集群外可达</th><th>负载均衡</th><th>典型场景</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>ClusterIP</b></td><td>有</td><td>否</td><td>kube-proxy 轮询</td><td>集群内服务间调用</td></tr>
+<tr><td style="color:#fbbf24"><b>NodePort</b></td><td>有</td><td>是（节点 IP:端口）</td><td>kube-proxy</td><td>开发测试、非云环境</td></tr>
+<tr><td style="color:#a78bfa"><b>LoadBalancer</b></td><td>有</td><td>是（LB 外网 IP）</td><td>云 LB + kube-proxy</td><td>生产环境对外暴露</td></tr>
+<tr><td style="color:#fb7185"><b>ExternalName</b></td><td>无</td><td>N/A（CNAME）</td><td>无</td><td>访问集群外服务</td></tr>
+<tr><td style="color:#7dd3fc"><b>Headless</b></td><td>无</td><td>否</td><td>客户端自选</td><td>StatefulSet、P2P 通信</td></tr>
+</tbody>
+</table>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="kube-proxy"><span class="step">§2</span>kube-proxy 的三种模式</h2>
+
+<div class="card">
+<p><code>kube-proxy</code> 以 DaemonSet 形式跑在每个节点上，负责把 Service VIP 的流量转发到实际的后端 Pod。它 watch apiserver 的 Service/Endpoints 变更，然后在节点上配置转发规则。</p>
+
+<h3>iptables 模式（最常见 · 默认）</h3>
+<p>kube-proxy 把 Service → Endpoints 的映射翻译成 iptables 规则。内核直接在网络层做 DNAT，不经过用户态。</p>
+
+<h4>规则链路径：PREROUTING → KUBE-SERVICES → KUBE-SVC-xxx → KUBE-SEP-xxx</h4>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 340" width="960">
+  <!-- 入口包 -->
+  <rect x="20" y="50" width="120" height="50" rx="8" fill="#fbbf24" opacity=".2" stroke="#fbbf24"/>
+  <text x="80" y="72" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">入站数据包</text>
+  <text x="80" y="88" text-anchor="middle" fill="#8b93a7" font-size="9.5">dst = 10.96.100.50:80</text>
+
+  <path d="M140 75 L180 75" stroke="#8b93a7" stroke-width="1.5"/>
+  <text x="152" y="68" fill="#8b93a7" font-size="9">nat</text>
+
+  <!-- PREROUTING -->
+  <rect x="185" y="50" width="130" height="50" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="250" y="72" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="600">PREROUTING</text>
+  <text x="250" y="88" text-anchor="middle" fill="#8b93a7" font-size="9.5">nat 表入口</text>
+
+  <path d="M315 75 L355 75" stroke="#8b93a7" stroke-width="1.5"/>
+
+  <!-- KUBE-SERVICES -->
+  <rect x="360" y="50" width="160" height="50" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="440" y="72" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">KUBE-SERVICES</text>
+  <text x="440" y="88" text-anchor="middle" fill="#8b93a7" font-size="9.5">按 dst IP:port 匹配</text>
+
+  <path d="M520 75 L560 75" stroke="#8b93a7" stroke-width="1.5"/>
+
+  <!-- KUBE-SVC-xxx -->
+  <rect x="565" y="50" width="160" height="50" rx="8" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="645" y="72" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">KUBE-SVC-XXXX</text>
+  <text x="645" y="88" text-anchor="middle" fill="#8b93a7" font-size="9.5">概率分流（等权）</text>
+
+  <!-- 分流到 3 个 SEP -->
+  <path d="M645 100 L645 125" stroke="#8b93a7" stroke-width="1"/>
+  <path d="M645 125 L445 155" stroke="#fb7185" stroke-width="1"/>
+  <path d="M645 125 L645 155" stroke="#fb7185" stroke-width="1"/>
+  <path d="M645 125 L845 155" stroke="#fb7185" stroke-width="1"/>
+
+  <!-- 概率标注 -->
+  <text x="520" y="142" fill="#fbbf24" font-size="9.5">p=1/3</text>
+  <text x="640" y="142" fill="#fbbf24" font-size="9.5">p=1/2</text>
+  <text x="790" y="142" fill="#fbbf24" font-size="9.5">p=1</text>
+
+  <!-- KUBE-SEP-AAA -->
+  <rect x="360" y="155" width="170" height="50" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="445" y="175" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="600">KUBE-SEP-AAA</text>
+  <text x="445" y="193" text-anchor="middle" fill="#8b93a7" font-size="9">DNAT → 10.244.1.5:30000</text>
+
+  <!-- KUBE-SEP-BBB -->
+  <rect x="560" y="155" width="170" height="50" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="645" y="175" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="600">KUBE-SEP-BBB</text>
+  <text x="645" y="193" text-anchor="middle" fill="#8b93a7" font-size="9">DNAT → 10.244.2.8:30000</text>
+
+  <!-- KUBE-SEP-CCC -->
+  <rect x="760" y="155" width="170" height="50" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="845" y="175" text-anchor="middle" fill="#fb7185" font-size="10" font-weight="600">KUBE-SEP-CCC</text>
+  <text x="845" y="193" text-anchor="middle" fill="#8b93a7" font-size="9">DNAT → 10.244.3.12:30000</text>
+
+  <!-- iptables 规则示例 -->
+  <rect x="20" y="230" width="920" height="100" rx="10" fill="#0f1218" stroke="#262b38"/>
+  <text x="40" y="253" fill="#6ee7b7" font-size="11" font-weight="600">对应的 iptables 规则（简化）</text>
+  <text x="40" y="275" fill="#cbd5e1" font-size="10.5" font-family="SF Mono,monospace">-A KUBE-SERVICES -d 10.96.100.50/32 -p tcp --dport 80 -j KUBE-SVC-XXXX</text>
+  <text x="40" y="295" fill="#cbd5e1" font-size="10.5" font-family="SF Mono,monospace">-A KUBE-SVC-XXXX -m statistic --mode random --probability 0.33333 -j KUBE-SEP-AAA</text>
+  <text x="40" y="315" fill="#cbd5e1" font-size="10.5" font-family="SF Mono,monospace">-A KUBE-SEP-AAA  -p tcp -j DNAT --to-destination 10.244.1.5:30000</text>
+</svg>
+</div>
+
+<div class="callout info">
+<b>概率计算</b>：3 个后端的 probability 分别是 1/3、1/2、1（不是三个都 1/3）。逻辑：第一条 33% 概率命中；没命中进入第二条，此时只剩 2 个候选，50% 命中；最后一条兜底 100%。效果等价于均匀分布。
+</div>
+
+<h3>IPVS 模式 —— 大规模集群性能更好</h3>
+<p>用 Linux IPVS（IP Virtual Server）内核模块做四层负载均衡。规则以 hash 表存储，查找复杂度 O(1)，不随 Service/Endpoints 数量退化。</p>
+
+<ul class="tight">
+  <li><b>调度算法丰富</b>：<code>rr</code>（轮询）、<code>lc</code>（最少连接）、<code>dh</code>（目标哈希）、<code>sh</code>（源哈希）、<code>wrr</code>（加权轮询）</li>
+  <li><b>增量更新</b>：Endpoints 变更时只改对应条目，不像 iptables 全量刷新</li>
+  <li><b>内核原生</b>：性能不随规模退化，10 万 Service 仍然稳定</li>
+  <li><b>前置条件</b>：节点内核需加载 <code>ip_vs</code>、<code>ip_vs_rr</code>、<code>ip_vs_wrr</code>、<code>ip_vs_sh</code>、<code>nf_conntrack</code> 模块</li>
+</ul>
+
+<pre><span style="color:#8b93a7"># 切换到 IPVS 模式：修改 kube-proxy ConfigMap</span>
+kubectl edit cm kube-proxy -n kube-system
+<span style="color:#8b93a7"># 找到 mode 字段改为：</span>
+mode: "ipvs"
+ipvs:
+  scheduler: "rr"              <span style="color:#8b93a7"># 可选 rr/lc/dh/sh/wrr</span>
+
+<span style="color:#8b93a7"># 然后重启 kube-proxy DaemonSet</span>
+kubectl rollout restart ds kube-proxy -n kube-system
+</pre>
+
+<h3>userspace 模式（已废弃）</h3>
+<p>最初的实现：kube-proxy 在用户态监听端口，收到包后转发到后端 Pod。每个包都要内核态→用户态→内核态两次拷贝，性能极差。<b>仅作历史了解，不会在生产中使用。</b></p>
+
+<h3>三种模式对比</h3>
+<table>
+<thead><tr><th>维度</th><th>iptables</th><th>IPVS</th><th>userspace（废弃）</th></tr></thead>
+<tbody>
+<tr><td><b>转发层</b></td><td>内核 netfilter</td><td>内核 IPVS 模块</td><td>用户态 kube-proxy 进程</td></tr>
+<tr><td><b>规则查找</b></td><td>O(N) 链式匹配</td><td>O(1) hash 查找</td><td>N/A</td></tr>
+<tr><td><b>负载算法</b></td><td>随机等权（概率）</td><td>rr / lc / sh / dh / wrr</td><td>轮询</td></tr>
+<tr><td><b>Service 数量上限</b></td><td>&lt;5000 表现良好</td><td>&gt;10 万仍稳定</td><td>几百就卡</td></tr>
+<tr><td><b>规则更新方式</b></td><td>全量刷新（大规模时慢）</td><td>增量更新</td><td>N/A</td></tr>
+<tr><td><b>会话保持</b></td><td>需额外 sessionAffinity</td><td>原生支持多种 persistence</td><td>支持</td></tr>
+<tr><td><b>适用场景</b></td><td>中小集群（默认）</td><td>大规模/多 Service 集群</td><td>不再使用</td></tr>
+<tr><td><b>配置方式</b></td><td><code>mode: "iptables"</code></td><td><code>mode: "ipvs"</code></td><td><code>mode: "userspace"</code></td></tr>
+</tbody>
+</table>
+
+<div class="callout warn">
+<b>如何确认当前模式？</b>
+<pre style="margin:8px 0;background:none;border:none;padding:0">kubectl get cm kube-proxy -n kube-system -o yaml | grep mode
+<span style="color:#8b93a7"># 或在节点上直接检查：</span>
+iptables -t nat -L KUBE-SERVICES 2>/dev/null | head -3   <span style="color:#8b93a7"># 有输出=iptables 模式</span>
+ipvsadm -Ln 2>/dev/null | head -5                        <span style="color:#8b93a7"># 有输出=IPVS 模式</span></pre>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+推理集群通常 Service 数量不多（几十个模型），但单个 Service 的 Endpoints 可能很多（同一模型几十个副本）。iptables 模式下每次 Endpoints 变更都要全量重建规则链——滚动更新 50 个 Pod 时，iptables 规则会被刷新 50 次，期间可能出现短暂的流量黑洞。如果你的集群副本数频繁变动（如用 HPA 自动扩缩），建议切换到 IPVS 模式。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="dns"><span class="step">§3</span>DNS 解析链路</h2>
+
+<div class="card">
+<h3>CoreDNS 架构</h3>
+<ul class="tight">
+  <li>以 Deployment 形式运行在 <code>kube-system</code> namespace，通常 2 副本保证 HA</li>
+  <li>有自己的 ClusterIP Service（通常是 <code>10.96.0.10</code>），这是集群 DNS 的入口</li>
+  <li>kubelet 启动 Pod 时自动把 <code>/etc/resolv.conf</code> 的 nameserver 指向 CoreDNS</li>
+  <li>CoreDNS watch apiserver 获取 Service/Endpoints/Pod 信息，维护内存中的 DNS 记录</li>
+</ul>
+
+<h3>解析格式：<code>&lt;svc&gt;.&lt;ns&gt;.svc.cluster.local</code></h3>
+<table>
+<thead><tr><th>查询目标</th><th>DNS 格式</th><th>返回结果</th></tr></thead>
+<tbody>
+<tr><td>普通 Service</td><td><code>sglang-svc.inference.svc.cluster.local</code></td><td>ClusterIP（单个 A 记录）</td></tr>
+<tr><td>Headless Service</td><td><code>sglang-headless.inference.svc.cluster.local</code></td><td>所有 Pod IP（多条 A 记录）</td></tr>
+<tr><td>StatefulSet Pod</td><td><code>sglang-0.sglang-headless.inference.svc.cluster.local</code></td><td>该 Pod 的 IP（单条 A 记录）</td></tr>
+<tr><td>Pod DNS</td><td><code>10-244-1-5.inference.pod.cluster.local</code></td><td>Pod IP（少用）</td></tr>
+<tr><td>Service Port</td><td><code>_http._tcp.sglang-svc.inference.svc.cluster.local</code></td><td>SRV 记录</td></tr>
+</tbody>
+</table>
+
+<h3>Pod 内 /etc/resolv.conf</h3>
+<pre><span style="color:#8b93a7"># Pod 内 cat /etc/resolv.conf</span>
+nameserver 10.96.0.10                              <span style="color:#8b93a7"># CoreDNS 的 ClusterIP</span>
+search inference.svc.cluster.local svc.cluster.local cluster.local  <span style="color:#8b93a7"># search 域列表</span>
+options ndots:5                                    <span style="color:#8b93a7"># ← 这个值是性能陷阱！</span>
+</pre>
+
+<h3>DNS 解析流程（SVG）</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 940 320" width="940">
+  <!-- Pod A -->
+  <rect x="30" y="50" width="150" height="60" rx="8" fill="#fbbf24" opacity=".2" stroke="#fbbf24"/>
+  <text x="105" y="72" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">Pod A (router)</text>
+  <text x="105" y="92" text-anchor="middle" fill="#8b93a7" font-size="9.5">curl http://sglang-svc/generate</text>
+
+  <path d="M180 80 L230 80" stroke="#fbbf24" stroke-width="1.5"/>
+
+  <!-- 步骤 1：检查 ndots -->
+  <rect x="235" y="45" width="200" height="70" rx="8" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="255" y="67" fill="#7dd3fc" font-size="11" font-weight="600">① 检查 ndots</text>
+  <text x="255" y="85" fill="#8b93a7" font-size="9.5">"sglang-svc" 含 0 个点</text>
+  <text x="255" y="100" fill="#8b93a7" font-size="9.5">0 &lt; ndots(5) → 先尝试 search 后缀</text>
+
+  <path d="M435 80 L480 80" stroke="#8b93a7" stroke-width="1.5"/>
+
+  <!-- 步骤 2：search 展开 -->
+  <rect x="485" y="35" width="290" height="90" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="505" y="57" fill="#a78bfa" font-size="11" font-weight="600">② 依次尝试 search 后缀</text>
+  <text x="505" y="77" fill="#6ee7b7" font-size="10">1. sglang-svc.inference.svc.cluster.local → HIT!</text>
+  <text x="505" y="95" fill="#8b93a7" font-size="9.5">   同 namespace 短名一次命中</text>
+  <text x="505" y="113" fill="#8b93a7" font-size="9.5">2. 如果未命中继续 sglang-svc.svc.cluster.local ...</text>
+
+  <!-- CoreDNS -->
+  <rect x="235" y="170" width="180" height="65" rx="8" fill="#1f2937" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="325" y="192" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="700">CoreDNS</text>
+  <text x="325" y="210" text-anchor="middle" fill="#8b93a7" font-size="9.5">watch apiserver</text>
+  <text x="325" y="225" text-anchor="middle" fill="#8b93a7" font-size="9.5">内存维护 DNS 记录表</text>
+
+  <!-- DNS 查询箭头 -->
+  <path d="M335 115 L325 170" stroke="#6ee7b7" stroke-width="1.2" stroke-dasharray="3 2"/>
+  <text x="345" y="145" fill="#8b93a7" font-size="9">UDP :53</text>
+
+  <!-- 返回结果 -->
+  <path d="M235 200 L105 110" stroke="#6ee7b7" stroke-width="1.2" stroke-dasharray="4 3"/>
+  <text x="130" y="160" fill="#6ee7b7" font-size="9.5">返回 A: 10.96.100.50</text>
+
+  <!-- 外部域名的情况 -->
+  <rect x="485" y="170" width="410" height="100" rx="8" fill="#1f2937" stroke="#f87171"/>
+  <text x="505" y="192" fill="#f87171" font-size="11" font-weight="600">外部域名的悲剧（如 api.openai.com，3 个点 &lt; ndots 5）</text>
+  <text x="505" y="212" fill="#8b93a7" font-size="9.5">① api.openai.com.inference.svc.cluster.local → NXDOMAIN</text>
+  <text x="505" y="228" fill="#8b93a7" font-size="9.5">② api.openai.com.svc.cluster.local → NXDOMAIN</text>
+  <text x="505" y="244" fill="#8b93a7" font-size="9.5">③ api.openai.com.cluster.local → NXDOMAIN</text>
+  <text x="505" y="260" fill="#6ee7b7" font-size="9.5">④ api.openai.com. → 终于成功！（4 次查询 × 2 条记录 = 8 次 UDP）</text>
+
+  <!-- 底部说明 -->
+  <text x="30" y="300" fill="#8b93a7" font-size="11">同 namespace 短名（sglang-svc）→ 一次命中。跨 namespace（sglang-svc.models）→ 两次命中。外部域名 → 多次失败后才命中。</text>
+</svg>
+</div>
+
+<h3>ndots 配置的坑</h3>
+<div class="callout bad">
+<b>ndots:5 的代价</b>：Pod 默认 <code>ndots:5</code>，意味着域名中点的数量 &lt; 5 时，会先拼接 search 后缀查找。对于外部域名（如 <code>huggingface.co</code> 只有 1 个点），系统会先白白尝试 3 次集群后缀（NXDOMAIN），第 4 次才用原始域名查询成功。<br><br>
+<b>影响</b>：一次外部域名解析 = 4 次 DNS 查询 × 2（A + AAAA） = 8 个 UDP 包。高并发调用外部 API 时（如调 embedding 模型、下载 HuggingFace 模型），CoreDNS 压力翻 4 倍。
+</div>
+
+<h3>解决 ndots 问题</h3>
+<pre><span style="color:#8b93a7"># 方案 1：Pod spec 中降低 ndots（推荐）</span>
+<span style="color:#6ee7b7">spec</span>:
+  dnsConfig:
+    options:
+    - name: ndots
+      <span style="color:#fbbf24">value: "2"</span>                 <span style="color:#8b93a7"># 域名含 2+ 个点直接走绝对查询</span>
+    - name: single-request-reopen  <span style="color:#8b93a7"># 避免 A/AAAA 并发查询互相干扰</span>
+
+<span style="color:#8b93a7"># 方案 2：代码中使用 FQDN（末尾加点，跳过 search）</span>
+<span style="color:#8b93a7"># requests.get("https://api.openai.com./v1/chat")  ← 注意末尾的点</span>
+
+<span style="color:#8b93a7"># 方案 3：CoreDNS 启用 autopath 插件（集群级别优化，一次查询尝试所有后缀）</span>
+</pre>
+
+<div class="callout info">
+<b>经验法则</b>：如果你的推理服务需要频繁访问外部 API（模型仓库、监控上报、外部 embedding 服务），把 ndots 降到 2。副作用是跨 namespace 的短名需要写两段以上（如 <code>svc.ns</code>），但这本来就是好习惯。
+</div>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：CoreDNS Corefile 配置详解</button>
+<div class="expand-content">
+<pre><span style="color:#8b93a7"># kubectl get cm coredns -n kube-system -o yaml</span>
+.:53 {
+    errors                           <span style="color:#8b93a7"># 记录错误到标准错误</span>
+    health {
+        lameduck 5s                  <span style="color:#8b93a7"># 优雅退出时继续服务 5s</span>
+    }
+    ready                            <span style="color:#8b93a7"># /ready 健康检查端点</span>
+    kubernetes cluster.local in-addr.arpa ip6.arpa {
+        pods insecure                <span style="color:#8b93a7"># 为 Pod 生成 DNS（基于 IP）</span>
+        fallthrough in-addr.arpa ip6.arpa
+        ttl 30                       <span style="color:#8b93a7"># DNS 记录 TTL 30 秒</span>
+    }
+    prometheus :9153                 <span style="color:#8b93a7"># 暴露 Prometheus metrics</span>
+    forward . /etc/resolv.conf {     <span style="color:#8b93a7"># 非集群域名转发到上游 DNS</span>
+        max_concurrent 1000
+    }
+    cache 30                         <span style="color:#8b93a7"># 缓存 30 秒</span>
+    loop                             <span style="color:#8b93a7"># 检测转发环路</span>
+    reload                           <span style="color:#8b93a7"># Corefile 变更自动热加载</span>
+    loadbalance                      <span style="color:#8b93a7"># DNS 响应中 A 记录随机排序</span>
+}
+</pre>
+<p style="color:var(--mute);font-size:12px"><code>kubernetes</code> 插件负责集群内域名；<code>forward</code> 处理集群外域名；<code>cache 30</code> 减少重复查询。如果推理集群有大量外部 DNS 请求，可以加 <code>cache 300</code> 增大缓存时间。</p>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+推理服务的 router 组件需要频繁调用多个模型 Service（如 <code>qwen3-svc</code>、<code>deepseek-svc</code>、<code>llama-svc</code>）。如果 router 和模型 Service 在同一个 namespace，直接用短名即可——DNS 一次命中，零额外延迟。但如果 router 在 <code>gateway</code> namespace 而模型在 <code>models</code> namespace，用 <code>qwen3-svc.models</code> 即可（2 段短名在 ndots:5 下也会走 search，但第二个后缀就命中了）。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="packet-path"><span class="step">§4</span>从 Pod A 到 Pod B 的完整网络路径</h2>
+
+<div class="card">
+<p>Pod A（router，在 Node 1）通过 ClusterIP Service 访问 Pod B（SGLang 推理，在 Node 2），数据包经过的每一跳：</p>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 960 540" width="960">
+  <!-- Node 1 框 -->
+  <rect x="20" y="40" width="430" height="475" rx="12" fill="none" stroke="#7dd3fc" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="40" y="65" fill="#7dd3fc" font-size="13" font-weight="700">Node 1（源端）</text>
+
+  <!-- Pod A -->
+  <rect x="50" y="85" width="170" height="55" rx="8" fill="#fbbf24" opacity=".2" stroke="#fbbf24"/>
+  <text x="135" y="107" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">Pod A (router)</text>
+  <text x="135" y="125" text-anchor="middle" fill="#8b93a7" font-size="9.5">src=10.244.1.2 dst=10.96.100.50:80</text>
+
+  <!-- ① DNS -->
+  <rect x="260" y="85" width="170" height="55" rx="8" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="345" y="107" text-anchor="middle" fill="#7dd3fc" font-size="10" font-weight="600">① DNS 解析</text>
+  <text x="345" y="125" text-anchor="middle" fill="#8b93a7" font-size="9">sglang-svc → 10.96.100.50</text>
+  <path d="M220 112 L260 112" stroke="#7dd3fc" stroke-width="1" stroke-dasharray="3 2"/>
+
+  <!-- ② veth pair -->
+  <path d="M135 140 L135 170" stroke="#8b93a7" stroke-width="1.2"/>
+  <rect x="50" y="170" width="170" height="40" rx="6" fill="#1a1f2b" stroke="#8b93a7"/>
+  <text x="135" y="194" text-anchor="middle" fill="#8b93a7" font-size="10">② veth pair → 宿主机网络栈</text>
+
+  <!-- ③ iptables -->
+  <path d="M135 210 L135 240" stroke="#8b93a7" stroke-width="1.2"/>
+  <rect x="40" y="240" width="200" height="70" rx="8" fill="#1f2937" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="60" y="262" fill="#6ee7b7" font-size="11" font-weight="600">③ iptables DNAT</text>
+  <text x="60" y="280" fill="#8b93a7" font-size="9">PREROUTING → KUBE-SERVICES</text>
+  <text x="60" y="293" fill="#8b93a7" font-size="9">→ KUBE-SVC-xx → KUBE-SEP-yy</text>
+  <rect x="55" y="298" width="170" height="18" rx="3" fill="#6ee7b7" opacity=".12" stroke="#6ee7b7" stroke-width=".5"/>
+  <text x="65" y="311" fill="#6ee7b7" font-size="9">dst 改为 10.244.2.8:30000</text>
+
+  <!-- ④ conntrack -->
+  <rect x="265" y="255" width="170" height="40" rx="6" fill="#1a1f2b" stroke="#a78bfa"/>
+  <text x="350" y="275" text-anchor="middle" fill="#a78bfa" font-size="9.5">conntrack 记录 NAT 映射</text>
+  <text x="350" y="289" text-anchor="middle" fill="#8b93a7" font-size="8.5">用于回程自动 reverse DNAT</text>
+  <path d="M240 280 L265 280" stroke="#a78bfa" stroke-width="1" stroke-dasharray="2 2"/>
+
+  <!-- ⑤ 路由判断 -->
+  <path d="M135 310 L135 345" stroke="#8b93a7" stroke-width="1.2"/>
+  <rect x="50" y="345" width="200" height="40" rx="6" fill="#1a1f2b" stroke="#fbbf24"/>
+  <text x="150" y="370" text-anchor="middle" fill="#fbbf24" font-size="10">④ 路由表：10.244.2.0/24 → Node 2</text>
+
+  <!-- ⑥ 物理网卡 -->
+  <path d="M135 385 L135 415" stroke="#8b93a7" stroke-width="1.2"/>
+  <rect x="50" y="415" width="200" height="40" rx="6" fill="#1a1f2b" stroke="#fbbf24"/>
+  <text x="150" y="440" text-anchor="middle" fill="#fbbf24" font-size="10">⑤ eth0 → 物理网络/VXLAN</text>
+
+  <!-- 跨节点传输 -->
+  <path d="M250 435 L510 435" stroke="#fbbf24" stroke-width="2"/>
+  <rect x="310" y="460" width="150" height="35" rx="6" fill="#1f2937" stroke="#fbbf24" stroke-dasharray="4 3"/>
+  <text x="385" y="482" text-anchor="middle" fill="#fbbf24" font-size="10">⑥ 跨节点传输</text>
+  <text x="385" y="495" text-anchor="middle" fill="#8b93a7" font-size="8.5">VXLAN / VPC 路由 / BGP</text>
+
+  <!-- Node 2 框 -->
+  <rect x="500" y="40" width="440" height="475" rx="12" fill="none" stroke="#6ee7b7" stroke-width="1.5" stroke-dasharray="6 3"/>
+  <text x="520" y="65" fill="#6ee7b7" font-size="13" font-weight="700">Node 2（目标端 · GPU 节点）</text>
+
+  <!-- Node 2 eth0 -->
+  <rect x="530" y="415" width="200" height="40" rx="6" fill="#1a1f2b" stroke="#fbbf24"/>
+  <text x="630" y="440" text-anchor="middle" fill="#fbbf24" font-size="10">⑦ eth0 接收 / VXLAN 解封</text>
+
+  <!-- Node 2 路由 -->
+  <path d="M630 415 L630 390" stroke="#8b93a7" stroke-width="1.2"/>
+  <rect x="530" y="350" width="200" height="40" rx="6" fill="#1a1f2b" stroke="#8b93a7"/>
+  <text x="630" y="375" text-anchor="middle" fill="#8b93a7" font-size="10">⑧ 路由表 → cbr0/cni0</text>
+
+  <!-- veth -->
+  <path d="M630 350 L630 320" stroke="#6ee7b7" stroke-width="1.2" stroke-dasharray="3 2"/>
+  <rect x="530" y="285" width="200" height="35" rx="6" fill="#1a1f2b" stroke="#6ee7b7"/>
+  <text x="630" y="307" text-anchor="middle" fill="#6ee7b7" font-size="10">⑨ veth pair → Pod B 网络栈</text>
+
+  <!-- Pod B -->
+  <path d="M630 285 L630 250" stroke="#6ee7b7" stroke-width="1.2"/>
+  <rect x="530" y="85" width="200" height="160" rx="10" fill="#6ee7b7" opacity=".08" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="630" y="110" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="700">Pod B (SGLang)</text>
+  <text x="630" y="130" text-anchor="middle" fill="#8b93a7" font-size="9.5">10.244.2.8:30000</text>
+  <text x="630" y="155" text-anchor="middle" fill="#8b93a7" font-size="9">收到请求 → 执行推理</text>
+  <text x="630" y="175" text-anchor="middle" fill="#8b93a7" font-size="9">返回响应（原路返回）</text>
+  <text x="630" y="200" text-anchor="middle" fill="#8b93a7" font-size="9">回程 src=10.244.2.8</text>
+  <text x="630" y="215" text-anchor="middle" fill="#8b93a7" font-size="9">Node1 conntrack 自动改为</text>
+  <text x="630" y="230" text-anchor="middle" fill="#6ee7b7" font-size="9">src=10.96.100.50 → Pod A</text>
+
+  <path d="M630 245 L630 285" stroke="#6ee7b7" stroke-width="1"/>
+</svg>
+</div>
+
+<h3>每一跳详解</h3>
+<table>
+<thead><tr><th>步骤</th><th>负责组件</th><th>做了什么</th></tr></thead>
+<tbody>
+<tr><td style="color:#7dd3fc">① DNS</td><td>CoreDNS</td><td>Service 名 → ClusterIP（10.96.100.50）</td></tr>
+<tr><td style="color:#8b93a7">② veth</td><td>Linux 网络</td><td>Pod 内 eth0 通过 veth pair 连到宿主机网络栈</td></tr>
+<tr><td style="color:#6ee7b7">③ DNAT</td><td>iptables / IPVS</td><td>ClusterIP:80 → 选中的 PodIP:30000</td></tr>
+<tr><td style="color:#fbbf24">④ 路由</td><td>Linux 路由表</td><td>根据目标 Pod 子网判断下一跳（同节点 bridge / 跨节点转发）</td></tr>
+<tr><td style="color:#fbbf24">⑤⑥ 跨节点</td><td>CNI 插件</td><td>VXLAN 封装 / VPC 路由 / Calico BGP</td></tr>
+<tr><td style="color:#fbbf24">⑦ 接收</td><td>目标节点网卡</td><td>解封装（如果是 VXLAN）或直接路由接收</td></tr>
+<tr><td style="color:#8b93a7">⑧ 路由</td><td>目标节点路由表</td><td>把包路由到目标 Pod 的 veth pair</td></tr>
+<tr><td style="color:#6ee7b7">⑨ 投递</td><td>veth pair</td><td>包到达 Pod B 的 eth0，应用层收到请求</td></tr>
+</tbody>
+</table>
+
+<div class="callout info">
+<b>关键设计</b>：
+<ul class="tight" style="margin-top:6px">
+<li><b>DNAT 在源端执行</b>——Service VIP 不是一个真正的代理进程，而是分布在每个节点上的 iptables 规则。没有单点瓶颈。</li>
+<li><b>conntrack 管回程</b>——Linux 内核自动记录 NAT 映射，回包时自动做 reverse DNAT，Pod B 看到的 src 是 Pod A 的真实 IP。</li>
+<li><b>CNI 决定跨节点方式</b>——K8S 只定义"任何 Pod 能直接通信"的要求，具体实现靠 CNI 插件（Flannel VXLAN / Calico BGP / Cilium eBPF / 云 VPC-CNI）。</li>
+</ul>
+</div>
+
+<div class="callout warn">
+<b>性能参考</b>：iptables DNAT + conntrack 纯内核操作，延迟 &lt; 0.1ms。跨节点物理网络通常 0.1-0.5ms（同机房）。VXLAN 封装增加约 50 字节开销。对推理服务来说，这些网络延迟（~1ms 总计）相比模型推理耗时（100ms-60s）完全可忽略。<b>瓶颈永远在 GPU 计算，不在网络</b>。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="inference"><span class="step">§5</span>Service 与推理服务的关系</h2>
+
+<div class="card">
+<h3>推理服务通常用 ClusterIP + Ingress 暴露</h3>
+<p>生产环境不会给每个模型一个 LoadBalancer（贵且管理复杂）。标准做法：</p>
+<ul class="tight">
+  <li>每个模型一个 <b>ClusterIP Service</b>（集群内入口）</li>
+  <li>一个 <b>Ingress</b> 对象统一管外部入口，按 path/host 路由到不同模型 Service</li>
+  <li>Ingress Controller（Nginx/Envoy）本身通过一个 LoadBalancer Service 暴露</li>
+</ul>
+
+<h3>多模型路由架构图</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 920 290" width="920">
+  <!-- 外部用户 -->
+  <rect x="20" y="110" width="110" height="50" rx="8" fill="#fbbf24" opacity=".2" stroke="#fbbf24"/>
+  <text x="75" y="132" text-anchor="middle" fill="#fbbf24" font-size="10" font-weight="600">外部客户端</text>
+  <text x="75" y="148" text-anchor="middle" fill="#8b93a7" font-size="8.5">HTTPS 请求</text>
+
+  <path d="M130 135 L170 135" stroke="#fbbf24" stroke-width="1.5"/>
+
+  <!-- CLB -->
+  <rect x="175" y="105" width="100" height="60" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="225" y="128" text-anchor="middle" fill="#a78bfa" font-size="10" font-weight="600">Cloud LB</text>
+  <text x="225" y="143" text-anchor="middle" fill="#8b93a7" font-size="8.5">TLS 卸载</text>
+  <text x="225" y="156" text-anchor="middle" fill="#8b93a7" font-size="8.5">公网 IP</text>
+
+  <path d="M275 135 L320 135" stroke="#8b93a7" stroke-width="1.5"/>
+
+  <!-- Ingress Controller -->
+  <rect x="325" y="85" width="170" height="100" rx="10" fill="#1f2937" stroke="#6ee7b7" stroke-width="2"/>
+  <text x="410" y="108" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="700">Ingress Controller</text>
+  <text x="410" y="126" text-anchor="middle" fill="#8b93a7" font-size="9">Nginx / Envoy</text>
+  <text x="410" y="144" text-anchor="middle" fill="#8b93a7" font-size="8.5">/v1/qwen3 → svc A</text>
+  <text x="410" y="158" text-anchor="middle" fill="#8b93a7" font-size="8.5">/v1/deepseek → svc B</text>
+  <text x="410" y="172" text-anchor="middle" fill="#8b93a7" font-size="8.5">/v1/embed → svc C</text>
+
+  <!-- 路由线 -->
+  <path d="M495 105 L560 65" stroke="#6ee7b7" stroke-width="1.2"/>
+  <path d="M495 135 L560 135" stroke="#7dd3fc" stroke-width="1.2"/>
+  <path d="M495 165 L560 205" stroke="#fb7185" stroke-width="1.2"/>
+
+  <!-- Service A -->
+  <rect x="565" y="40" width="155" height="45" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="642" y="58" text-anchor="middle" fill="#6ee7b7" font-size="9.5" font-weight="600">qwen3-72b-svc</text>
+  <text x="642" y="74" text-anchor="middle" fill="#8b93a7" font-size="8.5">ClusterIP :80 → :30000</text>
+
+  <!-- Service B -->
+  <rect x="565" y="112" width="155" height="45" rx="8" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="642" y="130" text-anchor="middle" fill="#7dd3fc" font-size="9.5" font-weight="600">deepseek-r1-svc</text>
+  <text x="642" y="146" text-anchor="middle" fill="#8b93a7" font-size="8.5">ClusterIP :80 → :30000</text>
+
+  <!-- Service C -->
+  <rect x="565" y="185" width="155" height="45" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="642" y="203" text-anchor="middle" fill="#fb7185" font-size="9.5" font-weight="600">bge-m3-embed-svc</text>
+  <text x="642" y="219" text-anchor="middle" fill="#8b93a7" font-size="8.5">ClusterIP :80 → :8080</text>
+
+  <!-- Pods -->
+  <path d="M720 62 L760 62" stroke="#6ee7b7" stroke-width="1"/>
+  <rect x="765" y="42" width="90" height="40" rx="6" fill="#6ee7b7" opacity=".1" stroke="#6ee7b7"/>
+  <text x="810" y="58" text-anchor="middle" fill="#6ee7b7" font-size="8.5">Pod ×4</text>
+  <text x="810" y="72" text-anchor="middle" fill="#8b93a7" font-size="7.5">8×A100 each</text>
+
+  <path d="M720 135 L760 135" stroke="#7dd3fc" stroke-width="1"/>
+  <rect x="765" y="115" width="90" height="40" rx="6" fill="#7dd3fc" opacity=".1" stroke="#7dd3fc"/>
+  <text x="810" y="131" text-anchor="middle" fill="#7dd3fc" font-size="8.5">Pod ×2</text>
+  <text x="810" y="145" text-anchor="middle" fill="#8b93a7" font-size="7.5">8×H100 each</text>
+
+  <path d="M720 207 L760 207" stroke="#fb7185" stroke-width="1"/>
+  <rect x="765" y="187" width="90" height="40" rx="6" fill="#fb7185" opacity=".1" stroke="#fb7185"/>
+  <text x="810" y="203" text-anchor="middle" fill="#fb7185" font-size="8.5">Pod ×8</text>
+  <text x="810" y="217" text-anchor="middle" fill="#8b93a7" font-size="7.5">1×T4 each</text>
+
+  <!-- 说明 -->
+  <text x="20" y="260" fill="#8b93a7" font-size="10.5">优势：单一域名入口 · TLS 证书集中管理 · path 级别超时/限流 · 无需为每个模型申请独立 LB</text>
+  <text x="20" y="278" fill="#fbbf24" font-size="10.5">关键：Ingress Controller 本身是高可用 Deployment（多副本），通过 LoadBalancer Service 暴露给 Cloud LB</text>
+</svg>
+</div>
+
+<h3>Ingress 配置示例（多模型路由）</h3>
+<pre><span style="color:#6ee7b7">apiVersion</span>: networking.k8s.io/v1
+<span style="color:#6ee7b7">kind</span>: Ingress
+<span style="color:#6ee7b7">metadata</span>:
+  name: inference-gateway
+  namespace: models
+  annotations:
+    <span style="color:#8b93a7"># 推理服务必须加大超时——LLM 生成可能持续数分钟</span>
+    nginx.ingress.kubernetes.io/<span style="color:#fbbf24">proxy-read-timeout</span>: "300"
+    <span style="color:#8b93a7"># 多模态请求可能包含大图片</span>
+    nginx.ingress.kubernetes.io/<span style="color:#fbbf24">proxy-body-size</span>: "100m"
+    <span style="color:#8b93a7"># streaming（SSE）必须禁用缓冲，否则 token 不会实时返回</span>
+    nginx.ingress.kubernetes.io/<span style="color:#fbbf24">proxy-buffering</span>: "off"
+<span style="color:#6ee7b7">spec</span>:
+  ingressClassName: nginx
+  tls:
+  - hosts:
+    - inference.mycompany.com
+    secretName: inference-tls
+  rules:
+  - host: inference.mycompany.com
+    http:
+      paths:
+      - path: /v1/qwen3                  <span style="color:#8b93a7"># Qwen3-72B 对话/补全</span>
+        pathType: Prefix
+        backend:
+          service:
+            name: qwen3-72b-svc
+            port:
+              number: 80
+      - path: /v1/deepseek               <span style="color:#8b93a7"># DeepSeek-R1 推理</span>
+        pathType: Prefix
+        backend:
+          service:
+            name: deepseek-r1-svc
+            port:
+              number: 80
+      - path: /v1/embeddings             <span style="color:#8b93a7"># BGE-M3 向量化</span>
+        pathType: Prefix
+        backend:
+          service:
+            name: bge-m3-embed-svc
+            port:
+              number: 80
+</pre>
+
+<div class="callout bad">
+<b>推理服务 Ingress 的三个必配项</b>：
+<ul class="tight" style="margin-top:6px">
+<li><code>proxy-read-timeout ≥ 300</code>：默认 60s 远远不够，长 prompt 首 token 延迟就可能 30s+</li>
+<li><code>proxy-body-size ≥ 50m</code>：多模态请求包含图片/音频，默认 1m 会直接 413</li>
+<li><code>proxy-buffering: "off"</code>：SSE streaming 场景必须关闭，否则客户端看不到实时 token 流</li>
+</ul>
+不配这三项 = 线上 504/413/streaming 卡死。
+</div>
+
+<h3>进阶：多模型智能路由</h3>
+<table>
+<thead><tr><th>方案</th><th>实现方式</th><th>适用场景</th></tr></thead>
+<tbody>
+<tr><td><b>按 path 路由</b></td><td>Ingress rules.paths</td><td>固定模型列表，最简单</td></tr>
+<tr><td><b>按 header 路由</b></td><td>Nginx canary / Envoy header match</td><td>客户端指定 X-Model-Name header</td></tr>
+<tr><td><b>按权重分流</b></td><td>Nginx canary-weight annotation</td><td>新模型灰度发布，10% 流量到新版</td></tr>
+<tr><td><b>自研 router</b></td><td>独立 Deployment + Service</td><td>需要感知模型负载、KV cache 命中率等</td></tr>
+<tr><td><b>Gateway API</b></td><td>K8S 新一代路由 API（HTTPRoute）</td><td>需要更复杂的匹配规则和流量拆分</td></tr>
+</tbody>
+</table>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+生产推理平台的完整网络链路：<br>
+<code>客户端 → CLB(SSL卸载) → Nginx Ingress(路由) → ClusterIP Service → SGLang Pod</code><br><br>
+关键配置清单：<br>
+<ul class="tight" style="margin-top:4px">
+<li>Ingress: timeout ≥ 300s, body-size ≥ 50m, buffering off</li>
+<li>Service: sessionAffinity 默认关闭（推理通常无状态）；如需 prefix caching 亲和性可开启</li>
+<li>Pod: readinessProbe 确认模型加载完毕才接流量</li>
+<li>多机推理: worker 间用 Headless Service 做 NCCL 通信，对外暴露只走 master 的 Service</li>
+</ul>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§6</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① Pod IP 不稳定</div><div>Service 提供稳定 VIP + DNS + 自动负载均衡，Pod 生死对客户端透明</div>
+  <div class="k">② 四种 Service</div><div>ClusterIP（集群内）→ NodePort（节点端口）→ LoadBalancer（云 LB）→ ExternalName（CNAME）</div>
+  <div class="k">③ Headless</div><div>ClusterIP: None · DNS 直接返回 Pod IP · StatefulSet + 多机推理必备</div>
+  <div class="k">④ kube-proxy 模式</div><div>iptables（默认/O(N)/概率分流）vs IPVS（O(1)/多算法/大规模）· userspace 已废弃</div>
+  <div class="k">⑤ iptables 链路</div><div>PREROUTING → KUBE-SERVICES → KUBE-SVC-xxx（分流）→ KUBE-SEP-xxx（DNAT）</div>
+  <div class="k">⑥ DNS 解析</div><div>&lt;svc&gt;.&lt;ns&gt;.svc.cluster.local · ndots:5 导致外部域名多次无效查询 · 降为 2 可优化</div>
+  <div class="k">⑦ 包的完整路径</div><div>DNS → veth → iptables DNAT → 路由 → CNI 跨节点 → 目标 Pod · conntrack 管回程</div>
+  <div class="k">⑧ 推理服务暴露</div><div>ClusterIP + Ingress 按 path 路由多模型 · 必须配 timeout/body-size/buffering-off</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——网络解决了"服务怎么找到 Pod"，但推理模型动辄几十 GB，Pod 重建后模型权重存哪里？下一章看 K8S 存储体系：PV / PVC / StorageClass 三层抽象、CSI 驱动、以及推理场景的模型缓存方案。→ <a href="05-storage.html" style="color:var(--brand)">05-storage.html</a>
+</div>
+</div>
+
+<div class="foot">
+第一层 · 04 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

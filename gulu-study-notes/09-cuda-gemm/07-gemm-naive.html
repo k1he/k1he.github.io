@@ -1,0 +1,574 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C6 · GEMM Naive · 每个线程算一个输出元素</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.type{color:#fb7185}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+svg text{font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.svg-wrap{margin:20px 0;text-align:center}
+.svg-wrap svg{max-width:100%}
+.formula{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:14px 20px;margin:12px 0;font-family:"SF Mono","JetBrains Mono",monospace;font-size:13px;line-height:1.8}
+.highlight{color:var(--brand);font-weight:600}
+.highlight2{color:var(--brand2);font-weight:600}
+.highlight-warn{color:var(--warn);font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>C6 · GEMM Naive · 每个线程算一个输出元素 <span class="tag">CUDA GEMM 系列 · 7/15</span></h1>
+<p class="sub">最简单的 CUDA GEMM：一个 thread 负责 C[row][col] 一个元素，内层循环遍历 K。能跑、能验证、但性能只有 cuBLAS 的 1-5%。</p>
+
+<!-- §1 思路 -->
+<h2><span class="step">§1</span>思路</h2>
+
+<p>最直觉的方式：<strong>thread (row, col) 负责计算 C[row][col] = &Sigma;<sub>k</sub> A[row][k] &times; B[k][col]</strong></p>
+
+<div class="card">
+<p style="margin:0 0 10px;color:var(--brand);font-weight:600">每个 thread 做三件事：</p>
+<ol style="margin:0;padding-left:20px;line-height:2">
+<li>从 A 中读取一整行的 K 个元素：<code>A[row][0], A[row][1], ..., A[row][K-1]</code></li>
+<li>从 B 中读取一整列的 K 个元素：<code>B[0][col], B[1][col], ..., B[K-1][col]</code></li>
+<li>逐个相乘、累加得到 <code>C[row][col]</code></li>
+</ol>
+</div>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 700 280" width="700" height="280" xmlns="http://www.w3.org/2000/svg">
+  <!-- Matrix A -->
+  <rect x="30" y="40" width="160" height="200" rx="6" fill="#1a2332" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="110" y="30" text-anchor="middle" fill="#6ee7b7" font-size="13" font-weight="600">A [M, K]</text>
+  <!-- highlight row -->
+  <rect x="35" y="110" width="150" height="16" rx="3" fill="rgba(110,231,183,0.25)" stroke="#6ee7b7" stroke-width="1"/>
+  <text x="110" y="122" text-anchor="middle" fill="#6ee7b7" font-size="10">row &rarr; K 个元素</text>
+
+  <!-- multiply sign -->
+  <text x="220" y="145" text-anchor="middle" fill="#e6e8ee" font-size="22">&times;</text>
+
+  <!-- Matrix B -->
+  <rect x="250" y="40" width="200" height="200" rx="6" fill="#1a2332" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="350" y="30" text-anchor="middle" fill="#7dd3fc" font-size="13" font-weight="600">B [K, N]</text>
+  <!-- highlight col -->
+  <rect x="330" y="45" width="16" height="190" rx="3" fill="rgba(125,211,252,0.25)" stroke="#7dd3fc" stroke-width="1"/>
+  <text x="338" y="255" text-anchor="middle" fill="#7dd3fc" font-size="10">col &darr; K 个元素</text>
+
+  <!-- equals sign -->
+  <text x="480" y="145" text-anchor="middle" fill="#e6e8ee" font-size="22">=</text>
+
+  <!-- Matrix C -->
+  <rect x="510" y="40" width="160" height="200" rx="6" fill="#1a2332" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="590" y="30" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="600">C [M, N]</text>
+  <!-- highlight single element -->
+  <rect x="575" y="110" width="16" height="16" rx="3" fill="#fbbf24"/>
+  <text x="583" y="122" text-anchor="middle" fill="#0b0d12" font-size="8" font-weight="700">c</text>
+  <text x="590" y="255" text-anchor="middle" fill="#fbbf24" font-size="10">C[row][col] = 1 个 thread</text>
+
+  <!-- Connecting arrows -->
+  <path d="M185,118 Q200,118 220,118" stroke="#6ee7b7" stroke-width="1" fill="none" stroke-dasharray="3"/>
+  <path d="M338,240 Q338,255 450,145 Q480,130 510,118" stroke="#7dd3fc" stroke-width="1" fill="none" stroke-dasharray="3"/>
+</svg>
+</div>
+
+<div class="callout info">
+<strong>一句话总结：</strong>每个 thread = 一个内积（dot product）。整个 grid 有 M&times;N 个 threads，恰好覆盖 C 的所有元素。
+</div>
+
+<!-- §2 完整 Kernel -->
+<h2><span class="step">§2</span>完整 Kernel</h2>
+
+<pre>
+<span class="kw">__global__</span> <span class="type">void</span> <span class="fn">gemm_naive</span>(
+    <span class="kw">const</span> <span class="type">float</span>* A, <span class="kw">const</span> <span class="type">float</span>* B, <span class="type">float</span>* C,
+    <span class="type">int</span> M, <span class="type">int</span> N, <span class="type">int</span> K
+) {
+    <span class="type">int</span> row = blockIdx.y * blockDim.y + threadIdx.y;
+    <span class="type">int</span> col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    <span class="kw">if</span> (row &lt; M &amp;&amp; col &lt; N) {
+        <span class="type">float</span> sum = <span class="num">0.0f</span>;
+        <span class="kw">for</span> (<span class="type">int</span> k = <span class="num">0</span>; k &lt; K; k++) {
+            sum += A[row * K + k] * B[k * N + col];
+        }
+        C[row * N + col] = sum;
+    }
+}
+
+<span class="com">// Launch:</span>
+<span class="type">dim3</span> block(<span class="num">16</span>, <span class="num">16</span>);  <span class="com">// 256 threads per block</span>
+<span class="type">dim3</span> grid((N + <span class="num">15</span>) / <span class="num">16</span>, (M + <span class="num">15</span>) / <span class="num">16</span>);
+<span class="fn">gemm_naive</span>&lt;&lt;&lt;grid, block&gt;&gt;&gt;(d_A, d_B, d_C, M, N, K);
+</pre>
+
+<div class="callout">
+<strong>核心模式：</strong>2D block + 2D grid 覆盖整个输出矩阵。每个 thread 用一个 <code>for</code> 循环完成内积。
+</div>
+
+<!-- §3 逐行解读 -->
+<h2><span class="step">§3</span>逐行解读</h2>
+
+<div class="card">
+<table>
+<tr><th>代码行</th><th>含义</th><th>解读</th></tr>
+<tr>
+  <td><code>row = blockIdx.y * blockDim.y + threadIdx.y</code></td>
+  <td>全局行索引</td>
+  <td>2D indexing：<strong>y 轴 = 行</strong>。blockIdx.y 确定 block 在行方向的位置，threadIdx.y 确定 block 内的行偏移</td>
+</tr>
+<tr>
+  <td><code>col = blockIdx.x * blockDim.x + threadIdx.x</code></td>
+  <td>全局列索引</td>
+  <td>2D indexing：<strong>x 轴 = 列</strong>。惯例：x=列、y=行（与数学矩阵下标对齐）</td>
+</tr>
+<tr>
+  <td><code>if (row &lt; M && col &lt; N)</code></td>
+  <td>边界检查</td>
+  <td>grid 可能比矩阵大（向上取整），越界的 thread 什么都不做</td>
+</tr>
+<tr>
+  <td><code>A[row * K + k]</code></td>
+  <td>A[row][k]</td>
+  <td>Row-major 1D 索引：行 &times; 列宽 + 列偏移</td>
+</tr>
+<tr>
+  <td><code>B[k * N + col]</code></td>
+  <td>B[k][col]</td>
+  <td>同上：第 k 行、第 col 列</td>
+</tr>
+<tr>
+  <td><code>float sum = 0.0f</code></td>
+  <td>累加器</td>
+  <td>存在 <strong>register</strong> 中（最快的存储层级），内循环 K 次只写这一个变量</td>
+</tr>
+<tr>
+  <td><code>C[row * N + col] = sum</code></td>
+  <td>写回结果</td>
+  <td>循环结束，一次 global store</td>
+</tr>
+</table>
+</div>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 700 200" width="700" height="200" xmlns="http://www.w3.org/2000/svg">
+  <!-- 2D Grid illustration -->
+  <text x="350" y="20" text-anchor="middle" fill="#e6e8ee" font-size="13" font-weight="600">Grid &amp; Block 的 2D 映射</text>
+
+  <!-- Grid box -->
+  <rect x="40" y="35" width="280" height="150" rx="8" fill="#11141b" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="180" y="55" text-anchor="middle" fill="#fbbf24" font-size="11">Grid: ceil(N/16) &times; ceil(M/16) blocks</text>
+
+  <!-- Blocks inside -->
+  <rect x="55" y="65" width="60" height="50" rx="4" fill="#1a2332" stroke="#7dd3fc" stroke-width="1"/>
+  <text x="85" y="85" text-anchor="middle" fill="#7dd3fc" font-size="9">(0,0)</text>
+  <text x="85" y="100" text-anchor="middle" fill="#8b93a7" font-size="8">16&times;16</text>
+
+  <rect x="120" y="65" width="60" height="50" rx="4" fill="#1a2332" stroke="#7dd3fc" stroke-width="1"/>
+  <text x="150" y="85" text-anchor="middle" fill="#7dd3fc" font-size="9">(1,0)</text>
+
+  <rect x="185" y="65" width="60" height="50" rx="4" fill="#1a2332" stroke="#7dd3fc" stroke-width="1"/>
+  <text x="215" y="85" text-anchor="middle" fill="#8b93a7" font-size="9">...</text>
+
+  <rect x="55" y="120" width="60" height="50" rx="4" fill="#1a2332" stroke="#7dd3fc" stroke-width="1"/>
+  <text x="85" y="145" text-anchor="middle" fill="#7dd3fc" font-size="9">(0,1)</text>
+
+  <rect x="120" y="120" width="60" height="50" rx="4" fill="#1a2332" stroke="#7dd3fc" stroke-width="1"/>
+  <text x="150" y="145" text-anchor="middle" fill="#7dd3fc" font-size="9">(1,1)</text>
+
+  <rect x="185" y="120" width="60" height="50" rx="4" fill="#1a2332" stroke="#7dd3fc" stroke-width="1"/>
+  <text x="215" y="145" text-anchor="middle" fill="#8b93a7" font-size="9">...</text>
+
+  <!-- Labels -->
+  <text x="50" y="195" fill="#8b93a7" font-size="10">&uarr; y (row) &rarr; x (col)</text>
+
+  <!-- Right side: mapping -->
+  <rect x="380" y="35" width="290" height="150" rx="8" fill="#11141b" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="525" y="55" text-anchor="middle" fill="#6ee7b7" font-size="11">每个 Block 内: 16&times;16 = 256 threads</text>
+  <text x="525" y="80" text-anchor="middle" fill="#8b93a7" font-size="11">threadIdx.x &isin; [0,15] &rarr; col 偏移</text>
+  <text x="525" y="100" text-anchor="middle" fill="#8b93a7" font-size="11">threadIdx.y &isin; [0,15] &rarr; row 偏移</text>
+  <text x="525" y="130" text-anchor="middle" fill="#e6e8ee" font-size="11">global_row = blockIdx.y &times; 16 + threadIdx.y</text>
+  <text x="525" y="150" text-anchor="middle" fill="#e6e8ee" font-size="11">global_col = blockIdx.x &times; 16 + threadIdx.x</text>
+  <text x="525" y="175" text-anchor="middle" fill="#fbbf24" font-size="11">1 thread &rarr; 1 output element C[row][col]</text>
+</svg>
+</div>
+
+<!-- §4 为什么这么慢 -->
+<h2><span class="step">§4</span>为什么这么慢？— 访问模式分析</h2>
+
+<h3>问题 1：A 的访问模式</h3>
+
+<pre>
+<span class="com">// Thread (row, col) 在 K-loop 中读取:</span>
+A[row*K + <span class="num">0</span>], A[row*K + <span class="num">1</span>], ..., A[row*K + K-<span class="num">1</span>]
+
+<span class="com">// 同一 warp 中 32 个 threads (same row, col=0..31):</span>
+<span class="com">//   在同一个 k 步，全部读 A[row*K + k] — 同一个地址！</span>
+<span class="com">//   → L1 cache hit after first thread → broadcast OK ✓</span>
+</pre>
+
+<div class="callout info">
+<strong>A 的读取其实还行：</strong>同行的 32 个 threads 读同一地址，L1 cache 广播一次即可。
+</div>
+
+<h3>问题 2：B 的访问模式</h3>
+
+<pre>
+<span class="com">// Thread (row, col=0..31) 在同一个 k 步读取:</span>
+B[k*N + <span class="num">0</span>], B[k*N + <span class="num">1</span>], ..., B[k*N + <span class="num">31</span>]
+
+<span class="com">// → 连续地址，128 bytes 对齐 → coalesced ✓</span>
+</pre>
+
+<div class="callout info">
+<strong>等等，B 也是 coalesced？</strong>对！同一 warp 内读取的 B 地址是连续的。<br>
+那为什么还是这么慢？
+</div>
+
+<h3>问题 3：真正的问题 — 重复读 Global Memory</h3>
+
+<div class="card" style="border-color:var(--bad)">
+<div class="formula">
+<span class="highlight-warn">总内存访问量（从 HBM 读取）:</span><br><br>
+每个 C[row][col] 的计算需要读 K 个 A 元素 + K 个 B 元素<br>
+总共: <span style="color:var(--bad);font-weight:700">M &times; N &times; 2K</span> 次读取<br><br>
+<span class="highlight2">理论最小值（只读一次 A、一次 B）:</span><br>
+M &times; K + K &times; N<br><br>
+<span style="color:var(--bad);font-weight:700">浪费倍数:</span><br>
+A 的每一行被 N 个 threads 各自独立读 → 重复 <span style="color:var(--bad)">N 次</span><br>
+B 的每一列被 M 个 threads 各自独立读 → 重复 <span style="color:var(--bad)">M 次</span>
+</div>
+</div>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 700 300" width="700" height="300" xmlns="http://www.w3.org/2000/svg">
+  <!-- A matrix -->
+  <rect x="30" y="40" width="120" height="220" rx="6" fill="#1a2332" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="90" y="30" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">A [M, K]</text>
+  <!-- highlight one row -->
+  <rect x="35" y="100" width="110" height="14" rx="2" fill="rgba(110,231,183,0.3)" stroke="#6ee7b7" stroke-width="1"/>
+
+  <!-- Arrows from one row to multiple threads -->
+  <line x1="145" y1="107" x2="200" y2="60" stroke="#6ee7b7" stroke-width="1" marker-end="url(#arr-g)"/>
+  <line x1="145" y1="107" x2="200" y2="90" stroke="#6ee7b7" stroke-width="1" marker-end="url(#arr-g)"/>
+  <line x1="145" y1="107" x2="200" y2="120" stroke="#6ee7b7" stroke-width="1" marker-end="url(#arr-g)"/>
+  <line x1="145" y1="107" x2="200" y2="150" stroke="#6ee7b7" stroke-width="1" marker-end="url(#arr-g)"/>
+  <line x1="145" y1="107" x2="200" y2="180" stroke="#6ee7b7" stroke-width="1" marker-end="url(#arr-g)"/>
+
+  <!-- Thread labels -->
+  <text x="215" y="64" fill="#8b93a7" font-size="10">T(row, 0)</text>
+  <text x="215" y="94" fill="#8b93a7" font-size="10">T(row, 1)</text>
+  <text x="215" y="124" fill="#8b93a7" font-size="10">T(row, 2)</text>
+  <text x="215" y="154" fill="#8b93a7" font-size="10">...</text>
+  <text x="215" y="184" fill="#8b93a7" font-size="10">T(row, N-1)</text>
+
+  <!-- Annotation -->
+  <text x="160" y="280" text-anchor="middle" fill="#f87171" font-size="11" font-weight="600">A 的同一行被 N 个 thread</text>
+  <text x="160" y="295" text-anchor="middle" fill="#f87171" font-size="11" font-weight="600">各自独立读取！</text>
+
+  <!-- Separator -->
+  <line x1="350" y1="20" x2="350" y2="290" stroke="#262b38" stroke-width="1" stroke-dasharray="4"/>
+
+  <!-- B matrix -->
+  <rect x="400" y="40" width="200" height="160" rx="6" fill="#1a2332" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="500" y="30" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="600">B [K, N]</text>
+  <!-- highlight one col -->
+  <rect x="470" y="45" width="14" height="150" rx="2" fill="rgba(125,211,252,0.3)" stroke="#7dd3fc" stroke-width="1"/>
+
+  <!-- Arrows from one col to multiple threads -->
+  <line x1="477" y1="195" x2="420" y2="230" stroke="#7dd3fc" stroke-width="1" marker-end="url(#arr-b)"/>
+  <line x1="477" y1="195" x2="460" y2="230" stroke="#7dd3fc" stroke-width="1" marker-end="url(#arr-b)"/>
+  <line x1="477" y1="195" x2="500" y2="230" stroke="#7dd3fc" stroke-width="1" marker-end="url(#arr-b)"/>
+  <line x1="477" y1="195" x2="540" y2="230" stroke="#7dd3fc" stroke-width="1" marker-end="url(#arr-b)"/>
+  <line x1="477" y1="195" x2="580" y2="230" stroke="#7dd3fc" stroke-width="1" marker-end="url(#arr-b)"/>
+
+  <!-- Thread labels -->
+  <text x="420" y="248" fill="#8b93a7" font-size="10">T(0,col)</text>
+  <text x="460" y="248" fill="#8b93a7" font-size="10">T(1,col)</text>
+  <text x="500" y="248" fill="#8b93a7" font-size="10">...</text>
+  <text x="550" y="248" fill="#8b93a7" font-size="10">T(M-1,col)</text>
+
+  <text x="500" y="280" text-anchor="middle" fill="#f87171" font-size="11" font-weight="600">B 的同一列被 M 个 thread</text>
+  <text x="500" y="295" text-anchor="middle" fill="#f87171" font-size="11" font-weight="600">各自独立读取！</text>
+
+  <!-- Arrow markers -->
+  <defs>
+    <marker id="arr-g" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6" fill="none" stroke="#6ee7b7" stroke-width="1"/>
+    </marker>
+    <marker id="arr-b" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6" fill="none" stroke="#7dd3fc" stroke-width="1"/>
+    </marker>
+  </defs>
+</svg>
+</div>
+
+<div class="callout bad">
+<strong>核心问题不是 coalescing，而是重复读取：</strong>每个 A/B 元素被从 global memory 反复读取 N/M 次。即使 L2 cache 能缓解一部分，对于大矩阵，cache 装不下，绝大部分还是要回 HBM。
+</div>
+
+<!-- §5 性能分析 -->
+<h2><span class="step">§5</span>性能分析</h2>
+
+<div class="card">
+<table>
+<tr><th>矩阵大小</th><th>Naive GEMM</th><th>cuBLAS</th><th>效率</th></tr>
+<tr><td>M=N=K=1024</td><td>~2 TFLOPS</td><td>~150 TFLOPS</td><td style="color:var(--bad);font-weight:600">1.3%</td></tr>
+<tr><td>M=N=K=2048</td><td>~3 TFLOPS</td><td>~170 TFLOPS</td><td style="color:var(--bad);font-weight:600">1.8%</td></tr>
+<tr><td>M=N=K=4096</td><td>~4 TFLOPS</td><td>~180 TFLOPS</td><td style="color:var(--bad);font-weight:600">2.2%</td></tr>
+</table>
+</div>
+
+<h3>为什么这么惨？</h3>
+
+<div class="formula">
+<span class="highlight-warn">有效算术强度 (AI_effective):</span><br><br>
+每个 thread: 2K FLOPs / (K &times; 4 + K &times; 4) bytes = 2K / 8K = <span style="color:var(--bad)">0.25 FLOP/Byte</span><br><br>
+<span class="highlight2">GPU 的 roofline 平衡点（例: A100）:</span><br>
+312 TFLOPS / 2 TB/s = <span style="color:var(--brand)">156 FLOP/Byte</span><br><br>
+<span class="highlight-warn">差距:</span> 0.25 vs 156 → <span style="color:var(--bad)">差了 600 多倍！</span><br>
+→ 完全被 <strong>HBM 带宽</strong>卡死（memory-bound 到极致）
+</div>
+
+<div class="callout warn">
+<strong>即使 L2 cache 能帮一些忙（同一行的 threads 可能 cache hit），</strong>对于大矩阵，工作集远超 L2 容量（A100 L2 = 40 MB，但 4096&times;4096 矩阵 = 64 MB），大量 miss 不可避免。
+</div>
+
+<!-- §6 引出优化方向 -->
+<h2><span class="step">§6</span>引出优化方向</h2>
+
+<div class="card" style="border-color:var(--purple)">
+<p style="margin:0 0 12px;color:var(--purple);font-weight:600;font-size:15px">如果同一行的 threads 能共享 A 的同一行数据...</p>
+<p style="margin:0 0 8px">而不是各自独立去 global memory 读...</p>
+<p style="margin:0 0 8px">那就需要一个 <strong>block 内所有 threads 都能访问的共享存储</strong>...</p>
+<p style="margin:0;color:var(--brand);font-size:16px;font-weight:700">&rarr; Shared Memory!</p>
+</div>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 700 160" width="700" height="160" xmlns="http://www.w3.org/2000/svg">
+  <!-- Naive box -->
+  <rect x="30" y="30" width="280" height="100" rx="10" fill="#1a2332" stroke="#f87171" stroke-width="1.5"/>
+  <text x="170" y="55" text-anchor="middle" fill="#f87171" font-size="12" font-weight="600">Naive (本节)</text>
+  <text x="170" y="78" text-anchor="middle" fill="#8b93a7" font-size="11">每个 thread 独立读 global</text>
+  <text x="170" y="98" text-anchor="middle" fill="#8b93a7" font-size="11">总读取: O(M &times; N &times; K)</text>
+  <text x="170" y="118" text-anchor="middle" fill="#f87171" font-size="11">1-5% cuBLAS</text>
+
+  <!-- Arrow -->
+  <text x="350" y="82" text-anchor="middle" fill="#e6e8ee" font-size="20">&rarr;</text>
+
+  <!-- Tiled box -->
+  <rect x="390" y="30" width="280" height="100" rx="10" fill="#1a2332" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="530" y="55" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">Tiled (下一节)</text>
+  <text x="530" y="78" text-anchor="middle" fill="#8b93a7" font-size="11">block 协作加载 tile &rarr; shared memory</text>
+  <text x="530" y="98" text-anchor="middle" fill="#8b93a7" font-size="11">总读取: O((MK + KN) &times; 小系数)</text>
+  <text x="530" y="118" text-anchor="middle" fill="#6ee7b7" font-size="11">10-30% cuBLAS</text>
+</svg>
+</div>
+
+<!-- §7 完整可运行代码 -->
+<h2><span class="step">§7</span>完整可运行代码</h2>
+
+<pre>
+<span class="com">// gemm_naive.cu — 完整可运行代码</span>
+<span class="com">// 编译: nvcc -O2 -o gemm_naive gemm_naive.cu</span>
+<span class="com">// 运行: ./gemm_naive</span>
+
+<span class="kw">#include</span> &lt;stdio.h&gt;
+<span class="kw">#include</span> &lt;stdlib.h&gt;
+<span class="kw">#include</span> &lt;math.h&gt;
+<span class="kw">#include</span> &lt;cuda_runtime.h&gt;
+
+<span class="com">// ============================================================</span>
+<span class="com">// Naive GEMM Kernel</span>
+<span class="com">// ============================================================</span>
+<span class="kw">__global__</span> <span class="type">void</span> <span class="fn">gemm_naive</span>(
+    <span class="kw">const</span> <span class="type">float</span>* A, <span class="kw">const</span> <span class="type">float</span>* B, <span class="type">float</span>* C,
+    <span class="type">int</span> M, <span class="type">int</span> N, <span class="type">int</span> K
+) {
+    <span class="type">int</span> row = blockIdx.y * blockDim.y + threadIdx.y;
+    <span class="type">int</span> col = blockIdx.x * blockDim.x + threadIdx.x;
+
+    <span class="kw">if</span> (row &lt; M &amp;&amp; col &lt; N) {
+        <span class="type">float</span> sum = <span class="num">0.0f</span>;
+        <span class="kw">for</span> (<span class="type">int</span> k = <span class="num">0</span>; k &lt; K; k++) {
+            sum += A[row * K + k] * B[k * N + col];
+        }
+        C[row * N + col] = sum;
+    }
+}
+
+<span class="com">// ============================================================</span>
+<span class="com">// CPU 参考实现（用于验证正确性）</span>
+<span class="com">// ============================================================</span>
+<span class="type">void</span> <span class="fn">gemm_cpu</span>(
+    <span class="kw">const</span> <span class="type">float</span>* A, <span class="kw">const</span> <span class="type">float</span>* B, <span class="type">float</span>* C,
+    <span class="type">int</span> M, <span class="type">int</span> N, <span class="type">int</span> K
+) {
+    <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; M; i++) {
+        <span class="kw">for</span> (<span class="type">int</span> j = <span class="num">0</span>; j &lt; N; j++) {
+            <span class="type">float</span> sum = <span class="num">0.0f</span>;
+            <span class="kw">for</span> (<span class="type">int</span> k = <span class="num">0</span>; k &lt; K; k++) {
+                sum += A[i * K + k] * B[k * N + j];
+            }
+            C[i * N + j] = sum;
+        }
+    }
+}
+
+<span class="com">// ============================================================</span>
+<span class="com">// 工具函数</span>
+<span class="com">// ============================================================</span>
+<span class="type">void</span> <span class="fn">init_matrix</span>(<span class="type">float</span>* mat, <span class="type">int</span> size) {
+    <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; size; i++) {
+        mat[i] = (<span class="type">float</span>)(rand() % <span class="num">100</span>) / <span class="num">100.0f</span>;
+    }
+}
+
+<span class="type">bool</span> <span class="fn">verify</span>(<span class="kw">const</span> <span class="type">float</span>* gpu, <span class="kw">const</span> <span class="type">float</span>* cpu, <span class="type">int</span> size) {
+    <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; size; i++) {
+        <span class="kw">if</span> (fabs(gpu[i] - cpu[i]) &gt; <span class="num">1e-3</span>) {
+            printf(<span class="str">"Mismatch at %d: GPU=%.6f, CPU=%.6f\n"</span>, i, gpu[i], cpu[i]);
+            <span class="kw">return</span> <span class="num">false</span>;
+        }
+    }
+    <span class="kw">return</span> <span class="num">true</span>;
+}
+
+<span class="com">// ============================================================</span>
+<span class="com">// main</span>
+<span class="com">// ============================================================</span>
+<span class="type">int</span> <span class="fn">main</span>() {
+    <span class="kw">const</span> <span class="type">int</span> M = <span class="num">1024</span>, N = <span class="num">1024</span>, K = <span class="num">1024</span>;
+    <span class="type">size_t</span> bytes_A = M * K * <span class="kw">sizeof</span>(<span class="type">float</span>);
+    <span class="type">size_t</span> bytes_B = K * N * <span class="kw">sizeof</span>(<span class="type">float</span>);
+    <span class="type">size_t</span> bytes_C = M * N * <span class="kw">sizeof</span>(<span class="type">float</span>);
+
+    <span class="com">// 分配 host 内存</span>
+    <span class="type">float</span>* h_A = (<span class="type">float</span>*)malloc(bytes_A);
+    <span class="type">float</span>* h_B = (<span class="type">float</span>*)malloc(bytes_B);
+    <span class="type">float</span>* h_C = (<span class="type">float</span>*)malloc(bytes_C);
+    <span class="type">float</span>* h_C_ref = (<span class="type">float</span>*)malloc(bytes_C);
+
+    <span class="com">// 初始化数据</span>
+    srand(<span class="num">42</span>);
+    init_matrix(h_A, M * K);
+    init_matrix(h_B, K * N);
+
+    <span class="com">// 分配 device 内存</span>
+    <span class="type">float</span> *d_A, *d_B, *d_C;
+    cudaMalloc(&amp;d_A, bytes_A);
+    cudaMalloc(&amp;d_B, bytes_B);
+    cudaMalloc(&amp;d_C, bytes_C);
+
+    <span class="com">// 拷贝到 GPU</span>
+    cudaMemcpy(d_A, h_A, bytes_A, cudaMemcpyHostToDevice);
+    cudaMemcpy(d_B, h_B, bytes_B, cudaMemcpyHostToDevice);
+
+    <span class="com">// Launch kernel</span>
+    <span class="type">dim3</span> block(<span class="num">16</span>, <span class="num">16</span>);
+    <span class="type">dim3</span> grid((N + <span class="num">15</span>) / <span class="num">16</span>, (M + <span class="num">15</span>) / <span class="num">16</span>);
+
+    <span class="com">// Warmup</span>
+    gemm_naive&lt;&lt;&lt;grid, block&gt;&gt;&gt;(d_A, d_B, d_C, M, N, K);
+    cudaDeviceSynchronize();
+
+    <span class="com">// 计时</span>
+    cudaEvent_t start, stop;
+    cudaEventCreate(&amp;start);
+    cudaEventCreate(&amp;stop);
+
+    <span class="kw">const</span> <span class="type">int</span> repeat = <span class="num">10</span>;
+    cudaEventRecord(start);
+    <span class="kw">for</span> (<span class="type">int</span> i = <span class="num">0</span>; i &lt; repeat; i++) {
+        gemm_naive&lt;&lt;&lt;grid, block&gt;&gt;&gt;(d_A, d_B, d_C, M, N, K);
+    }
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+
+    <span class="type">float</span> ms;
+    cudaEventElapsedTime(&amp;ms, start, stop);
+    ms /= repeat;
+
+    <span class="com">// 计算 TFLOPS</span>
+    <span class="type">double</span> flops = <span class="num">2.0</span> * M * N * K;
+    <span class="type">double</span> tflops = flops / (ms * <span class="num">1e9</span>);
+
+    printf(<span class="str">"============================================\n"</span>);
+    printf(<span class="str">"GEMM Naive Kernel\n"</span>);
+    printf(<span class="str">"============================================\n"</span>);
+    printf(<span class="str">"矩阵大小: M=%d, N=%d, K=%d\n"</span>, M, N, K);
+    printf(<span class="str">"Block 大小: 16x16 = 256 threads\n"</span>);
+    printf(<span class="str">"Grid 大小: %dx%d blocks\n"</span>, grid.x, grid.y);
+    printf(<span class="str">"Kernel 耗时: %.3f ms\n"</span>, ms);
+    printf(<span class="str">"性能: %.2f TFLOPS\n"</span>, tflops);
+    printf(<span class="str">"============================================\n"</span>);
+
+    <span class="com">// 验证正确性</span>
+    cudaMemcpy(h_C, d_C, bytes_C, cudaMemcpyDeviceToHost);
+    printf(<span class="str">"正在用 CPU 验证结果...\n"</span>);
+    gemm_cpu(h_A, h_B, h_C_ref, M, N, K);
+
+    <span class="kw">if</span> (verify(h_C, h_C_ref, M * N)) {
+        printf(<span class="str">"验证通过! GPU 结果与 CPU 参考一致\n"</span>);
+    } <span class="kw">else</span> {
+        printf(<span class="str">"验证失败!\n"</span>);
+    }
+
+    <span class="com">// 清理</span>
+    free(h_A); free(h_B); free(h_C); free(h_C_ref);
+    cudaFree(d_A); cudaFree(d_B); cudaFree(d_C);
+    cudaEventDestroy(start); cudaEventDestroy(stop);
+
+    <span class="kw">return</span> <span class="num">0</span>;
+}
+</pre>
+
+<div class="callout">
+<strong>编译运行：</strong><br>
+<code>nvcc -O2 -o gemm_naive gemm_naive.cu && ./gemm_naive</code><br>
+预期输出：Kernel time ~1ms，Performance ~2 TFLOPS（A100 上），验证通过。
+</div>
+
+<!-- §8 带走 -->
+<h2><span class="step">§8</span>带走</h2>
+
+<div class="card" style="border-color:var(--brand)">
+<ol style="margin:0;padding-left:20px;line-height:2.2">
+<li><strong>Naive GEMM：</strong>1 thread = 1 output element，内层 for 循环遍历 K 做内积</li>
+<li><strong>性能 ~1-5% of cuBLAS</strong> — 惨不忍睹，但代码正确、逻辑清晰</li>
+<li><strong>问题不是 coalescing</strong>（B 的访问其实是连续的），而是<span style="color:var(--bad);font-weight:600">重复读取</span> — 每个 A/B 元素被独立读了 N/M 次</li>
+<li><strong>解药：Shared Memory</strong> — 让 block 内的 threads 协作加载、共享数据（下一节）</li>
+</ol>
+</div>
+
+<p class="foot">C6 · GEMM Naive — CUDA GEMM 系列 7/15</p>
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

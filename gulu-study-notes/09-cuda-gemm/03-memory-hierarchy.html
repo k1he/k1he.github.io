@@ -1,0 +1,423 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>C2 · 内存层次 · Global / Shared / Register</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}.type{color:#fb7185}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+svg text{font-family:-apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.svg-wrap{margin:20px 0;text-align:center}
+.svg-wrap svg{max-width:100%}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>C2 · 内存层次 · Global / Shared / Register <span class="tag">CUDA GEMM 系列 · 3/15</span></h1>
+<p class="sub">GPU 的内存系统是性能的关键。Global memory 慢但大，Shared memory 快但小，Register 最快但最小。GEMM 的优化本质就是"把数据从慢的地方搬到快的地方"。</p>
+
+<!-- §1 -->
+<h2><span class="step">§1</span>内存层次金字塔</h2>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 700 420" width="700" height="420" xmlns="http://www.w3.org/2000/svg">
+  <!-- Pyramid layers -->
+  <!-- Register (top) -->
+  <polygon points="350,30 280,110 420,110" fill="#1a2332" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="350" y="65" text-anchor="middle" fill="#6ee7b7" font-size="13" font-weight="600">Register</text>
+  <text x="350" y="85" text-anchor="middle" fill="#8b93a7" font-size="11">~0 cycle · 每线程私有</text>
+  <text x="350" y="102" text-anchor="middle" fill="#8b93a7" font-size="10">256 KB/SM</text>
+
+  <!-- Shared Memory -->
+  <polygon points="280,115 230,195 470,195 420,115" fill="#151d2a" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="350" y="148" text-anchor="middle" fill="#7dd3fc" font-size="13" font-weight="600">Shared Memory</text>
+  <text x="350" y="168" text-anchor="middle" fill="#8b93a7" font-size="11">~20 cycles · Block 内共享</text>
+  <text x="350" y="185" text-anchor="middle" fill="#8b93a7" font-size="10">48-164 KB/SM</text>
+
+  <!-- L2 Cache -->
+  <polygon points="230,200 180,280 520,280 470,200" fill="#121825" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="350" y="233" text-anchor="middle" fill="#a78bfa" font-size="13" font-weight="600">L2 Cache</text>
+  <text x="350" y="253" text-anchor="middle" fill="#8b93a7" font-size="11">~200 cycles · 全局共享</text>
+  <text x="350" y="270" text-anchor="middle" fill="#8b93a7" font-size="10">40 MB (A100)</text>
+
+  <!-- Global Memory (bottom) -->
+  <polygon points="180,285 130,365 570,365 520,285" fill="#0f1420" stroke="#fbbf24" stroke-width="1.5"/>
+  <text x="350" y="315" text-anchor="middle" fill="#fbbf24" font-size="13" font-weight="600">Global Memory (HBM)</text>
+  <text x="350" y="335" text-anchor="middle" fill="#8b93a7" font-size="11">~400 cycles · 全局 · 40-80 GB</text>
+  <text x="350" y="352" text-anchor="middle" fill="#8b93a7" font-size="10">BW: 2 TB/s (A100)</text>
+
+  <!-- Annotations left side -->
+  <text x="100" y="75" text-anchor="end" fill="#6ee7b7" font-size="11">最快 →</text>
+  <text x="100" y="350" text-anchor="end" fill="#fbbf24" font-size="11">最慢 →</text>
+
+  <!-- Annotations right side -->
+  <text x="590" y="75" text-anchor="start" fill="#6ee7b7" font-size="11">← 最小</text>
+  <text x="590" y="350" text-anchor="start" fill="#fbbf24" font-size="11">← 最大</text>
+
+  <!-- Speed arrow -->
+  <line x1="60" y1="370" x2="60" y2="40" stroke="#4a5568" stroke-width="1.5" marker-end="url(#arrowG)"/>
+  <text x="55" y="210" text-anchor="middle" fill="#4a5568" font-size="10" transform="rotate(-90 55 210)">速度</text>
+
+  <!-- Size arrow -->
+  <line x1="640" y1="40" x2="640" y2="370" stroke="#4a5568" stroke-width="1.5" marker-end="url(#arrowG)"/>
+  <text x="655" y="210" text-anchor="middle" fill="#4a5568" font-size="10" transform="rotate(90 655 210)">容量</text>
+
+  <defs>
+    <marker id="arrowG" markerWidth="8" markerHeight="8" refX="6" refY="4" orient="auto">
+      <path d="M0,0 L8,4 L0,8 Z" fill="#4a5568"/>
+    </marker>
+  </defs>
+
+  <!-- Bottom label -->
+  <text x="350" y="400" text-anchor="middle" fill="#8b93a7" font-size="12">GPU 内存层次金字塔 (A100)</text>
+</svg>
+</div>
+
+<h3>关键数字 (A100)</h3>
+<table>
+  <tr><th>Memory</th><th>Size</th><th>Bandwidth</th><th>Latency</th><th>Scope</th></tr>
+  <tr><td style="color:var(--brand)">Register</td><td>256KB/SM × 108 SM</td><td>~20 TB/s</td><td>~1 cycle</td><td>Thread</td></tr>
+  <tr><td style="color:var(--brand2)">Shared</td><td>164KB/SM</td><td>~19 TB/s</td><td>~20 cycles</td><td>Block</td></tr>
+  <tr><td style="color:var(--purple)">L2</td><td>40 MB</td><td>~5 TB/s</td><td>~200 cycles</td><td>Device</td></tr>
+  <tr><td style="color:var(--warn)">Global (HBM2e)</td><td>80 GB</td><td>2 TB/s</td><td>~400 cycles</td><td>Device</td></tr>
+</table>
+
+<div class="callout">Register 到 Global 的带宽差距是 <strong>10x</strong>，延迟差距是 <strong>400x</strong>。GEMM 优化 = 尽量让数据在 Register/Shared 层复用。</div>
+
+<!-- §2 -->
+<h2><span class="step">§2</span>Global Memory — HBM</h2>
+
+<pre><span class="com">// 分配</span>
+<span class="type">float</span>* d_data;
+<span class="fn">cudaMalloc</span>(&amp;d_data, n * <span class="kw">sizeof</span>(<span class="type">float</span>));
+
+<span class="com">// kernel 内访问</span>
+<span class="type">float</span> val = d_data[idx];  <span class="com">// 一次访问 ~400 cycles</span></pre>
+
+<h3>Coalesced Access（合并访问）</h3>
+<ul class="tight">
+  <li>同一 warp 的 32 个 thread 如果访问连续 128 Bytes → <strong>1 次</strong>内存事务</li>
+  <li>如果地址不连续 → 多次事务 → 带宽浪费</li>
+</ul>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 700 300" width="700" height="300" xmlns="http://www.w3.org/2000/svg">
+  <!-- Good: Coalesced -->
+  <text x="20" y="30" fill="#6ee7b7" font-size="14" font-weight="600">✓ Coalesced（连续访问）— 1 次事务</text>
+
+  <!-- Threads -->
+  <g transform="translate(20,45)">
+    <rect x="0" y="0" width="640" height="28" rx="4" fill="#1a2332" stroke="#262b38"/>
+    <text x="10" y="18" fill="#8b93a7" font-size="10">Thread:</text>
+    <text x="70" y="18" fill="#6ee7b7" font-size="10">T0</text>
+    <text x="110" y="18" fill="#6ee7b7" font-size="10">T1</text>
+    <text x="150" y="18" fill="#6ee7b7" font-size="10">T2</text>
+    <text x="190" y="18" fill="#6ee7b7" font-size="10">T3</text>
+    <text x="230" y="18" fill="#8b93a7" font-size="10">...</text>
+    <text x="270" y="18" fill="#6ee7b7" font-size="10">T30</text>
+    <text x="320" y="18" fill="#6ee7b7" font-size="10">T31</text>
+  </g>
+
+  <!-- Arrows down -->
+  <g transform="translate(20,73)">
+    <line x1="78" y1="0" x2="78" y2="15" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+    <line x1="118" y1="0" x2="118" y2="15" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+    <line x1="158" y1="0" x2="158" y2="15" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+    <line x1="198" y1="0" x2="198" y2="15" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+    <line x1="278" y1="0" x2="278" y2="15" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+    <line x1="328" y1="0" x2="328" y2="15" stroke="#6ee7b7" stroke-width="1.5" marker-end="url(#arrowGreen)"/>
+  </g>
+
+  <!-- Memory addresses -->
+  <g transform="translate(20,92)">
+    <rect x="0" y="0" width="640" height="28" rx="4" fill="#0f1420" stroke="#262b38"/>
+    <text x="10" y="18" fill="#8b93a7" font-size="10">Addr:</text>
+    <text x="65" y="18" fill="#fbbf24" font-size="10">[0]</text>
+    <text x="105" y="18" fill="#fbbf24" font-size="10">[1]</text>
+    <text x="145" y="18" fill="#fbbf24" font-size="10">[2]</text>
+    <text x="185" y="18" fill="#fbbf24" font-size="10">[3]</text>
+    <text x="230" y="18" fill="#8b93a7" font-size="10">...</text>
+    <text x="262" y="18" fill="#fbbf24" font-size="10">[30]</text>
+    <text x="310" y="18" fill="#fbbf24" font-size="10">[31]</text>
+    <text x="420" y="18" fill="#6ee7b7" font-size="11">→ 连续 128B = 1 transaction</text>
+  </g>
+
+  <!-- Bad: Strided -->
+  <text x="20" y="160" fill="#f87171" font-size="14" font-weight="600">✗ Strided（跨步访问）— 32 次事务!</text>
+
+  <!-- Threads -->
+  <g transform="translate(20,175)">
+    <rect x="0" y="0" width="640" height="28" rx="4" fill="#1a2332" stroke="#262b38"/>
+    <text x="10" y="18" fill="#8b93a7" font-size="10">Thread:</text>
+    <text x="70" y="18" fill="#f87171" font-size="10">T0</text>
+    <text x="150" y="18" fill="#f87171" font-size="10">T1</text>
+    <text x="240" y="18" fill="#f87171" font-size="10">T2</text>
+    <text x="330" y="18" fill="#f87171" font-size="10">T3</text>
+    <text x="410" y="18" fill="#8b93a7" font-size="10">...</text>
+  </g>
+
+  <!-- Arrows down scattered -->
+  <g transform="translate(20,203)">
+    <line x1="78" y1="0" x2="78" y2="15" stroke="#f87171" stroke-width="1.5" marker-end="url(#arrowRed)"/>
+    <line x1="158" y1="0" x2="238" y2="15" stroke="#f87171" stroke-width="1.5" marker-end="url(#arrowRed)"/>
+    <line x1="248" y1="0" x2="398" y2="15" stroke="#f87171" stroke-width="1.5" marker-end="url(#arrowRed)"/>
+    <line x1="338" y1="0" x2="558" y2="15" stroke="#f87171" stroke-width="1.5" marker-end="url(#arrowRed)"/>
+  </g>
+
+  <!-- Memory addresses scattered -->
+  <g transform="translate(20,222)">
+    <rect x="0" y="0" width="640" height="28" rx="4" fill="#0f1420" stroke="#262b38"/>
+    <text x="10" y="18" fill="#8b93a7" font-size="10">Addr:</text>
+    <text x="65" y="18" fill="#fbbf24" font-size="10">[0]</text>
+    <text x="225" y="18" fill="#fbbf24" font-size="10">[N]</text>
+    <text x="385" y="18" fill="#fbbf24" font-size="10">[2N]</text>
+    <text x="545" y="18" fill="#fbbf24" font-size="10">[3N]</text>
+    <text x="400" y="45" fill="#f87171" font-size="11">→ 间隔 N×4 bytes = 每个 thread 一次事务!</text>
+  </g>
+
+  <defs>
+    <marker id="arrowGreen" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#6ee7b7"/>
+    </marker>
+    <marker id="arrowRed" markerWidth="6" markerHeight="6" refX="5" refY="3" orient="auto">
+      <path d="M0,0 L6,3 L0,6 Z" fill="#f87171"/>
+    </marker>
+  </defs>
+</svg>
+</div>
+
+<pre><span class="com">// 好: coalesced (连续访问)</span>
+<span class="type">float</span> val = A[row * N + threadIdx.x];  <span class="com">// thread 0→col 0, thread 1→col 1, ...</span>
+
+<span class="com">// 坏: strided (跨步访问)</span>
+<span class="type">float</span> val = A[threadIdx.x * N + col];  <span class="com">// thread 0→row 0, thread 1→row N, ...</span></pre>
+
+<!-- §3 -->
+<h2><span class="step">§3</span>Shared Memory — Block 内的高速缓冲</h2>
+
+<pre><span class="kw">__global__</span> <span class="type">void</span> <span class="fn">kernel</span>() {
+    <span class="kw">__shared__</span> <span class="type">float</span> smem[<span class="num">256</span>];  <span class="com">// 声明: Block 内所有线程共享</span>
+
+    smem[threadIdx.x] = global_data[idx];  <span class="com">// 线程协作加载</span>
+    <span class="fn">__syncthreads</span>();  <span class="com">// 等所有线程都加载完</span>
+
+    <span class="com">// 现在可以读其他线程加载的数据</span>
+    <span class="type">float</span> val = smem[threadIdx.x + <span class="num">1</span>];  <span class="com">// 快! ~20 cycles</span>
+}</pre>
+
+<ul class="tight">
+  <li><code>__shared__</code> 关键字声明</li>
+  <li>Block 内所有线程可读写（需要同步）</li>
+  <li><code>__syncthreads()</code> = barrier（确保所有线程到这里再继续）</li>
+  <li>大小有限：48-164 KB/SM（用 <code>cudaFuncSetAttribute</code> 可调到 164KB on A100）</li>
+</ul>
+
+<h3>GEMM 中的用法</h3>
+<div class="card">
+<pre style="border:none;background:transparent;margin:0;padding:0">Global (HBM) → Shared Memory → Register → <span class="str">Compute</span> → Register → Shared → Global
+                    <span class="com">↑                                              ↑</span>
+              <span class="com">tl.load 对应这里                              tl.store 对应这里</span></pre>
+</div>
+
+<!-- §4 -->
+<h2><span class="step">§4</span>Bank Conflict — Shared Memory 的坑</h2>
+
+<ul class="tight">
+  <li>Shared memory 分成 <strong>32 个 bank</strong> (0-31)</li>
+  <li>每个 bank 宽 4 bytes</li>
+  <li><code>bank = (address / 4) % 32</code></li>
+  <li>同一 warp 的 threads 如果访问同一 bank → <strong>bank conflict</strong> → 串行化</li>
+</ul>
+
+<div class="svg-wrap">
+<svg viewBox="0 0 700 320" width="700" height="320" xmlns="http://www.w3.org/2000/svg">
+  <!-- Title -->
+  <text x="350" y="25" text-anchor="middle" fill="#e6e8ee" font-size="13" font-weight="600">Shared Memory — 32 Banks</text>
+
+  <!-- Banks row -->
+  <g transform="translate(30,40)">
+    <!-- Draw 32 bank cells -->
+    <rect x="0" y="0" width="20" height="35" rx="2" fill="#1a2332" stroke="#6ee7b7" stroke-width="0.8"/>
+    <text x="10" y="22" text-anchor="middle" fill="#6ee7b7" font-size="8">B0</text>
+    <rect x="20" y="0" width="20" height="35" rx="2" fill="#1a2332" stroke="#6ee7b7" stroke-width="0.8"/>
+    <text x="30" y="22" text-anchor="middle" fill="#6ee7b7" font-size="8">B1</text>
+    <rect x="40" y="0" width="20" height="35" rx="2" fill="#1a2332" stroke="#6ee7b7" stroke-width="0.8"/>
+    <text x="50" y="22" text-anchor="middle" fill="#6ee7b7" font-size="8">B2</text>
+    <rect x="60" y="0" width="20" height="35" rx="2" fill="#1a2332" stroke="#6ee7b7" stroke-width="0.8"/>
+    <text x="70" y="22" text-anchor="middle" fill="#6ee7b7" font-size="8">B3</text>
+    <rect x="80" y="0" width="20" height="35" rx="2" fill="#1a2332" stroke="#262b38" stroke-width="0.8"/>
+    <text x="90" y="22" text-anchor="middle" fill="#8b93a7" font-size="8">B4</text>
+    <rect x="100" y="0" width="20" height="35" rx="2" fill="#1a2332" stroke="#262b38" stroke-width="0.8"/>
+    <text x="110" y="22" text-anchor="middle" fill="#8b93a7" font-size="8">B5</text>
+    <text x="145" y="22" text-anchor="middle" fill="#8b93a7" font-size="10">...</text>
+    <rect x="160" y="0" width="20" height="35" rx="2" fill="#1a2332" stroke="#262b38" stroke-width="0.8"/>
+    <text x="170" y="22" text-anchor="middle" fill="#8b93a7" font-size="7">B30</text>
+    <rect x="180" y="0" width="20" height="35" rx="2" fill="#1a2332" stroke="#262b38" stroke-width="0.8"/>
+    <text x="190" y="22" text-anchor="middle" fill="#8b93a7" font-size="7">B31</text>
+  </g>
+
+  <!-- Case 1: No conflict -->
+  <text x="30" y="105" fill="#6ee7b7" font-size="12" font-weight="600">✓ 无冲突: smem[threadIdx.x] — 每线程访问不同 bank</text>
+  <g transform="translate(30,115)">
+    <!-- Threads -->
+    <rect x="0" y="0" width="420" height="24" rx="4" fill="#0f1420" stroke="#262b38"/>
+    <text x="10" y="16" fill="#6ee7b7" font-size="9">T0→B0</text>
+    <text x="70" y="16" fill="#6ee7b7" font-size="9">T1→B1</text>
+    <text x="130" y="16" fill="#6ee7b7" font-size="9">T2→B2</text>
+    <text x="190" y="16" fill="#6ee7b7" font-size="9">T3→B3</text>
+    <text x="255" y="16" fill="#8b93a7" font-size="9">...</text>
+    <text x="290" y="16" fill="#6ee7b7" font-size="9">T31→B31</text>
+    <text x="440" y="16" fill="#6ee7b7" font-size="10">1 cycle 完成</text>
+  </g>
+
+  <!-- Case 2: 2-way conflict -->
+  <text x="30" y="175" fill="#f87171" font-size="12" font-weight="600">✗ 2-way 冲突: smem[2*threadIdx.x] — 只用偶数 bank</text>
+  <g transform="translate(30,185)">
+    <rect x="0" y="0" width="420" height="24" rx="4" fill="#0f1420" stroke="#f87171" stroke-width="0.8"/>
+    <text x="10" y="16" fill="#f87171" font-size="9">T0→B0</text>
+    <text x="70" y="16" fill="#f87171" font-size="9">T1→B2</text>
+    <text x="130" y="16" fill="#f87171" font-size="9">T16→B0</text>
+    <text x="210" y="16" fill="#f87171" font-size="9">T17→B2</text>
+    <text x="290" y="16" fill="#8b93a7" font-size="9">...</text>
+    <text x="440" y="16" fill="#f87171" font-size="10">2x 串行化!</text>
+  </g>
+
+  <!-- Visual: conflict illustration -->
+  <g transform="translate(30,225)">
+    <text x="0" y="15" fill="#e6e8ee" font-size="11" font-weight="500">解决方案: Padding</text>
+    <rect x="0" y="25" width="620" height="50" rx="8" fill="#11141b" stroke="#262b38"/>
+    <text x="15" y="47" fill="#8b93a7" font-size="11">原始声明:</text>
+    <text x="110" y="47" fill="#f87171" font-size="11" font-family="SF Mono,monospace">__shared__ float smem[32][32];</text>
+    <text x="400" y="47" fill="#f87171" font-size="10">← 列对齐到相同 bank</text>
+    <text x="15" y="67" fill="#8b93a7" font-size="11">Padding:</text>
+    <text x="110" y="67" fill="#6ee7b7" font-size="11" font-family="SF Mono,monospace">__shared__ float smem[32][33];</text>
+    <text x="400" y="67" fill="#6ee7b7" font-size="10">← +1 错开 bank, 无冲突!</text>
+  </g>
+</svg>
+</div>
+
+<pre><span class="com">// 无 conflict: thread i 访问 smem[i] → 不同 bank</span>
+<span class="type">float</span> val = smem[threadIdx.x];  <span class="com">// ✓</span>
+
+<span class="com">// 2-way conflict: thread i 访问 smem[2*i] → 偶数 bank 冲突</span>
+<span class="type">float</span> val = smem[<span class="num">2</span> * threadIdx.x];  <span class="com">// ✗ 2-way bank conflict</span>
+
+<span class="com">// 解决: padding</span>
+<span class="kw">__shared__</span> <span class="type">float</span> smem[<span class="num">32</span>][<span class="num">33</span>];  <span class="com">// 33 instead of 32 → 错开 bank</span></pre>
+
+<div class="callout warn">Bank conflict 在 Triton 里你从来不需要担心——编译器自动处理。CUDA 里这是 shared memory 性能的头号杀手。</div>
+
+<!-- §5 -->
+<h2><span class="step">§5</span>Register — 每个线程的私有存储</h2>
+
+<pre><span class="kw">__global__</span> <span class="type">void</span> <span class="fn">kernel</span>() {
+    <span class="type">float</span> acc = <span class="num">0.0f</span>;  <span class="com">// 在 register 里</span>
+    <span class="kw">for</span> (<span class="type">int</span> k = <span class="num">0</span>; k &lt; K; k++) {
+        acc += a * b;   <span class="com">// register 级操作，最快</span>
+    }
+    <span class="com">// acc 一直在 register，不碰内存</span>
+}</pre>
+
+<ul class="tight">
+  <li>每个线程最多使用 <strong>255 个</strong> 32-bit registers（编译器分配）</li>
+  <li>用太多 register → <strong>"register spill"</strong> → 溢出到 local memory（实际是 global memory，很慢!）</li>
+  <li>GEMM 中 accumulator 占大量 register: <code>BLOCK_M × BLOCK_N</code> per thread</li>
+</ul>
+
+<div class="callout info">GEMM kernel 的 register 使用量通常是 128-255 个——已经接近上限。这限制了每个 SM 能运行的 block 数（occupancy）。</div>
+
+<!-- §6 -->
+<h2><span class="step">§6</span>内存层次与 GEMM 的关系</h2>
+
+<div class="card">
+<h3>GEMM 数据流</h3>
+<pre style="border:none;background:transparent;margin:0;padding:0"><span class="num">1.</span> <span class="str">Global → Shared</span>: 协作加载 A_tile[BLOCK_M, BLOCK_K] 和 B_tile[BLOCK_K, BLOCK_N]
+   - 一个 block 的 threads 分工加载
+   - <span class="fn">__syncthreads()</span>
+
+<span class="num">2.</span> <span class="str">Shared → Register</span>: 每个线程从 shared 取自己需要的行列
+   - thread (ty, tx) 取 A_shared[ty,:] 和 B_shared[:,tx]
+
+<span class="num">3.</span> <span class="str">Register</span>: 计算 acc += a_reg * b_reg
+   - 最快的操作
+
+<span class="num">4.</span> <span class="str">写回</span>: Register → Global
+   - 直接写回（不经过 shared）</pre>
+</div>
+
+<div class="callout">这就是为什么 Triton 的 <code>tl.load</code> 在 CUDA 里变成了两步：<strong>Global→Shared + Shared→Register</strong>。</div>
+
+<!-- §7 -->
+<h2><span class="step">§7</span>cudaMemcpy — CPU ↔ GPU 数据传输</h2>
+
+<pre><span class="com">// H2D: Host → Device</span>
+<span class="fn">cudaMemcpy</span>(d_ptr, h_ptr, bytes, cudaMemcpyHostToDevice);
+
+<span class="com">// D2H: Device → Host</span>
+<span class="fn">cudaMemcpy</span>(h_ptr, d_ptr, bytes, cudaMemcpyDeviceToHost);
+
+<span class="com">// D2D: Device → Device</span>
+<span class="fn">cudaMemcpy</span>(d_dst, d_src, bytes, cudaMemcpyDeviceToDevice);</pre>
+
+<div class="callout warn">PCIe/NVLink 带宽: ~32-64 GB/s（PCIe 4.0 x16）。比 HBM 的 2 TB/s 慢 <strong>30-60x</strong>。所以要尽量减少 CPU↔GPU 传输。</div>
+
+<!-- §8 -->
+<h2><span class="step">§8</span>对比 Triton（总结表）</h2>
+
+<table>
+  <tr><th>操作</th><th>Triton</th><th>CUDA</th></tr>
+  <tr><td>读 global</td><td><code>tl.load(ptr, mask)</code></td><td><code>data[idx]</code> 或 <code>__ldg(&data[idx])</code></td></tr>
+  <tr><td>写 global</td><td><code>tl.store(ptr, val, mask)</code></td><td><code>data[idx] = val</code></td></tr>
+  <tr><td>用 shared memory</td><td>自动</td><td><code>__shared__</code> + <code>__syncthreads()</code></td></tr>
+  <tr><td>Bank conflict</td><td>编译器避免</td><td>手动 padding / swizzle</td></tr>
+  <tr><td>Register 管理</td><td>编译器</td><td>编译器（但你要注意 register pressure）</td></tr>
+  <tr><td>Coalescing</td><td>自动</td><td>手动保证</td></tr>
+</table>
+
+<!-- §9 -->
+<h2><span class="step">§9</span>带走</h2>
+
+<div class="card">
+<ol style="margin:0;padding-left:20px;line-height:2">
+  <li>四层内存：<span style="color:var(--brand)">Register (~0ns)</span> &gt; <span style="color:var(--brand2)">Shared (~20ns)</span> &gt; <span style="color:var(--purple)">L2 (~200ns)</span> &gt; <span style="color:var(--warn)">Global (~400ns)</span></li>
+  <li>GEMM 优化 = Global→Shared→Register 的数据搬运编排</li>
+  <li>Coalesced access: 同一 warp 访问连续地址 → 合并成一次事务</li>
+  <li>Bank conflict: 32 个 bank，同一 bank 被多个 thread 同时访问 → 串行化</li>
+  <li>Shared memory 需要 <code>__syncthreads()</code> 同步</li>
+</ol>
+</div>
+
+<p class="foot">C2 · 内存层次 — CUDA GEMM 系列 3/15</p>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

@@ -1,0 +1,766 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>存储 · PV / PVC / StorageClass / CSI</title>
+<style>
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","Helvetica Neue",Arial,"PingFang SC","Microsoft YaHei",sans-serif}
+.wrap{max-width:1180px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px;font-size:15px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+@media(max-width:900px){.cols-2,.cols-3{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.kv{display:grid;grid-template-columns:170px 1fr;gap:6px 14px;font-size:13px}
+.kv .k{color:var(--brand);font-family:"SF Mono",monospace}
+.expand-btn{background:none;border:1px dashed var(--line);color:var(--brand2);padding:6px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;margin-top:8px}
+.expand-btn:hover{border-color:var(--brand);color:var(--brand)}
+.expand-content{display:none;margin-top:10px;padding:12px;background:var(--panel2);border-radius:8px;font-size:13px}
+.expand-content.show{display:block}
+.anchor-box{background:linear-gradient(135deg,rgba(110,231,183,.08),rgba(125,211,252,.08));border:1px solid rgba(110,231,183,.3);border-radius:12px;padding:16px 20px;margin:20px 0}
+.anchor-box .label{font-size:11px;color:var(--brand);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<h1>存储 · PV / PVC / StorageClass / CSI <span class="tag">第一层 · 05/15</span></h1>
+<div class="sub">70GB 模型权重从哪来、怎么挂、谁负责供给——理解 K8S 存储模型，让推理 Pod 启动时不再等模型等到天荒地老。</div>
+
+<div class="toc">
+  <a href="#why">§0 为什么推理服务关心存储</a>
+  <a href="#pv-pvc">§1 PV 和 PVC</a>
+  <a href="#storageclass">§2 StorageClass 动态供给</a>
+  <a href="#local">§3 本地存储方案</a>
+  <a href="#network">§4 网络存储方案</a>
+  <a href="#csi">§5 CSI 驱动架构</a>
+  <a href="#compare">§6 模型加载方案对比</a>
+  <a href="#takeaway">§7 带走这些</a>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="why"><span class="step">§0</span>为什么推理服务需要关心存储</h2>
+
+<div class="card">
+<p>传统 Web 服务的容器是无状态的——代码在镜像里，启动就能干活。但 LLM 推理服务不一样：</p>
+<ul class="tight">
+  <li><b>模型权重巨大</b>：Qwen3-72B 的 safetensors 约 70GB，DeepSeek-V3 更是 600GB+</li>
+  <li><b>不能打进镜像</b>：镜像层只适合存几百 MB 的代码和依赖，70GB 镜像拉取要 10 分钟+</li>
+  <li><b>启动前必须到位</b>：推理进程需要 <code>mmap</code> 或逐层加载权重文件，文件不在就跑不了</li>
+  <li><b>多副本共享</b>：同一个模型可能被 10 个推理 Pod 同时使用，每个都拷一份太浪费</li>
+</ul>
+
+<div class="callout warn">
+<b>一句话</b>：推理服务的第一性能瓶颈往往不是 GPU 计算，而是<b>模型权重从存储到 GPU 显存的搬运速度</b>。从哪种存储搬、用什么协议搬、能不能预热——这些都是存储子系统的范畴。
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+一个 70GB 模型权重从不同存储加载的首次启动时间：
+<ul class="tight" style="margin-top:6px">
+<li><b>本地 NVMe</b>：70GB / 3.2GB/s = ~22 秒（纯 IO，最快）</li>
+<li><b>网络 CephFS</b>：70GB / 800MB/s = ~90 秒（受网络带宽限制）</li>
+<li><b>对象存储 FUSE</b>：70GB / 200MB/s = ~350 秒（FUSE overhead + 小文件随机读）</li>
+<li><b>GooseFS 缓存命中</b>：70GB / 1.8GB/s = ~40 秒（内存缓存加速）</li>
+</ul>
+选错存储方案，扩容一个推理副本要多等 5 分钟——在流量洪峰时，这是不可接受的。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="pv-pvc"><span class="step">§1</span>PV 和 PVC 的绑定模型</h2>
+
+<div class="card">
+<p>K8S 的存储抽象分两层：<b>供给侧</b>（PV）和<b>消费侧</b>（PVC）。这种分离让 Pod 不需要知道底层存储的实现细节。</p>
+
+<h3>核心概念</h3>
+<table>
+<thead><tr><th>概念</th><th>创建者</th><th>作用域</th><th>类比</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>PersistentVolume (PV)</b></td><td>管理员 / Provisioner</td><td>集群级（无 namespace）</td><td>物理磁盘</td></tr>
+<tr><td style="color:#7dd3fc"><b>PersistentVolumeClaim (PVC)</b></td><td>用户 / Pod spec</td><td>Namespace 级</td><td>磁盘申请单</td></tr>
+</tbody>
+</table>
+
+<h3>绑定流程</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 320" width="900">
+  <!-- PVC 侧 -->
+  <rect x="30" y="30" width="300" height="130" rx="12" fill="#1f2937" stroke="#7dd3fc" stroke-width="1.5"/>
+  <text x="50" y="55" fill="#7dd3fc" font-size="14" font-weight="700">PVC（用户创建）</text>
+  <text x="50" y="80" fill="#8b93a7" font-size="11">accessModes: ReadOnlyMany</text>
+  <text x="50" y="98" fill="#8b93a7" font-size="11">resources.requests.storage: 100Gi</text>
+  <text x="50" y="116" fill="#8b93a7" font-size="11">storageClassName: local-nvme</text>
+  <text x="50" y="140" fill="#fbbf24" font-size="11">status: Pending → Bound</text>
+
+  <!-- 箭头 -->
+  <path d="M330 95 L420 95" stroke="#6ee7b7" stroke-width="2" marker-end="url(#arrowG)"/>
+  <text x="345" y="85" fill="#6ee7b7" font-size="11" font-weight="600">匹配绑定</text>
+
+  <!-- 匹配条件 -->
+  <rect x="370" y="170" width="180" height="100" rx="8" fill="#162924" stroke="#6ee7b7" stroke-dasharray="4 3"/>
+  <text x="385" y="192" fill="#6ee7b7" font-size="11" font-weight="600">匹配条件</text>
+  <text x="385" y="212" fill="#8b93a7" font-size="10">1. storageClassName 相同</text>
+  <text x="385" y="228" fill="#8b93a7" font-size="10">2. capacity >= requests</text>
+  <text x="385" y="244" fill="#8b93a7" font-size="10">3. accessModes 兼容</text>
+  <text x="385" y="260" fill="#8b93a7" font-size="10">4. selector 标签匹配</text>
+
+  <path d="M460 170 L460 155 L375 110" stroke="#8b93a7" stroke-width="1" stroke-dasharray="3 2" fill="none"/>
+
+  <!-- PV 侧 -->
+  <rect x="480" y="30" width="300" height="130" rx="12" fill="#1f2937" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="500" y="55" fill="#6ee7b7" font-size="14" font-weight="700">PV（管理员创建）</text>
+  <text x="500" y="80" fill="#8b93a7" font-size="11">capacity.storage: 200Gi</text>
+  <text x="500" y="98" fill="#8b93a7" font-size="11">accessModes: [ReadWriteOnce, ReadOnlyMany]</text>
+  <text x="500" y="116" fill="#8b93a7" font-size="11">storageClassName: local-nvme</text>
+  <text x="500" y="140" fill="#fbbf24" font-size="11">status: Available → Bound</text>
+
+  <!-- Pod -->
+  <rect x="30" y="220" width="200" height="70" rx="10" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="50" y="245" fill="#fbbf24" font-size="12" font-weight="600">Pod spec</text>
+  <text x="50" y="265" fill="#8b93a7" font-size="10">volumes:</text>
+  <text x="50" y="280" fill="#8b93a7" font-size="10">  - persistentVolumeClaim: model-pvc</text>
+
+  <path d="M130 220 L130 160" stroke="#fbbf24" stroke-width="1.2" fill="none"/>
+  <text x="135" y="195" fill="#8b93a7" font-size="10">引用</text>
+
+  <!-- 底部说明 -->
+  <text x="30" y="310" fill="#8b93a7" font-size="11.5">PVC 和 PV 是 1:1 绑定关系。绑定后，PV 被"锁定"给该 PVC，其他 PVC 无法再使用它。</text>
+
+  <!-- arrowhead -->
+  <defs><marker id="arrowG" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#6ee7b7"/></marker></defs>
+</svg>
+</div>
+
+<h3>accessModes 详解</h3>
+<table>
+<thead><tr><th>模式</th><th>缩写</th><th>含义</th><th>典型存储</th><th>推理场景</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>ReadWriteOnce</b></td><td>RWO</td><td>单节点读写</td><td>云磁盘、本地盘</td><td>单副本推理 / checkpoint</td></tr>
+<tr><td style="color:#7dd3fc"><b>ReadOnlyMany</b></td><td>ROX</td><td>多节点只读</td><td>NFS、CephFS</td><td>多副本共享模型权重</td></tr>
+<tr><td style="color:#fbbf24"><b>ReadWriteMany</b></td><td>RWX</td><td>多节点读写</td><td>NFS、CephFS、Lustre</td><td>分布式训练 checkpoint</td></tr>
+</tbody>
+</table>
+
+<div class="callout info">
+<b>常见误解</b>：RWO 不是"只有一个 Pod 能用"，而是"只能挂载到一个<b>节点</b>"。同一节点上的多个 Pod 可以同时挂载同一个 RWO 的 PV。在推理场景中，如果用 local PV 存模型且同节点部署多个推理 Pod，RWO 就够用。
+</div>
+
+<h3>YAML 示例：PV + PVC</h3>
+<pre><span style="color:#8b93a7"># --- PV：管理员提前创建，对应一块 NVMe 本地盘 ---</span>
+apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: gpu-node-01-nvme         <span style="color:#8b93a7"># 命名规范：节点名-存储类型</span>
+spec:
+  capacity:
+    storage: 1800Gi              <span style="color:#8b93a7"># 1.8TB NVMe</span>
+  accessModes:
+    - ReadOnlyMany               <span style="color:#8b93a7"># 模型只读，多 Pod 共享</span>
+  persistentVolumeReclaimPolicy: Retain  <span style="color:#8b93a7"># 释放后保留数据</span>
+  storageClassName: local-nvme
+  local:
+    path: /mnt/nvme0             <span style="color:#8b93a7"># 节点上的实际挂载路径</span>
+  nodeAffinity:                  <span style="color:#8b93a7"># local PV 必须绑定节点</span>
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: ["gpu-node-01"]
+---
+<span style="color:#8b93a7"># --- PVC：用户在 inference namespace 创建 ---</span>
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: model-weights-pvc
+  namespace: inference
+spec:
+  accessModes:
+    - ReadOnlyMany
+  resources:
+    requests:
+      storage: 100Gi            <span style="color:#8b93a7"># 只需要 100Gi 就够放 72B 模型</span>
+  storageClassName: local-nvme  <span style="color:#8b93a7"># 匹配 PV 的 storageClassName</span>
+</pre>
+
+<div class="callout warn">
+<b>PVC Pending 常见原因</b>：① storageClassName 不匹配 ② 没有满足容量要求的 Available PV ③ accessModes 不兼容 ④ 用了 <code>WaitForFirstConsumer</code> 但 Pod 还没被调度。用 <code>kubectl describe pvc</code> 看 Events 能快速定位。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="storageclass"><span class="step">§2</span>StorageClass 和动态供给</h2>
+
+<div class="card">
+<p>手动创建 PV 在小集群可行，但 100 个节点 × 4 块 NVMe = 400 个 PV 手动管理？不现实。<b>StorageClass + 动态供给</b>解决这个问题。</p>
+
+<h3>静态供给 vs 动态供给</h3>
+<div class="grid cols-2">
+<div style="background:var(--panel2);border-radius:10px;padding:14px">
+  <h4 style="margin-top:0">静态供给</h4>
+  <ul class="tight">
+    <li>管理员手动创建 PV</li>
+    <li>PVC 从已有 PV 中匹配</li>
+    <li>适合：固定节点的 local 盘</li>
+    <li>缺点：运维负担重</li>
+  </ul>
+</div>
+<div style="background:var(--panel2);border-radius:10px;padding:14px">
+  <h4 style="margin-top:0">动态供给</h4>
+  <ul class="tight">
+    <li>PVC 引用 StorageClass</li>
+    <li>Provisioner 自动创建 PV + 底层存储</li>
+    <li>适合：云磁盘、Ceph RBD</li>
+    <li>优点：按需创建，用完回收</li>
+  </ul>
+</div>
+</div>
+
+<h3>Provisioner 工作流</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 220" width="900">
+  <!-- PVC -->
+  <rect x="20" y="70" width="140" height="60" rx="8" fill="#1f2937" stroke="#7dd3fc"/>
+  <text x="90" y="95" text-anchor="middle" fill="#7dd3fc" font-size="12" font-weight="600">PVC 创建</text>
+  <text x="90" y="113" text-anchor="middle" fill="#8b93a7" font-size="10">sc: cbs-premium</text>
+
+  <path d="M160 100 L200 100" stroke="#8b93a7" stroke-width="1.2" marker-end="url(#arrowG2)"/>
+
+  <!-- SC -->
+  <rect x="200" y="70" width="160" height="60" rx="8" fill="#1f2937" stroke="#a78bfa"/>
+  <text x="280" y="92" text-anchor="middle" fill="#a78bfa" font-size="12" font-weight="600">StorageClass</text>
+  <text x="280" y="110" text-anchor="middle" fill="#8b93a7" font-size="10">provisioner: cbs.csi.cloud</text>
+
+  <path d="M360 100 L400 100" stroke="#8b93a7" stroke-width="1.2" marker-end="url(#arrowG2)"/>
+
+  <!-- Provisioner -->
+  <rect x="400" y="60" width="180" height="80" rx="8" fill="#162924" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="490" y="85" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="700">CSI Provisioner</text>
+  <text x="490" y="105" text-anchor="middle" fill="#8b93a7" font-size="10">1. 调用云 API 创建磁盘</text>
+  <text x="490" y="120" text-anchor="middle" fill="#8b93a7" font-size="10">2. 创建 PV 对象</text>
+  <text x="490" y="135" text-anchor="middle" fill="#8b93a7" font-size="10">3. 绑定 PVC ↔ PV</text>
+
+  <path d="M580 100 L630 100" stroke="#8b93a7" stroke-width="1.2" marker-end="url(#arrowG2)"/>
+
+  <!-- PV -->
+  <rect x="630" y="70" width="120" height="60" rx="8" fill="#1f2937" stroke="#6ee7b7"/>
+  <text x="690" y="95" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">PV (auto)</text>
+  <text x="690" y="113" text-anchor="middle" fill="#8b93a7" font-size="10">status: Bound</text>
+
+  <path d="M750 100 L790 100" stroke="#8b93a7" stroke-width="1.2" marker-end="url(#arrowG2)"/>
+
+  <!-- 实际存储 -->
+  <rect x="790" y="70" width="90" height="60" rx="8" fill="#1a1a2e" stroke="#fbbf24"/>
+  <text x="835" y="95" text-anchor="middle" fill="#fbbf24" font-size="11" font-weight="600">CBS 磁盘</text>
+  <text x="835" y="113" text-anchor="middle" fill="#8b93a7" font-size="9">200Gi SSD</text>
+
+  <!-- 底部说明 -->
+  <text x="20" y="185" fill="#8b93a7" font-size="11.5">整个过程对 Pod 透明——Pod 只引用 PVC name，Provisioner 自动完成磁盘创建 + PV 生成 + 绑定。</text>
+  <text x="20" y="205" fill="#fbbf24" font-size="11.5">Pod 删除后，PV 何时回收取决于 reclaimPolicy。</text>
+
+  <defs><marker id="arrowG2" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto"><path d="M0,0 L8,3 L0,6" fill="#8b93a7"/></marker></defs>
+</svg>
+</div>
+
+<h3>StorageClass YAML 示例</h3>
+<pre>apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: cbs-premium
+provisioner: com.tencent.cloud.csi.cbs    <span style="color:#8b93a7"># 腾讯云 CBS CSI 驱动</span>
+parameters:
+  diskType: CLOUD_PREMIUM                  <span style="color:#8b93a7"># 高性能云硬盘</span>
+reclaimPolicy: Delete                      <span style="color:#8b93a7"># PVC 删除时自动删磁盘</span>
+volumeBindingMode: WaitForFirstConsumer    <span style="color:#8b93a7"># 等 Pod 调度后再创盘</span>
+allowVolumeExpansion: true                 <span style="color:#8b93a7"># 允许在线扩容</span>
+</pre>
+
+<h3>两个关键策略</h3>
+<table>
+<thead><tr><th>参数</th><th>选项</th><th>含义</th><th>推理场景建议</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:#6ee7b7"><b>reclaimPolicy</b></td>
+  <td><code>Retain</code></td>
+  <td>PVC 删除后 PV 保留，需手动清理</td>
+  <td>模型权重盘 — 防止误删 70GB 数据</td>
+</tr>
+<tr>
+  <td></td>
+  <td><code>Delete</code></td>
+  <td>PVC 删除后 PV 和底层存储一起删</td>
+  <td>临时 scratch 盘 / 推理缓存</td>
+</tr>
+<tr>
+  <td style="color:#7dd3fc"><b>volumeBindingMode</b></td>
+  <td><code>Immediate</code></td>
+  <td>PVC 创建时立刻绑定 PV</td>
+  <td>网络盘（无拓扑限制）</td>
+</tr>
+<tr>
+  <td></td>
+  <td><code>WaitForFirstConsumer</code></td>
+  <td>等 Pod 被调度到节点后再绑定</td>
+  <td><b>本地盘必须用这个</b>（否则可能绑到错误节点的盘）</td>
+</tr>
+</tbody>
+</table>
+
+<div class="callout bad">
+<b>经典事故</b>：StorageClass 用了 <code>Immediate</code> 绑定模式 + local PV。PVC 创建时立刻绑到了 node-A 的 PV，但 scheduler 因为 GPU 亲和把 Pod 调度到 node-B → Pod 永远 Pending（"volume node affinity conflict"）。<b>本地盘的 SC 必须用 <code>WaitForFirstConsumer</code></b>。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="local"><span class="step">§3</span>本地存储方案</h2>
+
+<div class="card">
+<p>推理服务对存储带宽极度敏感——模型加载是纯顺序读 IO。本地 NVMe 盘能提供最高 3.2GB/s 的读带宽，远超任何网络存储。</p>
+
+<h3>三种本地存储对比</h3>
+<table>
+<thead><tr><th>方案</th><th>是否绑节点</th><th>调度感知</th><th>生产可用</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:#f87171"><b>hostPath</b></td>
+  <td>是</td>
+  <td>无（scheduler 不知道）</td>
+  <td style="color:#f87171">危险，仅调试</td>
+</tr>
+<tr>
+  <td style="color:#6ee7b7"><b>local PV</b></td>
+  <td>是</td>
+  <td>有（nodeAffinity 强制）</td>
+  <td style="color:#6ee7b7">推荐</td>
+</tr>
+<tr>
+  <td style="color:#7dd3fc"><b>emptyDir</b></td>
+  <td>随 Pod 生灭</td>
+  <td>N/A</td>
+  <td>临时缓存可用</td>
+</tr>
+</tbody>
+</table>
+
+<h4>hostPath — 简单但危险</h4>
+<pre><span style="color:#8b93a7"># 不推荐用于生产！仅列出供理解</span>
+volumes:
+- name: model-dir
+  hostPath:
+    path: /data/models        <span style="color:#8b93a7"># 直接挂宿主机路径</span>
+    type: Directory
+</pre>
+<div class="callout bad">
+<b>hostPath 的问题</b>：① scheduler 不知道这个路径在哪些节点存在——Pod 调度到没有 <code>/data/models</code> 的节点就挂 ② 没有容量管理 ③ 安全风险（容器可以访问宿主机文件系统） ④ 多租户隔离不了。
+</div>
+
+<h4>local PV — 生产推荐方案</h4>
+<pre>apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: gpu-node-02-nvme-models
+spec:
+  capacity:
+    storage: 900Gi
+  accessModes:
+    - ReadOnlyMany            <span style="color:#8b93a7"># 多个推理 Pod 只读共享</span>
+  persistentVolumeReclaimPolicy: Retain
+  storageClassName: local-nvme
+  local:
+    path: /mnt/nvme0/models   <span style="color:#8b93a7"># NVMe 盘上的模型目录</span>
+  nodeAffinity:               <span style="color:#8b93a7"># 关键：把 PV 绑到具体节点</span>
+    required:
+      nodeSelectorTerms:
+        - matchExpressions:
+            - key: kubernetes.io/hostname
+              operator: In
+              values: ["gpu-node-02"]
+</pre>
+
+<div class="callout info">
+<b>local PV 的核心设计</b>：通过 <code>nodeAffinity</code> 告诉 scheduler "这个 PV 只在 gpu-node-02 上可用"。scheduler 在调度引用此 PVC 的 Pod 时，会自动把 Pod 约束到 gpu-node-02。这就解决了 hostPath 的"调度盲区"问题。
+</div>
+
+<h4>NVMe 本地盘的管理实践</h4>
+<pre><span style="color:#8b93a7"># 节点初始化脚本：格式化并挂载 NVMe</span>
+#!/bin/bash
+NVME_DEV="/dev/nvme0n1"
+MOUNT_POINT="/mnt/nvme0"
+
+<span style="color:#8b93a7"># 创建 XFS 文件系统（对大文件顺序读最友好）</span>
+mkfs.xfs -f ${NVME_DEV}
+mkdir -p ${MOUNT_POINT}
+mount -o noatime,nodiratime ${NVME_DEV} ${MOUNT_POINT}
+
+<span style="color:#8b93a7"># 写入 fstab 持久化</span>
+echo "${NVME_DEV} ${MOUNT_POINT} xfs noatime,nodiratime 0 0" >> /etc/fstab
+
+<span style="color:#8b93a7"># 创建模型目录</span>
+mkdir -p ${MOUNT_POINT}/models
+chmod 755 ${MOUNT_POINT}/models
+</pre>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+GPU 节点通常配 2-4 块 NVMe（每块 1.9TB）。最佳实践是：一块盘专门存模型权重（只读，用 local PV），另一块盘做推理中间结果的 scratch 空间（用 <code>emptyDir</code> 的 <code>medium: ""</code> 配合 <code>sizeLimit</code>）。模型盘用 <code>Retain</code> 策略，避免 Pod 删除时误清权重文件。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="network"><span class="step">§4</span>网络存储方案</h2>
+
+<div class="card">
+<p>本地盘快但不灵活——模型更新需要逐节点同步，新节点加入需要预热。网络存储解决的是<b>灵活性和共享</b>的问题。</p>
+
+<h3>常见网络存储对比</h3>
+<table>
+<thead><tr><th>存储</th><th>协议</th><th>带宽</th><th>accessModes</th><th>适用场景</th></tr></thead>
+<tbody>
+<tr><td style="color:#6ee7b7"><b>NFS</b></td><td>NFSv4</td><td>~500MB/s</td><td>RWX / ROX</td><td>简单共享，小规模集群</td></tr>
+<tr><td style="color:#7dd3fc"><b>CephFS</b></td><td>Ceph RADOS</td><td>~800MB/s</td><td>RWX / ROX</td><td>大规模分布式存储</td></tr>
+<tr><td style="color:#a78bfa"><b>云磁盘</b></td><td>iSCSI / NVMe-oF</td><td>~350MB/s</td><td>RWO</td><td>持久化数据，高可靠</td></tr>
+<tr><td style="color:#fbbf24"><b>对象存储 + FUSE</b></td><td>S3 / COS</td><td>~200MB/s</td><td>ROX</td><td>海量冷数据，模型归档</td></tr>
+<tr><td style="color:#fb7185"><b>GooseFS</b></td><td>FUSE / POSIX</td><td>~1.8GB/s</td><td>ROX</td><td>缓存加速层，推理热数据</td></tr>
+</tbody>
+</table>
+
+<h4>NFS / CephFS — 多副本共享模型</h4>
+<pre>apiVersion: v1
+kind: PersistentVolume
+metadata:
+  name: model-nfs
+spec:
+  capacity:
+    storage: 2Ti
+  accessModes:
+    - ReadOnlyMany             <span style="color:#8b93a7"># 多节点只读 — 推理 Pod 共享</span>
+  nfs:
+    server: 10.0.1.100         <span style="color:#8b93a7"># NFS server 地址</span>
+    path: /exports/models      <span style="color:#8b93a7"># 模型存储路径</span>
+  mountOptions:
+    - ro                       <span style="color:#8b93a7"># 强制只读挂载</span>
+    - nfsvers=4.1
+    - rsize=1048576            <span style="color:#8b93a7"># 1MB read size，大文件顺序读优化</span>
+    - wsize=1048576
+</pre>
+
+<h4>对象存储 + FUSE 挂载</h4>
+<pre><span style="color:#8b93a7"># 使用 cosfs / s3fs 把对象存储挂载为 POSIX 文件系统</span>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: inference-pod
+spec:
+  containers:
+  - name: sglang
+    volumeMounts:
+    - name: cos-models
+      mountPath: /models
+      readOnly: true
+  volumes:
+  - name: cos-models
+    flexVolume:                <span style="color:#8b93a7"># 或通过 CSI 驱动挂载</span>
+      driver: "cos.csi.cloud"
+      options:
+        bucket: "model-weights-prod"
+        path: "/qwen3-72b"
+        additional_args: "-oallow_other -o max_read_ahead=128m"
+</pre>
+
+<div class="callout warn">
+<b>FUSE 挂载的性能陷阱</b>：对象存储通过 FUSE 虽然提供了 POSIX 兼容接口，但 ① 元数据操作（ls / stat）很慢 ② 随机读性能差 ③ 内核态/用户态切换开销大。<b>不适合直接用于推理服务加载模型</b>——应该作为数据源，配合缓存层使用。
+</div>
+
+<h4>GooseFS — 缓存加速层</h4>
+<p>GooseFS（腾讯云的分布式缓存系统，类似 Alluxio）在对象存储和推理 Pod 之间加了一层内存/SSD 缓存：</p>
+<pre><span style="color:#8b93a7"># GooseFS FUSE 挂载 — 透明缓存加速</span>
+apiVersion: v1
+kind: Pod
+metadata:
+  name: inference-pod
+spec:
+  initContainers:
+  - name: warm-cache
+    image: goosefs-client:v2.5
+    command: ["/bin/sh", "-c"]
+    args:
+    - |
+      <span style="color:#8b93a7"># 预热：把模型从 COS 加载到 GooseFS 缓存</span>
+      goosefs fs load /models/qwen3-72b
+      <span style="color:#8b93a7"># 校验缓存命中率</span>
+      goosefs fs stat /models/qwen3-72b | grep "InCache: 100%"
+  containers:
+  - name: sglang
+    volumeMounts:
+    - name: goosefs-fuse
+      mountPath: /models       <span style="color:#8b93a7"># 推理进程直接读这个路径</span>
+      readOnly: true
+  volumes:
+  - name: goosefs-fuse
+    hostPath:
+      path: /mnt/goosefs-fuse  <span style="color:#8b93a7"># GooseFS FUSE 在节点上的挂载点</span>
+</pre>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+GooseFS 在缓存命中时读带宽可达 <b>1.8GB/s</b>（内存缓存）或 <b>1.2GB/s</b>（SSD 缓存），接近本地 NVMe 性能。首次冷启动仍需从 COS 拉取（~200MB/s），但后续同模型的 Pod 启动只需 40 秒。适合"模型版本固定、副本数动态伸缩"的场景。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="csi"><span class="step">§5</span>CSI 驱动架构（简述）</h2>
+
+<div class="card">
+<p>CSI（Container Storage Interface）是 K8S 与存储系统之间的标准接口。所有现代存储方案都通过 CSI 驱动接入 K8S。</p>
+
+<h3>两侧架构</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 300" width="900">
+  <!-- Controller 侧 -->
+  <rect x="30" y="30" width="380" height="240" rx="12" fill="#1f2937" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="50" y="58" fill="#a78bfa" font-size="14" font-weight="700">Controller 侧（Deployment 部署）</text>
+  <text x="50" y="78" fill="#8b93a7" font-size="11">通常 1 副本，集群级</text>
+
+  <rect x="50" y="95" width="150" height="40" rx="8" fill="#162924" stroke="#6ee7b7"/>
+  <text x="65" y="118" fill="#6ee7b7" font-size="11">csi-provisioner</text>
+
+  <rect x="220" y="95" width="170" height="40" rx="8" fill="#162924" stroke="#6ee7b7"/>
+  <text x="235" y="118" fill="#6ee7b7" font-size="11">csi-attacher</text>
+
+  <rect x="50" y="150" width="150" height="40" rx="8" fill="#162924" stroke="#7dd3fc"/>
+  <text x="65" y="173" fill="#7dd3fc" font-size="11">csi-resizer</text>
+
+  <rect x="220" y="150" width="170" height="40" rx="8" fill="#162924" stroke="#7dd3fc"/>
+  <text x="235" y="173" fill="#7dd3fc" font-size="11">csi-snapshotter</text>
+
+  <rect x="50" y="210" width="340" height="40" rx="8" fill="#1a1a2e" stroke="#fbbf24"/>
+  <text x="65" y="233" fill="#fbbf24" font-size="11" font-weight="600">CSI Controller Plugin（存储厂商实现）</text>
+
+  <!-- Node 侧 -->
+  <rect x="470" y="30" width="380" height="240" rx="12" fill="#1f2937" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="490" y="58" fill="#6ee7b7" font-size="14" font-weight="700">Node 侧（DaemonSet 部署）</text>
+  <text x="490" y="78" fill="#8b93a7" font-size="11">每个节点一个 Pod</text>
+
+  <rect x="490" y="95" width="170" height="40" rx="8" fill="#162924" stroke="#6ee7b7"/>
+  <text x="505" y="118" fill="#6ee7b7" font-size="11">node-driver-registrar</text>
+
+  <rect x="680" y="95" width="150" height="40" rx="8" fill="#162924" stroke="#7dd3fc"/>
+  <text x="695" y="118" fill="#7dd3fc" font-size="11">liveness-probe</text>
+
+  <rect x="490" y="210" width="340" height="40" rx="8" fill="#1a1a2e" stroke="#fbbf24"/>
+  <text x="505" y="233" fill="#fbbf24" font-size="11" font-weight="600">CSI Node Plugin（存储厂商实现）</text>
+
+  <rect x="490" y="150" width="340" height="40" rx="8" fill="#162924" stroke="#8b93a7"/>
+  <text x="505" y="173" fill="#8b93a7" font-size="11">kubelet ← 调用 → Node Plugin（mount/unmount）</text>
+
+  <!-- 底部说明 -->
+  <text x="30" y="290" fill="#8b93a7" font-size="11.5">Controller 侧负责"创建/删除/扩容/快照"操作；Node 侧负责"格式化/挂载/卸载"操作。两侧通过 gRPC Unix Socket 通信。</text>
+</svg>
+</div>
+
+<h3>职责划分</h3>
+<table>
+<thead><tr><th>侧</th><th>部署形式</th><th>职责</th><th>关键操作</th></tr></thead>
+<tbody>
+<tr><td style="color:#a78bfa"><b>Controller</b></td><td>Deployment (1 副本)</td><td>存储资源的生命周期管理</td><td>CreateVolume / DeleteVolume / Attach / Snapshot</td></tr>
+<tr><td style="color:#6ee7b7"><b>Node</b></td><td>DaemonSet (每节点)</td><td>节点上的挂载操作</td><td>NodeStageVolume / NodePublishVolume / NodeUnpublish</td></tr>
+</tbody>
+</table>
+
+<h3>常见 CSI 驱动</h3>
+<table>
+<thead><tr><th>驱动</th><th>存储类型</th><th>适用场景</th></tr></thead>
+<tbody>
+<tr><td><code>ceph-csi</code></td><td>Ceph RBD / CephFS</td><td>私有云大规模分布式存储</td></tr>
+<tr><td><code>aws-ebs-csi-driver</code></td><td>AWS EBS</td><td>AWS 上的块存储</td></tr>
+<tr><td><code>com.tencent.cloud.csi.cbs</code></td><td>腾讯云 CBS</td><td>腾讯云块存储</td></tr>
+<tr><td><code>local-path-provisioner</code></td><td>本地路径</td><td>开发/测试环境本地盘动态供给</td></tr>
+<tr><td><code>csi-driver-nfs</code></td><td>NFS</td><td>NFS 动态 provisioning</td></tr>
+</tbody>
+</table>
+
+<button class="expand-btn" onclick="this.nextElementSibling.classList.toggle('show')">展开：CSI 一次 Volume 挂载的完整流程</button>
+<div class="expand-content">
+<ol style="font-size:12.5px;line-height:1.8">
+  <li>PVC 创建 → Controller 侧 <code>csi-provisioner</code> watch 到 → 调用 CSI Plugin 的 <code>CreateVolume</code></li>
+  <li>Pod 调度到节点 → Controller 侧 <code>csi-attacher</code> 调用 <code>ControllerPublishVolume</code>（把磁盘 attach 到节点）</li>
+  <li>kubelet 发现 Pod 需要 Volume → 调用 Node 侧 Plugin 的 <code>NodeStageVolume</code>（格式化 + mount 到全局目录）</li>
+  <li>kubelet 调用 <code>NodePublishVolume</code>（bind mount 到 Pod 的目录）</li>
+  <li>Pod 退出 → kubelet 调用 <code>NodeUnpublishVolume</code> + <code>NodeUnstageVolume</code></li>
+  <li>PVC 删除 → <code>csi-attacher</code> 调用 <code>ControllerUnpublishVolume</code> → <code>csi-provisioner</code> 调用 <code>DeleteVolume</code></li>
+</ol>
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="compare"><span class="step">§6</span>模型权重加载方案对比</h2>
+
+<div class="card">
+<p>选择模型加载方案时需要权衡：<b>首次启动时间</b>、<b>扩容速度</b>、<b>运维复杂度</b>、<b>成本</b>。以下对比假设模型大小为 70GB（Qwen3-72B 级别）。</p>
+
+<table>
+<thead><tr><th>方案</th><th>读带宽</th><th>首次启动</th><th>扩容时间</th><th>灵活性</th><th>运维复杂度</th></tr></thead>
+<tbody>
+<tr>
+  <td style="color:#6ee7b7"><b>NVMe local PV</b><br><span style="color:#8b93a7;font-size:11px">模型预置在节点</span></td>
+  <td>3.2 GB/s</td>
+  <td style="color:#6ee7b7">~22s</td>
+  <td style="color:#f87171">慢（需预热新节点）</td>
+  <td>低（绑死节点）</td>
+  <td>中（需管理节点盘）</td>
+</tr>
+<tr>
+  <td style="color:#7dd3fc"><b>网络盘 PVC</b><br><span style="color:#8b93a7;font-size:11px">CephFS / NFS</span></td>
+  <td>0.5-0.8 GB/s</td>
+  <td>~90-140s</td>
+  <td style="color:#6ee7b7">快（任意节点调度）</td>
+  <td>高（无节点限制）</td>
+  <td>低（标准 PVC）</td>
+</tr>
+<tr>
+  <td style="color:#fbbf24"><b>initContainer 拉取</b><br><span style="color:#8b93a7;font-size:11px">从 COS/S3 下载到 emptyDir</span></td>
+  <td>0.2 GB/s</td>
+  <td style="color:#f87171">~350s</td>
+  <td style="color:#fbbf24">中（每次都要下载）</td>
+  <td>高（无节点限制）</td>
+  <td>低（纯 Pod 内逻辑）</td>
+</tr>
+<tr>
+  <td style="color:#fb7185"><b>GooseFS 缓存</b><br><span style="color:#8b93a7;font-size:11px">缓存命中时</span></td>
+  <td>1.8 GB/s</td>
+  <td style="color:#6ee7b7">~40s</td>
+  <td style="color:#6ee7b7">快（缓存层透明）</td>
+  <td>高</td>
+  <td>高（需维护 GooseFS 集群）</td>
+</tr>
+<tr>
+  <td style="color:#a78bfa"><b>P2P 分发</b><br><span style="color:#8b93a7;font-size:11px">Dragonfly / 自研方案</span></td>
+  <td>1.5-1.8 GB/s</td>
+  <td>~40-50s</td>
+  <td style="color:#6ee7b7">快（节点间互传）</td>
+  <td>高</td>
+  <td>高（需 P2P Agent）</td>
+</tr>
+</tbody>
+</table>
+
+<h3>选型决策树</h3>
+<div class="svg-wrap">
+<svg viewBox="0 0 900 300" width="900">
+  <!-- 根节点 -->
+  <rect x="320" y="10" width="260" height="40" rx="8" fill="#1f2937" stroke="#6ee7b7" stroke-width="1.5"/>
+  <text x="450" y="35" text-anchor="middle" fill="#6ee7b7" font-size="12" font-weight="600">模型是否固定在少数节点？</text>
+
+  <!-- 左分支：是 -->
+  <path d="M380 50 L200 90" stroke="#6ee7b7" stroke-width="1.2"/>
+  <text x="270" y="70" fill="#6ee7b7" font-size="10">是</text>
+
+  <rect x="100" y="90" width="200" height="40" rx="8" fill="#162924" stroke="#6ee7b7"/>
+  <text x="200" y="115" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">NVMe local PV</text>
+
+  <!-- 右分支：否 -->
+  <path d="M520 50 L680 90" stroke="#fbbf24" stroke-width="1.2"/>
+  <text x="610" y="70" fill="#fbbf24" font-size="10">否</text>
+
+  <rect x="560" y="90" width="260" height="40" rx="8" fill="#1f2937" stroke="#fbbf24"/>
+  <text x="690" y="115" text-anchor="middle" fill="#fbbf24" font-size="12" font-weight="600">需要频繁弹性伸缩？</text>
+
+  <!-- 右-左分支：不需要 -->
+  <path d="M620 130 L480 170" stroke="#7dd3fc" stroke-width="1.2"/>
+  <text x="530" y="150" fill="#7dd3fc" font-size="10">偶尔</text>
+
+  <rect x="360" y="170" width="240" height="40" rx="8" fill="#162924" stroke="#7dd3fc"/>
+  <text x="480" y="195" text-anchor="middle" fill="#7dd3fc" font-size="11" font-weight="600">CephFS / NFS (ReadOnlyMany)</text>
+
+  <!-- 右-右分支：需要 -->
+  <path d="M760 130 L800 170" stroke="#fb7185" stroke-width="1.2"/>
+  <text x="790" y="150" fill="#fb7185" font-size="10">频繁</text>
+
+  <rect x="680" y="170" width="200" height="40" rx="8" fill="#1f2937" stroke="#fb7185"/>
+  <text x="780" y="195" text-anchor="middle" fill="#fb7185" font-size="12" font-weight="600">有 GooseFS 基础设施？</text>
+
+  <!-- 右-右-左：有 -->
+  <path d="M730 210 L650 250" stroke="#6ee7b7" stroke-width="1.2"/>
+  <text x="680" y="235" fill="#6ee7b7" font-size="10">有</text>
+
+  <rect x="530" y="250" width="240" height="35" rx="8" fill="#162924" stroke="#6ee7b7"/>
+  <text x="650" y="272" text-anchor="middle" fill="#6ee7b7" font-size="11" font-weight="600">GooseFS 缓存加速</text>
+
+  <!-- 右-右-右：无 -->
+  <path d="M830 210 L850 250" stroke="#a78bfa" stroke-width="1.2"/>
+  <text x="850" y="235" fill="#a78bfa" font-size="10">无</text>
+
+  <rect x="780" y="250" width="100" height="35" rx="8" fill="#162924" stroke="#a78bfa"/>
+  <text x="830" y="272" text-anchor="middle" fill="#a78bfa" font-size="11" font-weight="600">P2P 分发</text>
+</svg>
+</div>
+
+<div class="anchor-box">
+<div class="label">实战锚点</div>
+<b>大规模推理集群的混合方案</b>：固定节点用 NVMe local PV（常驻模型，22 秒启动） + 弹性节点用 P2P 分发（新节点加入时从邻近节点拉取，1.8GB/s，40 秒启动）。P2P 分发的关键是<b>种子节点</b>——保证至少有 2-3 个节点持有完整模型副本，其他节点从它们并行拉取分块。实测 10 个节点同时扩容，每个节点都能达到 1.5GB/s+ 的聚合下载速度。
+</div>
+
+<div class="callout info">
+<b>为什么不把模型打进镜像？</b> 一个 70GB 的镜像层即使用 zstd 压缩也有 50GB+，① 推送/拉取时间极长 ② 镜像仓库带宽打满 ③ 模型版本迭代频繁，每次更新都要 build 新镜像 ④ 无法复用已缓存的模型文件。正确做法是镜像只装推理框架（~5GB），模型权重走存储卷挂载。
+</div>
+</div>
+
+<!-- ============================================================ -->
+<h2 id="takeaway"><span class="step">§7</span>带走这些</h2>
+
+<div class="card">
+<div class="kv">
+  <div class="k">① PV/PVC 分离</div><div>PV 是集群级存储资源，PVC 是 namespace 级申请单，1:1 绑定。Pod 只关心 PVC name。</div>
+  <div class="k">② 动态供给</div><div>StorageClass + CSI Provisioner 自动创建 PV。本地盘必须用 WaitForFirstConsumer 避免拓扑错配。</div>
+  <div class="k">③ accessModes</div><div>RWO = 单节点（本地盘/云磁盘）、ROX = 多节点只读（模型共享最常用）、RWX = 多节点读写。</div>
+  <div class="k">④ 本地盘选 local PV</div><div>不要用 hostPath——local PV 有 nodeAffinity 让 scheduler 感知拓扑，避免 Pod 调度到错误节点。</div>
+  <div class="k">⑤ 网络盘选型</div><div>CephFS/NFS 适合共享模型；对象存储适合冷归档；GooseFS 适合缓存加速高频访问模型。</div>
+  <div class="k">⑥ CSI 两侧</div><div>Controller 侧管创建/删除/快照，Node 侧管格式化/挂载。所有存储接入 K8S 都走 CSI 标准接口。</div>
+  <div class="k">⑦ 推理场景首选</div><div>固定节点 → NVMe local PV（22s）；弹性扩缩 → GooseFS/P2P（40s）；简单起步 → CephFS ROX。</div>
+</div>
+
+<div class="callout">
+<b>下一章预告</b>——存储解决了"模型在哪"的问题，但 Pod 被调度到哪个节点、如何感知 GPU 拓扑和本地盘位置，是 Scheduler 的工作。下一章深入调度器的插件架构、自定义打分、Gang Scheduling，理解推理 Pod 为什么会 Pending。→ <a href="06-scheduler-deep.html" style="color:var(--brand)">06-scheduler-deep.html</a>
+</div>
+</div>
+
+<div class="foot">
+第一层 · 05 / 15 · 回到 <a href="index.html" style="color:var(--brand)">目录</a>
+</div>
+
+</div>
+  <script src="../course-nav.js"></script>
+</body>
+</html>

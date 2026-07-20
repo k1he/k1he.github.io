@@ -1,0 +1,761 @@
+<!doctype html><html lang="zh-CN"><head>
+<meta charset="utf-8"/><meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>四个角色与一次请求的生命周期</title>
+<style>
+
+:root{
+  --bg:#0b0d12;--panel:#11141b;--panel2:#161a23;--ink:#e6e8ee;--mute:#8b93a7;
+  --line:#262b38;--brand:#6ee7b7;--brand2:#7dd3fc;--warn:#fbbf24;--bad:#f87171;
+  --pink:#fb7185;--purple:#a78bfa;--code:#0f1218;
+  --R0:#fbbf24;--R1:#7dd3fc;--R2:#a78bfa;--R3:#34d399;
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font:14.5px/1.7 -apple-system,"SF Pro Text","PingFang SC",sans-serif}
+.wrap{max-width:1240px;margin:0 auto;padding:32px 28px 80px}
+h1{font-size:32px;margin:0 0 8px;letter-spacing:.5px}
+h1 .tag{display:inline-block;font-size:12px;color:var(--bg);background:var(--brand);padding:2px 8px;border-radius:6px;vertical-align:middle;margin-left:10px}
+.sub{color:var(--mute);margin-bottom:30px}
+h2{font-size:22px;margin:48px 0 12px;padding-bottom:10px;border-bottom:1px solid var(--line)}
+h2 .step{display:inline-block;color:var(--bg);background:var(--brand);padding:2px 10px;border-radius:8px;font-size:13px;font-family:"SF Mono",monospace;margin-right:10px;vertical-align:middle}
+h3{font-size:17px;margin:24px 0 8px;color:var(--brand2)}
+h4{font-size:14px;margin:18px 0 6px;color:var(--warn)}
+.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:22px;margin:16px 0}
+.grid{display:grid;gap:16px}
+.cols-2{grid-template-columns:1fr 1fr}
+.cols-3{grid-template-columns:repeat(3,1fr)}
+.cols-4{grid-template-columns:repeat(4,1fr)}
+@media (max-width:900px){.cols-2,.cols-3,.cols-4{grid-template-columns:1fr}}
+code,pre{font-family:"SF Mono","JetBrains Mono",Menlo,Consolas,monospace}
+code{font-size:12.5px;background:#1a1f2b;padding:1px 6px;border-radius:4px;color:#cbd5e1}
+pre{background:var(--code);border:1px solid var(--line);border-radius:10px;padding:14px 16px;overflow:auto;line-height:1.6;font-size:12.5px}
+pre code{background:none;padding:0}
+.kw{color:#c4b5fd}.str{color:#86efac}.num{color:#fbbf24}.com{color:#6b7280;font-style:italic}.fn{color:#7dd3fc}
+.callout{border-left:3px solid var(--brand);background:rgba(110,231,183,.06);padding:12px 16px;border-radius:0 10px 10px 0;margin:14px 0}
+.callout.warn{border-color:var(--warn);background:rgba(251,191,36,.06)}
+.callout.bad{border-color:var(--bad);background:rgba(248,113,113,.06)}
+.callout.info{border-color:var(--brand2);background:rgba(125,211,252,.06)}
+.svg-wrap{background:var(--panel2);border:1px solid var(--line);border-radius:14px;padding:18px;overflow:auto;display:flex;justify-content:center}
+.svg-wrap svg{max-width:100%;height:auto}
+.foot{color:var(--mute);font-size:12px;margin-top:50px;text-align:center}
+.toc{display:flex;flex-wrap:wrap;gap:8px;margin:14px 0 24px}
+.toc a{background:#1a1f2b;border:1px solid var(--line);padding:6px 12px;border-radius:99px;font-size:12.5px;color:var(--brand2);text-decoration:none}
+.toc a:hover{border-color:var(--brand);color:var(--brand)}
+table{width:100%;border-collapse:collapse;margin:8px 0}
+th,td{padding:9px 12px;text-align:left;border-bottom:1px solid var(--line);vertical-align:top;font-size:13px}
+th{color:var(--mute);font-weight:500}
+ul.tight{margin:4px 0 0 18px;padding:0}ul.tight li{margin:4px 0}
+
+/* Demo */
+.demo{background:#0f1218;border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}
+.demo-title{font-size:16px;font-weight:600;color:var(--brand);margin:0 0 4px}
+.demo-sub{color:var(--mute);font-size:12.5px;margin-bottom:14px}
+.demo-controls{display:flex;flex-wrap:wrap;gap:8px;margin:12px 0;align-items:center}
+.demo-btn{background:#1a1f2b;border:1px solid var(--line);color:var(--ink);padding:7px 14px;border-radius:8px;font-size:12.5px;cursor:pointer;font-family:inherit;transition:all .12s}
+.demo-btn:hover{border-color:var(--brand);color:var(--brand)}
+.demo-btn.primary{background:var(--brand);color:var(--bg);border-color:var(--brand);font-weight:600}
+.demo-btn.primary:hover{background:#5cd6a4}
+.demo-step{font-family:"SF Mono",monospace;font-size:12px;color:var(--mute);margin-left:auto;background:#1a1f2b;padding:4px 10px;border-radius:6px;border:1px solid var(--line)}
+.demo-narration{background:rgba(110,231,183,.08);border-left:3px solid var(--brand);padding:10px 14px;border-radius:0 8px 8px 0;margin-top:12px;color:#cbd5e1;font-size:13px;min-height:42px;transition:all .3s}
+
+.rank-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-top:10px}
+.rank-card{background:#0a0d12;border:1px solid var(--line);border-radius:8px;padding:12px;font-size:12px;text-align:center;transition:all .3s}
+.rank-card.active{border-color:var(--brand);box-shadow:0 0 12px rgba(110,231,183,.3)}
+.rank-card .rid{font-family:"SF Mono",monospace;font-weight:700;font-size:14px;margin-bottom:6px}
+.rank-card .body{color:var(--mute);font-family:"SF Mono",monospace;font-size:11px;line-height:1.5}
+.bar-h{display:flex;flex-direction:column;gap:3px;margin:8px 0}
+.bar-row{display:grid;grid-template-columns:90px 1fr;gap:8px;align-items:center;font-size:11px}
+.bar-row .lbl{color:var(--mute);font-family:"SF Mono",monospace}
+.bar-track{height:24px;background:#0a0d12;border:1px solid var(--line);border-radius:4px;position:relative;overflow:hidden}
+.bar-seg{position:absolute;top:2px;bottom:2px;border-radius:3px;display:flex;align-items:center;justify-content:center;font-size:10px;font-weight:600;color:#0b0d12;transition:all .35s}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.55}}
+.pulse{animation:pulse 1s ease-in-out infinite}
+.kpi{display:flex;gap:12px;flex-wrap:wrap;margin-top:8px;font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace}
+.kpi span{background:#1a1f2b;padding:3px 8px;border-radius:5px;border:1px solid var(--line)}
+.kpi span b{color:var(--brand)}
+
+
+.queue-box{background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:12px;min-height:90px}
+.queue-title{font-size:11.5px;color:var(--mute);font-family:"SF Mono",monospace;margin-bottom:8px;display:flex;justify-content:space-between}
+.req-chip{display:inline-block;background:#1a1f2b;border:1px solid var(--line);border-radius:6px;padding:4px 8px;font-size:11px;font-family:"SF Mono",monospace;margin:3px;transition:all .35s;cursor:pointer}
+.req-chip.active{box-shadow:0 0 10px currentColor;border-color:var(--warn);color:var(--warn)}
+.path{color:var(--mute);font-size:11px;font-family:"SF Mono",monospace}
+.hl{background:rgba(251,191,36,.15);color:var(--warn);padding:0 3px;border-radius:3px}
+.flow-node{fill:#11141b;stroke:#262b38;stroke-width:1.5;transition:all .3s}
+.flow-edge{stroke:#3a4050;stroke-width:1.5;fill:none;transition:all .3s}
+.flow-edge.active{stroke:#fbbf24;stroke-width:2.5}
+.role-card{background:var(--panel);border:2px solid var(--line);border-radius:14px;padding:20px;transition:all .2s;cursor:pointer}
+.role-card:hover{transform:translateY(-2px)}
+.role-card.router{border-color:var(--warn)}
+.role-card.prefill{border-color:var(--brand)}
+.role-card.decode{border-color:var(--brand2)}
+.role-card.mooncake{border-color:var(--pink)}
+.role-card h3{margin-top:0}
+.role-badge{display:inline-block;font-size:11px;padding:3px 9px;border-radius:10px;font-weight:600;margin-bottom:6px;font-family:"SF Mono",monospace}
+.role-badge.router{background:rgba(251,191,36,0.15);color:var(--warn)}
+.role-badge.prefill{background:rgba(110,231,183,0.15);color:var(--brand)}
+.role-badge.decode{background:rgba(125,211,252,0.15);color:var(--brand2)}
+.role-badge.mooncake{background:rgba(251,113,133,0.15);color:var(--pink)}
+.nav{display:flex;justify-content:space-between;margin-top:40px;padding-top:24px;border-top:1px solid var(--line)}
+.nav a{color:var(--brand2);text-decoration:none;font-size:13.5px}
+
+</style>
+</head><body><div class="wrap">
+<h1>四个角色与一次请求的生命周期<span class="tag">PD · 2/7</span></h1>
+<div class="sub">先讲 PD 系统中的 4 个角色各自干什么，再讲他们通过 bootstrap_room 怎么认亲、协作完成一次请求。最后用可交互时序回放整个过程。</div>
+<div class="toc">
+<a href="#why">为什么 4 个角色</a>
+<a href="#roles">4 角色概览 🎭</a>
+<a href="#router">① Router</a>
+<a href="#prefill">② P 节点</a>
+<a href="#decode">③ D 节点</a>
+<a href="#mooncake">④ Mooncake</a>
+<a href="#stateless">无状态 + room 认亲</a>
+<a href="#collab">协作 6 条消息</a>
+<a href="#lifecycle">全链路时序 🎬</a>
+<a href="#states">状态机</a>
+<a href="#summary">要点</a>
+</div>
+
+<h2 id="why"><span class="step">PART 1</span>为什么要把职责拆成 4 个角色</h2>
+<div class="card">
+<p>LLM 推理本来是 "一台 GPU 从头跑到尾" 的单体任务。PD 分离把它拆成 P + D 两个独立进程，自然就暴露出几个新问题：</p>
+<ul class="tight">
+<li><strong>请求要同时到达 P 和 D</strong> → <span class="hl">需要 Router</span></li>
+<li><strong>P/D 各自做自己那块</strong> → <span class="hl">需要独立的 P 节点、D 节点</span></li>
+<li><strong>P 的 KV 要搬到 D</strong> → 跨机搬几十 GB，NCCL 拓扑僵化做不了 → <span class="hl">需要 Mooncake</span></li>
+</ul>
+
+<p>所以 PD 系统里<strong>刚好 4 个角色</strong>。再少一个都不行：少 Router 就要 client 自己选 PD 对；少 P/D 就没 PD；少 Mooncake 就无法支持 P/D 数量动态变化。</p>
+
+<div class="callout">
+<strong>关键思路</strong>：Router 做选择 + 生成 room_id；P/D 对请求<u>无状态</u>，靠 room_id 找对方；Mooncake 负责真把 KV 从 P 搬到 D。接下来逐个拆解。
+</div>
+</div>
+
+<h2 id="roles"><span class="step">PART 2</span>4 个角色一眼看懂</h2>
+
+<div class="grid cols-2" style="gap:14px">
+  <a href="#router" style="text-decoration:none;color:inherit">
+    <div class="role-card router">
+      <div class="role-badge router">角色 1 · 入口</div>
+      <h3 style="color:var(--warn)">🧭 Router</h3>
+      <p style="color:var(--mute);font-size:13px;margin-bottom:10px"><strong>职责</strong>：做"选择 + 分派"</p>
+      <ul class="tight" style="font-size:12.5px">
+        <li>从 P 池选一台 P（默认 <code>cache_aware</code>）</li>
+        <li>从 D 池选一台 D（默认 <code>power_of_two</code>）</li>
+        <li>生成唯一 <code>bootstrap_room</code> 写进请求 body</li>
+        <li><code>tokio::join!</code> 同时发给 P 和 D</li>
+        <li>转发 D 的 SSE 流回 client</li>
+      </ul>
+      <p style="color:var(--mute);font-size:11.5px;margin-top:8px">语言：<b style="color:var(--warn)">Rust</b> · <span class="path">sgl-model-gateway/src/routers/http/pd_router.rs</span></p>
+    </div>
+  </a>
+
+  <a href="#prefill" style="text-decoration:none;color:inherit">
+    <div class="role-card prefill">
+      <div class="role-badge prefill">角色 2 · 算力担当</div>
+      <h3 style="color:var(--brand)">⚙️ P 节点（Prefill Worker）</h3>
+      <p style="color:var(--mute);font-size:13px;margin-bottom:10px"><strong>职责</strong>："把 prompt 嚼成 KV cache"</p>
+      <ul class="tight" style="font-size:12.5px">
+        <li>收到请求进 BootstrapQueue <u>等 D 通知</u></li>
+        <li>收到 D 的 metadata 后才开始 forward</li>
+        <li>跑完整个 prompt 的 attention + MLP</li>
+        <li>得到 KV cache + 首个 output token</li>
+        <li>委托 Mooncake 把 KV 发给 D</li>
+      </ul>
+      <p style="color:var(--mute);font-size:11.5px;margin-top:8px">语言：<b style="color:var(--brand)">Python + CUDA</b> · <span class="path">sglang/srt/disaggregation/prefill.py</span></p>
+    </div>
+  </a>
+
+  <a href="#decode" style="text-decoration:none;color:inherit">
+    <div class="role-card decode">
+      <div class="role-badge decode">角色 3 · 流式输出</div>
+      <h3 style="color:var(--brand2)">💧 D 节点（Decode Worker）</h3>
+      <p style="color:var(--mute);font-size:13px;margin-bottom:10px"><strong>职责</strong>："接手 KV 继续生成 token"</p>
+      <ul class="tight" style="font-size:12.5px">
+        <li>收到请求<strong>先预分配</strong> KV page（主动）</li>
+        <li>把目标 page 地址 + room 通过 ZMQ 告诉 P</li>
+        <li>等 P 的 KV 通过 Mooncake 写进来</li>
+        <li>commit 首 token（从 metadata buffer 读）</li>
+        <li>进 running_batch 循环 + SSE 输出</li>
+      </ul>
+      <p style="color:var(--mute);font-size:11.5px;margin-top:8px">语言：<b style="color:var(--brand2)">Python + CUDA</b> · <span class="path">sglang/srt/disaggregation/decode.py</span></p>
+    </div>
+  </a>
+
+  <a href="#mooncake" style="text-decoration:none;color:inherit">
+    <div class="role-card mooncake">
+      <div class="role-badge mooncake">角色 4 · 搬运工</div>
+      <h3 style="color:var(--pink)">🚚 Mooncake（独立项目）</h3>
+      <p style="color:var(--mute);font-size:13px;margin-bottom:10px"><strong>职责</strong>："把一段显存从 A 搬到 B"</p>
+      <ul class="tight" style="font-size:12.5px">
+        <li>启动时注册 GPU 显存（KV pool + aux）</li>
+        <li>维护跨机 session（按 hostname 发现 peer）</li>
+        <li>收到 <code>(src, dst, len)</code> 做 RDMA write</li>
+        <li>自动 multi-QP 并行打满网卡</li>
+        <li>完成后 SGLang 通过 ZMQ 通知 D</li>
+      </ul>
+      <p style="color:var(--mute);font-size:11.5px;margin-top:8px">语言：<b style="color:var(--pink)">C++ + Python binding</b> · <span class="path">kvcache-ai/Mooncake (独立仓库)</span></p>
+    </div>
+  </a>
+</div>
+
+<!-- Overview diagram -->
+<div class="svg-wrap" style="margin-top:20px">
+<svg viewBox="0 0 1000 460" xmlns="http://www.w3.org/2000/svg">
+<defs>
+  <marker id="ov-ar" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L0,8 L8,4 z" fill="#fbbf24"/></marker>
+  <marker id="ov-ar-pink" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L0,8 L8,4 z" fill="#fb7185"/></marker>
+  <marker id="ov-ar-green" markerWidth="8" markerHeight="8" refX="7" refY="4" orient="auto"><path d="M0,0 L0,8 L8,4 z" fill="#6ee7b7"/></marker>
+</defs>
+
+<rect x="20" y="200" width="110" height="60" rx="8" fill="#11141b" stroke="#a78bfa" stroke-width="2"/>
+<text x="75" y="228" text-anchor="middle" font-size="13" fill="#a78bfa" font-weight="700">Client</text>
+<text x="75" y="246" text-anchor="middle" font-size="10" fill="#8b93a7">HTTP POST</text>
+
+<rect x="180" y="180" width="160" height="100" rx="10" fill="#11141b" stroke="#fbbf24" stroke-width="2"/>
+<text x="260" y="205" text-anchor="middle" font-size="13" fill="#fbbf24" font-weight="700">① Router</text>
+<text x="260" y="225" text-anchor="middle" font-size="10.5" fill="#e6e8ee">选 P (cache_aware)</text>
+<text x="260" y="240" text-anchor="middle" font-size="10.5" fill="#e6e8ee">选 D (power_of_two)</text>
+<text x="260" y="255" text-anchor="middle" font-size="10.5" fill="#fbbf24">生成 room_id</text>
+<text x="260" y="270" text-anchor="middle" font-size="10" fill="#8b93a7">tokio::join!</text>
+
+<rect x="420" y="40" width="200" height="140" rx="10" fill="#11141b" stroke="#6ee7b7" stroke-width="2"/>
+<text x="520" y="65" text-anchor="middle" font-size="13" fill="#6ee7b7" font-weight="700">② P 节点</text>
+<text x="520" y="85" text-anchor="middle" font-size="10.5" fill="#e6e8ee">进 BootstrapQueue 等 D</text>
+<text x="520" y="101" text-anchor="middle" font-size="10.5" fill="#e6e8ee">收到 metadata → forward</text>
+<text x="520" y="117" text-anchor="middle" font-size="10.5" fill="#e6e8ee">算 prompt KV + 首 token</text>
+<text x="520" y="133" text-anchor="middle" font-size="10.5" fill="#e6e8ee">进 InflightQueue 等 transfer</text>
+<text x="520" y="155" text-anchor="middle" font-size="10" fill="#8b93a7">对 request 无状态</text>
+<text x="520" y="170" text-anchor="middle" font-size="10" fill="#8b93a7">只认 room_id</text>
+
+<rect x="420" y="280" width="200" height="140" rx="10" fill="#11141b" stroke="#7dd3fc" stroke-width="2"/>
+<text x="520" y="305" text-anchor="middle" font-size="13" fill="#7dd3fc" font-weight="700">③ D 节点</text>
+<text x="520" y="325" text-anchor="middle" font-size="10.5" fill="#e6e8ee">进 PreallocQueue 先占 KV</text>
+<text x="520" y="341" text-anchor="middle" font-size="10.5" fill="#e6e8ee">send_metadata 告诉 P 地址</text>
+<text x="520" y="357" text-anchor="middle" font-size="10.5" fill="#e6e8ee">等 KV 到达 + commit</text>
+<text x="520" y="373" text-anchor="middle" font-size="10.5" fill="#e6e8ee">running_batch decode + SSE</text>
+<text x="520" y="395" text-anchor="middle" font-size="10" fill="#8b93a7">对 request 无状态</text>
+<text x="520" y="410" text-anchor="middle" font-size="10" fill="#8b93a7">只认 room_id</text>
+
+<rect x="720" y="160" width="230" height="140" rx="10" fill="#11141b" stroke="#fb7185" stroke-width="2"/>
+<text x="835" y="185" text-anchor="middle" font-size="13" fill="#fb7185" font-weight="700">④ Mooncake</text>
+<text x="835" y="203" text-anchor="middle" font-size="10" fill="#a78bfa">(独立项目)</text>
+<text x="835" y="225" text-anchor="middle" font-size="10.5" fill="#e6e8ee">C++ RDMA 引擎</text>
+<text x="835" y="240" text-anchor="middle" font-size="10.5" fill="#e6e8ee">batch_transfer_sync</text>
+<text x="835" y="256" text-anchor="middle" font-size="10.5" fill="#e6e8ee">multi-QP / NVLink / IB</text>
+<text x="835" y="275" text-anchor="middle" font-size="10" fill="#8b93a7">只懂字节搬运</text>
+<text x="835" y="290" text-anchor="middle" font-size="10" fill="#8b93a7">不懂 KV / room</text>
+
+<path d="M130,230 L180,230" class="flow-edge" marker-end="url(#ov-ar)"/>
+<text x="145" y="220" font-size="10" fill="#a78bfa">req</text>
+<path d="M340,210 L420,110" class="flow-edge active" marker-end="url(#ov-ar)"/>
+<text x="345" y="160" font-size="10.5" fill="#fbbf24">HTTP + room=0x3f..</text>
+<path d="M340,250 L420,340" class="flow-edge active" marker-end="url(#ov-ar)"/>
+<text x="345" y="305" font-size="10.5" fill="#fbbf24">HTTP + room=0x3f..</text>
+<path d="M520,280 Q460,230 520,180" class="flow-edge" stroke="#7dd3fc" marker-end="url(#ov-ar)"/>
+<text x="400" y="230" font-size="10.5" fill="#7dd3fc">ZMQ: room + 目标地址</text>
+<path d="M620,110 L720,200" class="flow-edge" stroke="#6ee7b7" marker-end="url(#ov-ar-green)"/>
+<text x="640" y="150" font-size="10.5" fill="#6ee7b7">委托搬 KV</text>
+<path d="M720,260 L620,350" class="flow-edge" stroke="#fb7185" marker-end="url(#ov-ar-pink)" stroke-dasharray="5 3"/>
+<text x="625" y="305" font-size="10.5" fill="#fb7185">RDMA write</text>
+<path d="M420,380 Q300,350 260,280" class="flow-edge" stroke="#7dd3fc" marker-end="url(#ov-ar)" stroke-dasharray="4 3"/>
+<text x="290" y="415" font-size="10.5" fill="#7dd3fc">SSE token stream</text>
+<path d="M180,250 L130,250" class="flow-edge" stroke="#a78bfa" marker-end="url(#ov-ar)" stroke-dasharray="4 3"/>
+<text x="130" y="275" font-size="10" fill="#a78bfa">SSE</text>
+</svg>
+</div>
+
+<h2 id="router"><span class="step">PART 3</span>角色 1：Router · "选择 + 分派"</h2>
+<div class="card">
+<h3>核心输入输出</h3>
+<table>
+<tr><th>INPUT</th><th>OUTPUT</th></tr>
+<tr><td>client 的 HTTP 请求</td><td>D 的 SSE token 流（转发给 client）</td></tr>
+</table>
+
+<h3>内部 4 步</h3>
+<ol>
+<li><strong>选 P</strong>：<code>cache_aware</code> 策略——查 Router 进程内的 radix tree，优先路由到"上次这段前缀去过的 P"</li>
+<li><strong>选 D</strong>：<code>power_of_two</code> 策略——随机抽两个 D，取 load 小的</li>
+<li><strong>生成 room_id</strong>：<code>rand::random::&lt;u64&gt;() &amp; i64::MAX</code>，本请求的"临时暗号"</li>
+<li><strong>双发</strong>：<code>tokio::join!(p.send(), d.send())</code> 并发打给 P 和 D</li>
+</ol>
+
+<div class="callout warn">
+<strong>Router 的关键设计</strong>：P 和 D 是<u>独立选择</u>，不是绑定对。选完 P=p1, D=d2 只是一个"临时组合"，把他们串起来的完全靠 <code>room_id</code>。
+</div>
+</div>
+
+<h2 id="prefill"><span class="step">PART 4</span>角色 2：P 节点 · "算力担当，被动等通知"</h2>
+<div class="card">
+<h3>核心输入输出</h3>
+<table>
+<tr><th>INPUT</th><th>OUTPUT</th></tr>
+<tr><td>① Router 的 HTTP（带 room_id）<br>② D 通过 ZMQ 发来的 metadata（KV 写到哪）</td><td>① prompt 的 KV cache（通过 Mooncake 发给 D）<br>② 首个 output token（通过 metadata buffer 发给 D）</td></tr>
+</table>
+
+<h3>P 对请求是无状态的</h3>
+<ul class="tight">
+<li>P 不知道哪个 user、哪个 session、哪个对话轮</li>
+<li>P 只认 <code>room_id</code>：sender / 队列项 / transfer_infos 表项全部用它做 key</li>
+<li>P 收到 HTTP 后<strong>不立即 forward</strong>——进 BootstrapQueue 等 D 的 ZMQ，没收到就一直等</li>
+<li>收到 metadata 后进 waiting_queue，装箱 → forward → 产出 KV + 首 token</li>
+</ul>
+
+<h3>为什么 P 要"被动等通知"</h3>
+<p>"KV 写到 D 的哪些 page" 这个信息只有 D 自己知道。P 无法预测 D 的 KV pool 状态，只能等 D 分配好后告诉它。这是 PD 架构里看起来"反直觉"但其实必然的设计。</p>
+</div>
+
+<h2 id="decode"><span class="step">PART 5</span>角色 3：D 节点 · "流式输出 + 主动分配"</h2>
+<div class="card">
+<h3>核心输入输出</h3>
+<table>
+<tr><th>INPUT</th><th>OUTPUT</th></tr>
+<tr><td>① Router 的 HTTP（带 room_id）<br>② Mooncake 写进来的 KV + metadata<br>③ Mooncake 完成通知（ZMQ）</td><td>① 发给 P 的 metadata（KV 目标地址）<br>② SSE token 流（通过 Router 发给 client）</td></tr>
+</table>
+
+<h3>D 做 3 件大事</h3>
+<ol>
+<li><strong>主动分配 KV</strong>：在自己 KV pool 里挖好坑位（<code>_pre_alloc</code>），记录 page 索引</li>
+<li><strong>告诉 P 目标地址</strong>：通过 ZMQ 发 <code>(room_id, 目标 page 索引, aux 索引, D 的 endpoint)</code> 给 P</li>
+<li><strong>等货 + commit + decode</strong>：KV 到齐 → 校验 room_id → 首 token 进 req.output_ids → 加入 running_batch → 每步生成一个 token，SSE 吐回 Router</li>
+</ol>
+
+<h3>D 也是无状态的</h3>
+<ul class="tight">
+<li>D 只认 <code>room_id</code>：receiver / PreallocQueue 项 / metadata buffer slot 全部用 room_id 做 key</li>
+<li>"预分配" 只是给这个 room_id 占坑位，不涉及任何业务语义</li>
+<li>commit 时最后一道保险：比较 <code>metadata_buffer.bootstrap_room</code> 是否等于本 req 的 room_id，防止串包</li>
+</ul>
+</div>
+
+<h2 id="mooncake"><span class="step">PART 6</span>角色 4：Mooncake · "纯粹的字节搬运工"</h2>
+<div class="card">
+<h3>核心输入输出</h3>
+<table>
+<tr><th>INPUT</th><th>OUTPUT</th></tr>
+<tr><td><code>(session_id, src_ptrs, dst_ptrs, lens)</code> 四元组</td><td>RDMA write 完成 / 失败（返回码）</td></tr>
+</table>
+
+<h3>Mooncake 完全不懂业务</h3>
+<p>Mooncake 收到的就是 "从地址 A 搬 len 字节到地址 B"——它不知道 KV cache、room_id、layer、head。所有业务翻译都在 SGLang 的 <code>mooncake/conn.py</code> 里做完，才通过 <code>batch_transfer_sync</code> 扔给 Mooncake。</p>
+
+<h3>Mooncake 提供的 5 个操作</h3>
+<pre><span class="path">// sglang/srt/distributed/device_communicators/mooncake_transfer_engine.py</span>
+<span class="kw">class</span> MooncakeTransferEngine:
+    <span class="kw">def</span> <span class="fn">initialize</span>(hostname, protocol):           <span class="com"># 启动 engine，广播拓扑</span>
+    <span class="kw">def</span> <span class="fn">register</span>(ptr, length):                    <span class="com"># 注册显存给 RDMA</span>
+    <span class="kw">def</span> <span class="fn">batch_register</span>(ptrs, lengths):            <span class="com"># 批量注册</span>
+    <span class="kw">def</span> <span class="fn">transfer_sync</span>(sid, src, dst, len):        <span class="com"># 单次 RDMA write</span>
+    <span class="kw">def</span> <span class="fn">batch_transfer_sync</span>(sid, srcs, dsts, lens):  <span class="com"># ★ 真正发 KV 的</span></pre>
+
+<h3>启动时 vs 请求时</h3>
+<table>
+<tr><th>时机</th><th>做什么</th></tr>
+<tr><td>进程启动</td><td>SGLang 调 <code>batch_register</code> 把整个 KV pool + metadata buffer <strong>一次性</strong>注册进来</td></tr>
+<tr><td>每个请求</td><td>SGLang 调 <code>batch_transfer_sync</code> 传这个请求的 KV chunk，zero-copy</td></tr>
+</table>
+</div>
+
+<h2 id="stateless"><span class="step">PART 7</span>核心机制：无状态 + bootstrap_room 认亲</h2>
+<div class="card">
+<p>你的总结非常到位：<strong>PD 对请求是无状态的，靠 room_id 把 P/D 关联起来</strong>。展开三个子结论：</p>
+
+<h3>① 为什么必须无状态</h3>
+<ul class="tight">
+<li>P 池和 D 池是独立的 worker 数组，Router 每次请求重新选，没有"粘性"</li>
+<li>任何一台 P/D 都要能处理任何 room_id</li>
+<li>这让水平扩缩容、节点重启、故障切换都非常简单</li>
+</ul>
+
+<h3>② room_id 在两侧分别是什么 key</h3>
+<table>
+<tr><th>在 P 侧</th><th>在 D 侧</th><th>用途</th></tr>
+<tr><td><code>transfer_infos[room]</code></td><td><code>prefill_response_tracker[room]</code></td><td>登记对端发来的 metadata / 完成状态</td></tr>
+<tr><td><code>request_status[room]</code></td><td><code>request_status[room]</code></td><td>独立维护两侧 KVPoll 状态</td></tr>
+<tr><td><code>MetadataBuffers.bootstrap_room[slot]</code>（写入）</td><td><code>MetadataBuffers.bootstrap_room[slot]</code>（读出校验）</td><td>防 metadata buffer 串包</td></tr>
+<tr><td>sender.bootstrap_room</td><td>receiver.bootstrap_room</td><td>识别"这是哪个请求"</td></tr>
+</table>
+
+<h3>③ room_id 的三次关键旅程</h3>
+<ol>
+<li><strong>Router 生成</strong>：<code>generate_room_id()</code> 产生 64-bit 随机数，写进 request JSON</li>
+<li><strong>P/D 收到后登记</strong>：P 创建 sender 用它做 key；D 创建 receiver 用它做 key。此时 P 和 D <u>互相不知道对方存在</u></li>
+<li><strong>D 主动握手</strong>：D 通过 ZMQ 把 <code>(room_id, 目标地址)</code> 发给 P；P 的 bootstrap_thread 把它登进 <code>transfer_infos[room_id]</code>——<strong>这一刻 P/D 通过 room_id 相认</strong></li>
+</ol>
+
+<div class="callout">
+<strong>比喻</strong>：Router 就像饭店前台，给你一张"取餐号" (room_id)，同时分别给厨房 (P) 和传菜员 (D) 看了这个号码。厨房只管按号备菜，传菜员只管按号收菜——他们互不认识，但通过号码知道这碗饭的去向。
+</div>
+</div>
+
+<h2 id="collab"><span class="step">PART 8</span>4 角色之间的 6 条消息</h2>
+<div class="card">
+<table>
+<tr><th>#</th><th>谁 → 谁</th><th>通信</th><th>内容</th><th>触发</th></tr>
+<tr><td>M1</td><td>Router → P</td><td>HTTP POST</td><td>整个请求 + room_id</td><td>每次请求</td></tr>
+<tr><td>M2</td><td>Router → D</td><td>HTTP POST</td><td>整个请求 + room_id（同 M1）</td><td>和 M1 <u>并发</u></td></tr>
+<tr><td>M3</td><td>D → P</td><td>ZMQ (TCP)</td><td>room + 目标 page 地址 + aux idx + D endpoint</td><td>D 预分配完</td></tr>
+<tr><td>M4</td><td>P → Mooncake → D</td><td>RDMA</td><td>KV cache 字节 + metadata buffer（首 token）</td><td>P forward 完</td></tr>
+<tr><td>M5</td><td>P → D（Mooncake 完成后）</td><td>ZMQ (TCP)</td><td>room + Success/Failed + prefill_rank</td><td>RDMA 完成</td></tr>
+<tr><td>M6</td><td>D → Router → Client</td><td>HTTP SSE</td><td>token 流</td><td>D 每步 decode</td></tr>
+</table>
+
+<div class="callout">
+<strong>关键观察</strong>：<br>
+• <strong>控制面</strong>（M3, M5）走 ZMQ，数据小，延迟敏感<br>
+• <strong>数据面</strong>（M4）走 Mooncake RDMA，数据大，带宽敏感<br>
+• 控制面和数据面<strong>分离</strong>，ZMQ 不会因为 RDMA 拥塞而阻塞<br>
+• 每条消息都带 <code>room_id</code>，保证归类到正确请求
+</div>
+</div>
+
+<h2 id="lifecycle"><span class="step">PART 9</span>全链路时序：4 角色视角回放</h2>
+
+<div class="demo">
+<div class="demo-title">🎬 10 步全链路 · 可播放 · 可跳转</div>
+<div class="demo-sub">点 ▶ 按时间播放，或点时序图上任意数字跳到那一刻。下方显示当时 4 个角色的内部状态 + 源码片段。</div>
+
+<div class="demo-controls">
+  <button class="demo-btn primary" id="lc-play">▶ 播放</button>
+  <button class="demo-btn" id="lc-next">下一步</button>
+  <button class="demo-btn" id="lc-reset">↻ 重置</button>
+  <span class="demo-step" id="lc-step">step 0 / 10</span>
+</div>
+
+<div style="background:#0a0d12;border:1px solid var(--line);border-radius:10px;padding:16px">
+  <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px" id="lc-strip"></div>
+
+  <div style="overflow-x:auto">
+  <svg viewBox="0 0 1200 340" xmlns="http://www.w3.org/2000/svg" style="width:100%;min-width:900px" id="lc-svg">
+    <defs><marker id="lcar" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#fbbf24"/></marker></defs>
+    <text x="10" y="35" font-size="13" fill="#a78bfa" font-weight="700">Client</text>
+    <text x="10" y="95" font-size="13" fill="#fbbf24" font-weight="700">① Router</text>
+    <text x="10" y="155" font-size="13" fill="#6ee7b7" font-weight="700">② P 节点</text>
+    <text x="10" y="215" font-size="13" fill="#7dd3fc" font-weight="700">③ D 节点</text>
+    <text x="10" y="275" font-size="13" fill="#fb7185" font-weight="700">④ Mooncake</text>
+    <g opacity="0.18">
+      <rect x="140" y="20"  width="1050" height="30" fill="#a78bfa"/>
+      <rect x="140" y="80"  width="1050" height="30" fill="#fbbf24"/>
+      <rect x="140" y="140" width="1050" height="30" fill="#6ee7b7"/>
+      <rect x="140" y="200" width="1050" height="30" fill="#7dd3fc"/>
+      <rect x="140" y="260" width="1050" height="30" fill="#fb7185"/>
+    </g>
+    <g id="lc-markers"></g>
+    <g id="lc-arrows"></g>
+  </svg>
+  </div>
+
+  <div class="grid cols-2" style="gap:12px;margin-top:16px">
+    <div class="queue-box"><div class="queue-title">① Router 状态</div><div id="s-router" style="font-size:12.5px;color:#cbd5e1;font-family:'SF Mono',monospace;line-height:1.7">idle</div></div>
+    <div class="queue-box"><div class="queue-title">② P 节点内部</div><div id="s-p" style="font-size:12.5px;color:#cbd5e1;font-family:'SF Mono',monospace;line-height:1.7">BootstrapQueue: ∅ | waiting: ∅ | Inflight: ∅</div></div>
+    <div class="queue-box"><div class="queue-title">③ D 节点内部</div><div id="s-d" style="font-size:12.5px;color:#cbd5e1;font-family:'SF Mono',monospace;line-height:1.7">Prealloc: ∅ | Transfer: ∅ | running: ∅</div></div>
+    <div class="queue-box"><div class="queue-title">④ Mooncake 状态</div><div id="s-mc" style="font-size:12.5px;color:#cbd5e1;font-family:'SF Mono',monospace;line-height:1.7">engine idle · 0 ongoing</div></div>
+  </div>
+
+  <div style="margin-top:12px;background:#0f1218;border:1px solid var(--line);border-radius:8px;padding:10px;font-size:12.5px">
+    <div style="color:var(--mute);margin-bottom:4px">room_id = <b id="s-room" style="color:var(--warn)">-</b></div>
+    <div id="s-code" style="font-family:'SF Mono',monospace;font-size:11.5px;color:var(--mute);white-space:pre-wrap">（点播放或某个步骤按钮）</div>
+  </div>
+</div>
+
+<div class="demo-narration" id="lc-narr">观察每一步的 narration + 右侧 4 角色状态变化。你会看到：P 在第 2-4 步一直在"等"，直到第 5 步收到 D 的 metadata 才动；首 token 其实是 P 算出来的，但通过 Mooncake 送到 D，再由 D 吐给 client。</div>
+</div>
+
+<script>
+(function(){
+  const STEPS = [
+    {title:"Client 发 POST", lane:0, x:180,
+     arrow:{from:[180,35], to:[280,95]},
+     narr:"Client 发 POST /v1/chat/completions，<code>stream:true</code>。请求到达 Router。",
+     code:"curl -X POST http://router/v1/chat \\\n  -d '{\"messages\":[...], \"stream\":true}'",
+     state:{router:"收到请求，进入 execute_dual_dispatch",
+            p:"BootstrapQueue: ∅ | waiting: ∅ | Inflight: ∅",
+            d:"Prealloc: ∅ | Transfer: ∅ | running: ∅",
+            mc:"engine idle · 0 ongoing"},
+     room:"-"},
+
+    {title:"Router 选 P + 选 D", lane:1, x:320,
+     narr:"Router <u>独立</u>选 P（cache_aware 命中 P1）和 D（power_of_two 抽到 D2）。两者之间没有绑定关系。",
+     code:"// pd_router.rs:702\nlet prefill = pick_by_policy(&prefill_workers, &cache_aware, text).await?;\nlet decode  = pick_by_policy(&decode_workers,  &power_of_two, text).await?;\n→ P = p1, D = d2",
+     state:{router:"已选 P=p1, D=d2",
+            p:"BootstrapQueue: ∅ | waiting: ∅ | Inflight: ∅",
+            d:"Prealloc: ∅ | Transfer: ∅ | running: ∅",
+            mc:"engine idle · 0 ongoing"},
+     room:"-"},
+
+    {title:"Router 生成 room_id", lane:1, x:440,
+     narr:"<code>generate_room_id()</code> 产生 64-bit 随机数，写进请求 JSON 的 bootstrap_host / bootstrap_port / bootstrap_room。<strong>这是\"纽带\"诞生的时刻</strong>。",
+     code:"// pd_types.rs:60\nfn generate_room_id() -> u64 {\n    rand::random::<u64>() & (i64::MAX as u64)\n}\n→ room_id = 0x3f8a2b1c0d4e5f67\njson.insert(\"bootstrap_host\", \"p1\");\njson.insert(\"bootstrap_port\", 9001);\njson.insert(\"bootstrap_room\", 0x3f8a2b1c0d4e5f67);",
+     state:{router:"room_id 已生成，即将双发",
+            p:"BootstrapQueue: ∅ | waiting: ∅ | Inflight: ∅",
+            d:"Prealloc: ∅ | Transfer: ∅ | running: ∅",
+            mc:"engine idle · 0 ongoing"},
+     room:"0x3f8a2b1c0d4e5f67"},
+
+    {title:"tokio::join! 双发", lane:1, x:560,
+     arrow:[{from:[560,95], to:[700,155]}, {from:[560,95], to:[700,215]}],
+     narr:"Router <code>tokio::join!(p.send(), d.send())</code>。<u>同一份 JSON</u> 同时发给 P 和 D，两者几乎同时收到。但<strong>此时 P 和 D 还不知道对方存在</strong>，各自把 req 放进自己的队列。",
+     code:"// pd_router.rs:579\nlet (p_res, d_res) = tokio::join!(\n    client.post(p1.url()).json(&req).send(),\n    client.post(d2.url()).json(&req).send(),\n);",
+     state:{router:"HTTP 发出，等 D 的 SSE 响应",
+            p:"BootstrapQueue: [req#1(room=0x3f..) Bootstrapping]",
+            d:"Prealloc: [req#1(room=0x3f..) Bootstrapping]",
+            mc:"engine idle · 0 ongoing"},
+     room:"0x3f8a2b1c0d4e5f67"},
+
+    {title:"D 预分配 + 发 metadata 给 P", lane:3, x:700,
+     arrow:{from:[700,215], to:[880,155]},
+     narr:"D 的 event_loop 跑到 <code>pop_preallocated</code>：在自己 KV pool 里给 req#1 分配 16 个 page，然后通过 ZMQ 把 <code>(room, 目标 page 地址, aux_idx)</code> 发给 P。<strong>这是 P/D 第一次通过 room_id 相认</strong>。",
+     code:"# decode.py:645\ndst_kv_indices = self._pre_alloc(req)  # 分配 16 page\nkv_indices = req_to_token[req_pool_idx][:16].cpu().numpy()\nreq.metadata_buffer_index = allocator.alloc()  # aux slot=3\nreq.kv_receiver.send_metadata(page_indices, aux=3)\n# ZMQ multipart:\n#   [b'0x3f8a2b1c...', b'd2', kv_indices_bytes, b'3', ...]",
+     state:{router:"等 D 的 SSE",
+            p:"BootstrapQueue: [req#1 Bootstrapping] · 还在等 metadata",
+            d:"Prealloc: [req#1 · KV 已占 16 page] → Transfer 队列",
+            mc:"engine idle"},
+     room:"0x3f8a2b1c0d4e5f67"},
+
+    {title:"P 收到 metadata → forward", lane:2, x:880,
+     narr:"P 的 <code>bootstrap_thread</code> 收到 ZMQ，登记 <code>transfer_infos[0x3f..]</code>，KVPoll 切到 WaitingForInput。<code>pop_bootstrapped</code> 把 req 推进 waiting_queue → PrefillAdder 装箱 → <strong>run_batch forward</strong> → 得到 KV + 首 token=42。",
+     code:"# mooncake/conn.py:1345 · bootstrap_thread\nroom = int(msg[0])  # 0x3f8a2b1c...\ntransfer_infos[room][sid] = TransferInfo.from_zmq(msg)\nupdate_status(room, KVPoll.WaitingForInput)\n\n# prefill.py · pop_bootstrapped → waiting_queue\n# scheduler.run_batch (forward prompt)\nreq.output_ids.append(42)  # 首 token",
+     state:{router:"等 D 的 SSE",
+            p:"Inflight: [req#1 · 首 token=42] · KV 算好，准备搬",
+            d:"Transfer: [req#1] · 等 KV 到达",
+            mc:"engine idle"},
+     room:"0x3f8a2b1c0d4e5f67"},
+
+    {title:"P 委托 Mooncake 搬 KV", lane:2, x:1000,
+     arrow:{from:[1000,155], to:[1000,275]},
+     narr:"<code>send_kv_chunk(last_chunk=True)</code>：把首 token + logprobs 写进共享 <u>metadata buffer 的 slot 3</u>，把 KV page 扔进 FastQueue。transfer_worker 调 <code>self.engine.batch_transfer_sync(...)</code>——SGLang 业务逻辑到此结束，剩下是 Mooncake 的工作。",
+     code:"# prefill.py:744 · send_kv_chunk\nself.disagg_metadata_buffers.set_buf(req)\n  # slot3: output_ids[0]=42, bootstrap_room[0]=0x3f..\nreq.disagg_kv_sender.send(page_indices)  # → FastQueue\n\n# mooncake/conn.py:575 · _transfer_data\nself.engine.batch_transfer_sync(  # ★ 交给 Mooncake\n    session_id, src_addrs, dst_addrs, lengths)",
+     state:{router:"等 D 的 SSE",
+            p:"Inflight: [req#1] · 等 Mooncake 完成",
+            d:"Transfer: [req#1]",
+            mc:"batch_transfer_sync · transferring 16 pages"},
+     room:"0x3f8a2b1c0d4e5f67"},
+
+    {title:"Mooncake RDMA 写入 D 的 KV pool", lane:4, x:1060,
+     arrow:{from:[1060,275], to:[1060,215]},
+     narr:"Mooncake 内部：Topology Engine 选路径 → Multi-QP Scheduler 切块 → <code>ibv_post_send</code> 把 WQE 挂上多个 QP → RDMA NIC 发起 DMA。显存从 P 的 HBM 直接飞到 D 的 HBM（GPUDirect RDMA）。aux buffer（含首 token）也一起搬。",
+     code:"// Mooncake C++ core (不在 SGLang 仓库)\nauto plan = topologyEngine->plan(src, dst, peer_segments);\nfor (auto& sub : plan.splits) {\n    auto qp = multiQpScheduler->pick(sub.numa);\n    ibv_post_send(qp, build_rdma_write(sub), ...);\n}",
+     state:{router:"等 D 的 SSE",
+            p:"Inflight: [req#1] · 等 sync",
+            d:"Transfer: [req#1] · KV 正在到达",
+            mc:"RDMA in flight · 即将完成"},
+     room:"0x3f8a2b1c0d4e5f67"},
+
+    {title:"P 通过 ZMQ 告知 D: Success", lane:2, x:1110,
+     arrow:{from:[1110,155], to:[1110,215]},
+     narr:"Mooncake 返回 0。P 侧 <code>sync_status_to_decode_endpoint</code> 通过 ZMQ 发 <code>(room, Success, prefill_rank)</code> 给 D。D 的 decode_thread 收齐所有 prefill_rank 的 Success 后把 KVPoll 切 Success。P 侧 InflightQueue 清理 req#1。",
+     code:"# P 侧\nret = self.engine.batch_transfer_sync(...)  # ret == 0\nsync_status_to_decode_endpoint(d2, \n    room=0x3f.., status=Success, prefill_rank=0)\n\n# D 侧 decode_thread\nprefill_response_tracker[room].add(prefill_rank)\nif len(...) == required_prefill_response_num:\n    update_status(room, KVPoll.Success)",
+     state:{router:"等 D 的 SSE",
+            p:"Inflight: ∅ · req#1 已完成",
+            d:"Transfer: [req#1 · KVPoll=Success]",
+            mc:"engine idle"},
+     room:"0x3f8a2b1c0d4e5f67"},
+
+    {title:"D commit + decode + SSE 首 token", lane:3, x:1160,
+     arrow:{from:[1160,215], to:[1160,95]},
+     narr:"<code>pop_transferred</code> 从 metadata buffer 读 slot 3（首 token=42），<strong>校验 bootstrap_room 匹配</strong>（防串包），写进 req.output_ids。req 进 running_batch，下一个 forward step 生成 token #2 → SSE 吐回 Router → Router 转给 client → <b>TTFT 结束</b>。",
+     code:"# decode.py:1084 · _commit_transfer_to_req\n(output_id, _, _, bootstrap_room) = metadata_buffers.get_buf(3)\nactual = bootstrap_room[0].item()  # 0x3f..\nassert actual == req.bootstrap_room  # ★ 校验\nreq.output_ids.append(output_id[0].item())  # 首 token=42\n# running_batch → forward step → SSE",
+     state:{router:"收到 SSE chunk，转发给 client → <b style='color:var(--brand)'>TTFT 结束</b>",
+            p:"idle",
+            d:"running_batch: [req#1 · 正在 decode]",
+            mc:"engine idle"},
+     room:"0x3f8a2b1c0d4e5f67"},
+  ];
+  const TOTAL = STEPS.length;
+  const svgNS = 'http://www.w3.org/2000/svg';
+  const LANE_Y = [35, 95, 155, 215, 275];
+  const markersG = document.getElementById('lc-markers');
+  const arrowsG  = document.getElementById('lc-arrows');
+  const strip = document.getElementById('lc-strip');
+
+  STEPS.forEach((s,i)=>{
+    const y = LANE_Y[s.lane];
+    const g = document.createElementNS(svgNS,'g');
+    g.setAttribute('id','m-'+i);
+    g.style.cursor='pointer';
+    const c = document.createElementNS(svgNS,'circle');
+    c.setAttribute('cx',s.x); c.setAttribute('cy',y);
+    c.setAttribute('r',14);
+    c.setAttribute('fill','#1a1f2b');
+    c.setAttribute('stroke','#3a4050');
+    c.setAttribute('stroke-width','1.5');
+    g.appendChild(c);
+    const t = document.createElementNS(svgNS,'text');
+    t.setAttribute('x',s.x); t.setAttribute('y',y+4);
+    t.setAttribute('text-anchor','middle');
+    t.setAttribute('font-size','12');
+    t.setAttribute('font-weight','700');
+    t.setAttribute('fill','#e6e8ee');
+    t.textContent=(i+1);
+    g.appendChild(t);
+    g.addEventListener('click',()=>jump(i+1));
+    markersG.appendChild(g);
+
+    const chip = document.createElement('span');
+    chip.className='req-chip';
+    chip.style.cursor='pointer';
+    chip.style.fontSize='11px';
+    chip.textContent = (i+1)+'. '+s.title;
+    chip.id='chip-'+i;
+    chip.addEventListener('click',()=>jump(i+1));
+    strip.appendChild(chip);
+  });
+
+  function drawArrow(from, to){
+    const p = document.createElementNS(svgNS,'path');
+    p.setAttribute('d', 'M'+from[0]+','+from[1]+' L'+to[0]+','+to[1]);
+    p.setAttribute('class','flow-edge active');
+    p.setAttribute('marker-end','url(#lcar)');
+    arrowsG.appendChild(p);
+  }
+
+  function render(step){
+    STEPS.forEach((_,i)=>{
+      const g = document.getElementById('m-'+i);
+      g.querySelectorAll('circle').forEach(c=>{c.setAttribute('fill','#1a1f2b');c.setAttribute('stroke','#3a4050');});
+      g.querySelectorAll('text').forEach(t=>t.setAttribute('fill','#e6e8ee'));
+      document.getElementById('chip-'+i).classList.remove('active');
+    });
+    arrowsG.innerHTML='';
+    document.getElementById('lc-step').textContent='step '+step+' / '+TOTAL;
+
+    if(step===0){
+      document.getElementById('lc-narr').innerHTML='点 ▶ 或任意数字按钮查看那一刻 4 角色状态。';
+      document.getElementById('s-code').textContent='（点播放或某个步骤按钮）';
+      document.getElementById('s-router').textContent='idle';
+      document.getElementById('s-p').textContent='BootstrapQueue: ∅ | waiting: ∅ | Inflight: ∅';
+      document.getElementById('s-d').textContent='Prealloc: ∅ | Transfer: ∅ | running: ∅';
+      document.getElementById('s-mc').textContent='engine idle · 0 ongoing';
+      document.getElementById('s-room').textContent='-';
+      return;
+    }
+
+    for(let i=0;i<step;i++){
+      const g = document.getElementById('m-'+i);
+      g.querySelectorAll('circle').forEach(c=>{c.setAttribute('fill','#fbbf24');c.setAttribute('stroke','#fff');});
+      g.querySelectorAll('text').forEach(t=>t.setAttribute('fill','#0b0d12'));
+      document.getElementById('chip-'+i).classList.add('active');
+      const s = STEPS[i];
+      if(s.arrow){
+        if(Array.isArray(s.arrow)) s.arrow.forEach(a=>drawArrow(a.from,a.to));
+        else drawArrow(s.arrow.from, s.arrow.to);
+      }
+    }
+    const s = STEPS[step-1];
+    document.getElementById('lc-narr').innerHTML = s.narr;
+    document.getElementById('s-code').textContent = s.code;
+    document.getElementById('s-router').innerHTML = s.state.router;
+    document.getElementById('s-p').innerHTML = s.state.p;
+    document.getElementById('s-d').innerHTML = s.state.d;
+    document.getElementById('s-mc').innerHTML = s.state.mc;
+    document.getElementById('s-room').textContent = s.room;
+  }
+
+  let cur=0, timer=null;
+  function jump(s){ clearInterval(timer); timer=null; cur=s; render(s); }
+  render(0);
+  document.getElementById('lc-play').addEventListener('click',()=>{
+    if(timer) return;
+    timer = setInterval(()=>{cur++; render(cur); if(cur>=TOTAL){clearInterval(timer); timer=null;}}, 1800);
+  });
+  document.getElementById('lc-next').addEventListener('click',()=>{ if(cur<TOTAL){cur++; render(cur);}});
+  document.getElementById('lc-reset').addEventListener('click',()=>{clearInterval(timer); timer=null; cur=0; render(0);});
+})();
+</script>
+
+<h2 id="states"><span class="step">PART 10</span>状态机：P/D 两侧独立演化，通过 ZMQ 耦合</h2>
+<div class="card">
+<p>P 和 D 各自维护一个 <code>KVPoll</code>（5 状态：Bootstrapping / WaitingForInput / Transferring / Success / Failed），<strong>两侧独立推进，通过 ZMQ 消息耦合</strong>。</p>
+
+<div class="grid cols-2" style="gap:14px">
+<div>
+<h3 style="color:var(--brand)">P 侧 sender</h3>
+<table>
+<tr><th>状态</th><th>进入条件</th></tr>
+<tr><td><b>Bootstrapping</b></td><td>sender 创建（Router HTTP 刚到）</td></tr>
+<tr><td><b>WaitingForInput</b></td><td>★ 收到 D 的 ZMQ metadata</td></tr>
+<tr><td><b>Transferring</b></td><td>run_batch 完，进 InflightQueue</td></tr>
+<tr><td><b>Success</b></td><td>Mooncake 完成全部 chunk + aux</td></tr>
+<tr><td><b>Failed</b></td><td>超时 / RDMA 错 / abort</td></tr>
+</table>
+</div>
+<div>
+<h3 style="color:var(--brand2)">D 侧 receiver</h3>
+<table>
+<tr><th>状态</th><th>进入条件</th></tr>
+<tr><td><b>Bootstrapping</b></td><td>receiver 创建（Router HTTP 刚到）</td></tr>
+<tr><td><b>WaitingForInput</b></td><td>查到 P 的 endpoint</td></tr>
+<tr><td><b>Transferring</b></td><td>send_metadata 已发出</td></tr>
+<tr><td><b>Success</b></td><td>★ 收齐 P 的 sync_status</td></tr>
+<tr><td><b>Failed</b></td><td>超时 / 串包 / P 报 Failed</td></tr>
+</table>
+</div>
+</div>
+
+<h3>状态机耦合图</h3>
+<div class="svg-wrap" style="margin-top:10px">
+<svg viewBox="0 0 900 280" xmlns="http://www.w3.org/2000/svg">
+<defs><marker id="st-ar" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#fbbf24"/></marker>
+<marker id="st-ar-pink" markerWidth="7" markerHeight="7" refX="6" refY="3" orient="auto"><path d="M0,0 L0,6 L6,3 z" fill="#fb7185"/></marker></defs>
+
+<text x="150" y="20" text-anchor="middle" font-size="12" fill="#6ee7b7" font-weight="700">P 侧状态</text>
+<rect x="40"  y="35"  width="220" height="30" rx="6" fill="#0f1218" stroke="#fbbf24"/><text x="150" y="54" text-anchor="middle" font-size="11" fill="#fbbf24">Bootstrapping</text>
+<rect x="40"  y="85"  width="220" height="30" rx="6" fill="#0f1218" stroke="#7dd3fc"/><text x="150" y="104" text-anchor="middle" font-size="11" fill="#7dd3fc">WaitingForInput</text>
+<rect x="40"  y="135" width="220" height="30" rx="6" fill="#0f1218" stroke="#a78bfa"/><text x="150" y="154" text-anchor="middle" font-size="11" fill="#a78bfa">Transferring</text>
+<rect x="40"  y="185" width="220" height="30" rx="6" fill="#0f1218" stroke="#6ee7b7"/><text x="150" y="204" text-anchor="middle" font-size="11" fill="#6ee7b7">Success</text>
+
+<text x="750" y="20" text-anchor="middle" font-size="12" fill="#7dd3fc" font-weight="700">D 侧状态</text>
+<rect x="640" y="35"  width="220" height="30" rx="6" fill="#0f1218" stroke="#fbbf24"/><text x="750" y="54" text-anchor="middle" font-size="11" fill="#fbbf24">Bootstrapping</text>
+<rect x="640" y="85"  width="220" height="30" rx="6" fill="#0f1218" stroke="#7dd3fc"/><text x="750" y="104" text-anchor="middle" font-size="11" fill="#7dd3fc">WaitingForInput</text>
+<rect x="640" y="135" width="220" height="30" rx="6" fill="#0f1218" stroke="#a78bfa"/><text x="750" y="154" text-anchor="middle" font-size="11" fill="#a78bfa">Transferring</text>
+<rect x="640" y="185" width="220" height="30" rx="6" fill="#0f1218" stroke="#6ee7b7"/><text x="750" y="204" text-anchor="middle" font-size="11" fill="#6ee7b7">Success</text>
+
+<path d="M150,65 L150,85"   stroke="#3a4050" stroke-width="1.5" marker-end="url(#st-ar)"/>
+<path d="M150,115 L150,135" stroke="#3a4050" stroke-width="1.5" marker-end="url(#st-ar)"/>
+<path d="M150,165 L150,185" stroke="#3a4050" stroke-width="1.5" marker-end="url(#st-ar)"/>
+<path d="M750,65 L750,85"   stroke="#3a4050" stroke-width="1.5" marker-end="url(#st-ar)"/>
+<path d="M750,115 L750,135" stroke="#3a4050" stroke-width="1.5" marker-end="url(#st-ar)"/>
+<path d="M750,165 L750,185" stroke="#3a4050" stroke-width="1.5" marker-end="url(#st-ar)"/>
+
+<!-- D->P coupling: send_metadata triggers P's WaitingForInput -->
+<path d="M640,100 Q450,50 260,100" stroke="#fb7185" stroke-width="2" fill="none" marker-end="url(#st-ar-pink)" stroke-dasharray="4 3"/>
+<text x="450" y="45" text-anchor="middle" font-size="11" fill="#fb7185" font-weight="600">ZMQ: send_metadata</text>
+
+<!-- P->D coupling: sync_status triggers D's Success -->
+<path d="M260,200 Q450,255 640,200" stroke="#fb7185" stroke-width="2" fill="none" marker-end="url(#st-ar-pink)" stroke-dasharray="4 3"/>
+<text x="450" y="270" text-anchor="middle" font-size="11" fill="#fb7185" font-weight="600">ZMQ: sync_status (Mooncake 完成后)</text>
+
+<text x="450" y="140" text-anchor="middle" font-size="11" fill="#8b93a7">两侧同时进入 Transferring</text>
+<text x="450" y="156" text-anchor="middle" font-size="10.5" fill="#8b93a7">= Mooncake 正在搬</text>
+</svg>
+</div>
+
+<div class="callout warn">
+<strong>注意</strong>：P 从 Bootstrapping 到 WaitingForInput 的跃迁<u>依赖 D 的消息</u>；D 从 Transferring 到 Success 的跃迁<u>依赖 P 的消息</u>。两侧状态机互为触发，任何一方 ZMQ 丢了都会死锁——所以有超时机制。
+</div>
+</div>
+
+<h2 id="summary"><span class="step">PART 11</span>要点回顾</h2>
+<div class="card">
+<table>
+<tr><th>问题</th><th>答案</th></tr>
+<tr><td>PD 系统有几个角色？</td><td><strong>4 个</strong>：Router / P 节点 / D 节点 / Mooncake</td></tr>
+<tr><td>Router 的职责？</td><td>选 P + 选 D + 生成 room_id + 双发 + 转发 SSE</td></tr>
+<tr><td>P 的职责？</td><td>被动等 D 的 metadata → forward 算 KV + 首 token → 委托 Mooncake 发</td></tr>
+<tr><td>D 的职责？</td><td>主动预分配 KV + 告诉 P 地址 + 等货 + commit + decode + SSE</td></tr>
+<tr><td>Mooncake 的职责？</td><td>纯粹的跨机显存搬运（RDMA）</td></tr>
+<tr><td>P/D 是无状态的吗？</td><td>是。只通过 <code>bootstrap_room</code> 识别请求</td></tr>
+<tr><td>Mooncake 属于 SGLang 吗？</td><td>不属于。独立开源项目（kvcache-ai/Mooncake），SGLang 通过 Python binding 使用</td></tr>
+<tr><td>首 token 谁算的？</td><td>P 算的，但通过 metadata buffer 经 Mooncake 送给 D，再由 D 吐给 client</td></tr>
+</table>
+</div>
+
+<div class="nav">
+<a href="01-why-pd.html">← 上一篇：为什么 PD</a>
+<a href="03-router-source.html">下一篇：Router 源码 →</a>
+</div>
+<div class="foot">SGLang PD Disaggregation · 角色驱动版 · 4 角色 + room_id 认亲</div>
+</div>  <script src="../course-nav.js"></script>
+</body></html>
