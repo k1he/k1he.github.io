@@ -1123,6 +1123,19 @@
             "FP8",
             "Overlap"
           ]
+        },
+        {
+          "id": "moe8",
+          "title": "EP × FSDP × Hybrid 拓扑",
+          "path": "10-moe-deep-dive/08-fsdp-hybrid-ep.html",
+          "duration": "55min",
+          "difficulty": 4,
+          "tags": [
+            "EP8",
+            "FSDP",
+            "Hybrid EP",
+            "DeviceMesh"
+          ]
         }
       ]
     },
