@@ -38,8 +38,8 @@ th{color:var(--mute);font-weight:500}
 </style>
 </head><body><div class="wrap">
 
-<h1>SGLang MoE 源码深读<span class="tag">MoE · 0/7</span></h1>
-<div class="sub">7 章按"原理 → 架构 → 源码逐层 → 性能优化"结构编写，以 Qwen3-MoE / DeepSeek-V3 为蓝本，深入 SGLang 的 MoE 实现。</div>
+<h1>SGLang MoE 源码深读<span class="tag">MoE · 0/8</span></h1>
+<div class="sub">8 章按"原理 → 架构 → 源码逐层 → 性能优化 → 训练拓扑"结构编写，以 Qwen3-MoE / DeepSeek-V3 为蓝本，深入 SGLang 的 MoE 实现。</div>
 
 <div class="toc">
 <a href="#overview">学习路径</a>
@@ -55,7 +55,7 @@ th{color:var(--mute);font-weight:500}
 <li>再看 <b>02 架构总览</b> 建立 SGLang MoE 的全景骨架（5 层抽象）</li>
 <li>然后按 <b>03 → 04 → 05</b> 顺序逐层深入：TopK / Router → FusedMoE Layer → Triton Kernel</li>
 <li><b>06 Expert Parallelism</b> 讲多卡分布式 MoE（DeepEP / All-to-All）</li>
-<li>最后 <b>07</b> 覆盖生产调优和性能分析</li>
+<li><b>07</b> 覆盖生产调优和性能分析，最后用 <b>08</b> 串起 EP、DP、FSDP 与 Hybrid EP 训练拓扑</li>
 </ol>
 </div>
 
@@ -114,6 +114,14 @@ th{color:var(--mute);font-weight:500}
 <h3 style="color:var(--purple);margin-top:0">07 · 生产调优与性能分析</h3>
 <p style="color:var(--mute);font-size:13px">MoE runner backend 选择（Triton/CUTLASS/FlashInfer）、autotuning config、Overlap 策略、MoE padding、FP8 量化、EP + TP 组合调参。</p>
 <p style="color:var(--brand2);font-size:12px;margin-top:8px">📊 Benchmark 对比表 + 调参 checklist</p>
+</div>
+</a>
+<a href="08-fsdp-hybrid-ep.html" style="text-decoration:none;color:inherit">
+<div class="card" style="margin:0;background:var(--panel2);cursor:pointer"
+     onmouseover="this.style.borderColor='var(--purple)'" onmouseout="this.style.borderColor='var(--line)'">
+<h3 style="color:var(--purple);margin-top:0">08 · EP × FSDP × Hybrid 拓扑</h3>
+<p style="color:var(--mute);font-size:13px">从 EP8、DP4、FSDP 开始，推导 FSDP32 + EP8 = EP8 × expert-FSDP4，并比较普通布局与 Hybrid 布局交换的是跨机权重还是跨机 token。</p>
+<p style="color:var(--brand2);font-size:12px;margin-top:8px">🧭 4×8 拓扑交互图 + 跨机通信量估算器</p>
 </div>
 </a>
 </div>
